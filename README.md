@@ -1,31 +1,79 @@
-# Async Agentic SDLC
+# Async Agentic SDLC Orchestrator (OPS_000)
 
-A proof-of-concept agentic pipeline that automates a software development cycle using LLM agents.
+An engineered, deterministic multi-agent workflow engine built to automate the entire Software Development Life Cycle (SDLC) without human intervention.
 
-## How it works
+---
 
-`orchestrator.py` runs three agents in sequence:
+## 🎯 Project Mission & Hackathon Objectives
 
-1. **Architect** (Gemini) — takes a business requirement and produces a structured contract: files to create, implementation directives, and function signatures.
-2. **Developer** (Claude CLI) — generates source code based on the contract. Re-runs on failure with the error trace.
-3. **QA + Security** (parallel) — validates the output:
-   - Unit tests run in an ephemeral `python:3.11-slim` Docker container
-   - Static analysis via `bandit`
+The core objective of this repository is to fully satisfy the **Mission · OPS_000** brief by building an autonomous Software Factory. The pipeline chains specialized, single-responsibility agents end-to-end to deliver verified production code from raw business requirements.
 
-The cycle retries up to 3 times. If all gates pass, the pipeline exits successfully; otherwise the circuit breaker halts execution.
+### Target Pipeline Graph
 
-## Stack
+```text
+Product ──> Planner ──> Architect ──> Developer ──> Reviewer ──> QA ──> DevOps
+```
 
-- Python 3.11, asyncio
-- [Gemini API](https://ai.google.dev/) via `google-genai` + `instructor`
-- Claude CLI (`claude`)
-- Docker (sandboxed test execution)
-- `bandit` (SAST)
+### Mandated Success Criteria
 
-## Setup
+* **Absolute Autonomy**: Achieve ≥ 80% human-free execution across the workflow.
+* **Deterministic Execution**: Strict machine-readable Pydantic/JSON contracts between every node to prevent semantic degradation.
+* **Resilience**: The engine must autonomously process, route, and heal from at least 2 simulated runtime or compilation failures.
+* **Immutable Verification**: Code passes tests generated independently by a QA agent, isolated from the Developer agent's write scope.
 
-See [docs/setup.md](docs/setup.md).
+---
 
-## Practicum
+## 🛠️ System Architecture & Constraints
 
-Development history, iteration logs, and engineering takeaways: [PRACTICUM.md](PRACTICUM.md).
+As determined during the initial research phase, this project intentionally rejects abstract agentic frameworks (e.g., LangGraph) to ensure low-latency, deterministic execution:
+
+1. **Custom FSM Engine**: Driven by a lightweight Python `asyncio` state machine.
+2. **Model Routing Matrix**:
+   * **Gemini 2.5/3.5 Flash**: Architect and QA nodes (optimized via Context Caching).
+   * **Claude 3.5 Sonnet**: Lead Software Engineer (optimized via Prompt Caching inside sandboxed CLI executions).
+3. **Sandboxed Runtimes**: Isolated Docker containers run code execution and verification gates to prevent agent workspace corruption.
+
+---
+
+## 📦 Project Directory Structure & Artifacts
+
+This repository is strictly organized to provide 100% traceability for evaluation:
+
+```text
+async-agentic-sdlc/
+├── docs/
+│   ├── archive/                # Chronological snapshot history
+│   │   ├── iteration_000/      # Cloud Infra & FSM Architecture Research
+│   │   ├── iteration_001/      # Baseline sequential loop (Trapped Test Sabotage)
+│   │   └── iteration_002/      # Async Fork-Join & QA Node Isolation (Success)
+│   ├── docker-on-windows.md    # Active host runtime configuration
+│   └── setup.md                # Active environment configuration
+├── orchestrator.py             # Current operational workflow engine
+├── PRACTICUM.md                # Global Executive Summary & Engineering Journal
+├── requirements.txt            # Explicit dependency manifest
+└── README.md                   # System mission briefing & specifications
+```
+
+---
+
+## 🚀 Quick Start & Local Execution
+
+### Prerequisites
+
+For full environment setup (WSL2, Docker, Python venv, Claude CLI), see [docs/setup.md](./docs/setup.md).
+
+Ensure your local environment variable contains a valid Gemini credential and that the Docker engine is running natively (without Docker Desktop if restricted):
+
+```bash
+export GEMINI_API_KEY="your-api-key-here"
+```
+
+### Execution
+
+Run the main orchestrator loop to initiate the autonomous code-generation and testing pipeline:
+
+```bash
+python3 orchestrator.py
+```
+
+For the step-by-step engineering log, metrics tracker, and architectural breakthroughs, see the [Architecture Journal (PRACTICUM.md)](./PRACTICUM.md).

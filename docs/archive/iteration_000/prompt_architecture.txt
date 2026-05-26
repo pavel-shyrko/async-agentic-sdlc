@@ -1,0 +1,37 @@
+Act as a Cloud Infrastructure Architect and DevOps Engineer. Conduct a rigorous technical research and cost optimization analysis for deploying a multi-agent hybrid SDLC pipeline (Orchestrator DAG + CLI Worker Agents + MCP Servers).
+
+CONTEXT & PRIORITIES:
+- The system consists of an API-driven Python orchestrator (LangGraph/Custom DAG) and CLI-based workers (Aider, Claude Code, ChatGPT Codex) executing in sandboxes.
+- Constraints: Low-to-zero infrastructure cost, rapid deployment (hackathon speed), high security/isolation for code execution, and native support for Model Context Protocol (MCP).
+- Attached Document: https://gemini.google.com/share/0c1d61e9fc11
+
+RESEARCH OBJECTIVES:
+
+1. ORCHESTRATOR & MCP INFRASTRUCTURE PREFS
+Where should the main execution loop and MCP architecture live?
+- Evaluate deploying the Python/Node orchestrator locally (WSL2/Ubuntu) vs. an ephemeral VM instance (e.g., GCP Compute Engine Free Tier f1-micro/e2-micro, or cheap VPS like Hetzner/DigitalOcean).
+- Research how to host and connect MCP (Model Context Protocol) servers (e.g., Git MCP, Filesystem MCP, Brave Search MCP) to both API-based agents (Gemini/Claude) and the CLI workers. Can they share a single local MCP host?
+
+2. SOURCE CONTROL & ARTIFACT REPOSITORY
+How to manage state transitions via git without manual intervention?
+- Detail the architecture for automated Git operations. Should we use private GitHub repositories with GitHub App tokens/PATs?
+- How can the DevOps agent autonomously create branches, commit code, and open Pull Requests? Research lightweight libraries (e.g., PyGithub, GitPython) that fit inside the pipeline.
+
+3. WORKER SANDBOXING & RUNTIME ENVIRONMENT
+CLI agents (Claude Code / Aider) will install dependencies and run tests.
+- Compare local Docker-in-Docker (DinD) setup on a single machine/VM versus using cheap remote ephemeral container APIs (e.g., GCP Cloud Run, or open-source self-hosted solutions).
+- How do we pass host environment variables (Anthropic API keys, OpenAI/Codex keys, Google Cloud credentials) into the isolated runner containers securely without hardcoding?
+
+4. LINE-BY-LINE FINANCIAL ESTIMATION (COST MODEL)
+Provide a realistic cost breakdown for running 10 full end-to-end SDLC cycles (from Product Requirement to automated Deployment of a simple CRUD app).
+- Calculate API costs: Assume an average of 50k input tokens and 10k output tokens per agent per cycle. Factor in Anthropic Prompt Caching and Gemini Context Caching.
+- Compute/Storage costs: Estimate the price of VMs, container registries, and repository hosting for a 48-hour hackathon.
+- Identify what remains entirely within the Free Tiers of GCP, GitHub, and Anthropic/OpenAI.
+
+OUTPUT REQUIREMENTS:
+Deliver a comprehensive Blueprint divided into:
+1. System Topology (Where Orchestrator, MCP Servers, and Sandboxes physically run).
+2. Automated Git Flow & State Synchronization Pattern.
+3. Secure Context & Credentials Delivery Matrix.
+4. Line-item Cost Estimation Table (including optimal Caching strategies to reduce bill).
+Keep it pragmatic, technically precise, and optimized for a minimal budget.
