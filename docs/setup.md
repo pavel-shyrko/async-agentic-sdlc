@@ -4,7 +4,7 @@
 
 - Windows 10/11 with WSL2 enabled
 - Docker configured for WSL2 — see [docs/docker-on-windows.md](docs/docker-on-windows.md)
-- WSL2 distro: Ubuntu 22.04 (recommended)
+- WSL2 distro: Ubuntu 24.04 (recommended)
 - Node.js + npm installed inside WSL2
 
 ## 0. WSL2 Setup (if not done)
@@ -12,7 +12,7 @@
 In PowerShell (as Administrator):
 
 ```powershell
-wsl --install -d Ubuntu-22.04
+wsl --install -d Ubuntu-24.04
 ```
 
 Restart, then open the Ubuntu terminal and create a user when prompted.
@@ -58,7 +58,7 @@ source venv/bin/activate
 
 ```bash
 pip install --upgrade pip
-pip install instructor google-genai pydantic bandit pytest
+pip install instructor google-genai pydantic bandit pytest jsonref
 ```
 
 ## 6. Pre-pull Docker Image
@@ -107,4 +107,4 @@ python3 orchestrator.py
 | `docker: command not found` | Make sure Docker Desktop is running and WSL2 integration is enabled |
 | `permission denied` on docker socket | Docker Desktop manages permissions — no `usermod` needed |
 | `npm: command not found` | Install Node.js per step 2 |
-| WSL2 distro shows as WSL1 | `wsl --set-version Ubuntu-22.04 2` in PowerShell |
+| WSL2 distro shows as WSL1 | `wsl --set-version Ubuntu-24.04 2` in PowerShell |

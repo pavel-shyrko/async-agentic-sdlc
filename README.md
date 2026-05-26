@@ -25,3 +25,7 @@ The cycle retries up to 3 times. If all gates pass, the pipeline exits successfu
 ## Setup
 
 See [docs/setup.md](docs/setup.md).
+
+## Practicum
+
+Development history, iteration logs, and engineering takeaways: [PRACTICUM.md](PRACTICUM.md).
