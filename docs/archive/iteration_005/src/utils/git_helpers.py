@@ -40,10 +40,10 @@ async def init_sandbox_git(repo_path: str, base_branch: str) -> None:
         await _run_git(["add", ".gitignore"], cwd=repo_path)
         await _run_git(["commit", "-m", "Initial commit with gitignore"], cwd=repo_path)
 
-        # Pin the base branch name as the immutable anchor.
+        # Жестко фиксируем имя базовой ветки как якорь
         await _run_git(["branch", "-m", base_branch], cwd=repo_path)
 
-        # Isolate the agent on a working branch — the base branch never moves.
+        # Изолируем агента в рабочей ветке. Базовая ветка больше не двигается.
         await _run_git(["checkout", "-b", "agent-workspace"], cwd=repo_path)
         log.info(f"   [GIT] Initialized sandbox at {repo_path} on branch agent-workspace (base: {base_branch})")
 
@@ -51,7 +51,7 @@ async def init_sandbox_git(repo_path: str, base_branch: str) -> None:
 async def get_pipeline_snapshot_files(repo_path: str, base_branch: str) -> list[str]:
     await _run_git(["add", "."], cwd=repo_path)
 
-    # Strict cumulative delta against the anchor branch.
+    # Строгое вычисление накопительной дельты относительно якоря
     returncode, output = await _run_git(["diff", base_branch, "--name-only"], cwd=repo_path)
 
     if returncode != 0:

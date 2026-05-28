@@ -33,6 +33,8 @@ As determined during the initial research phase, this project intentionally reje
    * **Claude 4.6 Sonnet**: Lead Software Engineer (sandboxed CLI executions via Claude Code).
 3. **Sandboxed Runtimes**: Isolated Docker containers run code execution and verification gates to prevent agent workspace corruption.
 4. **Dual-Channel Observability**: Complete console diagnostics split from a persistent, rotating debug audit log (`sdlc_audit.log`). Real-time input/output token metrics tracked natively.
+5. **Git-Driven State Tracking**: Agent sandboxes are initialized as isolated Git repositories. All snapshot collection uses `git diff <base_branch> --name-only`, providing a strict causal delta and protecting context windows from binary pollution and retry bleed.
+6. **Brownfield & Multi-File Support**: The pipeline accepts multi-file architecture contracts and processes them via a `--base-branch` CLI flag. QA test generation fans out concurrently via `asyncio.gather` — one isolated test file per production module — bypassing LLM output token ceilings.
 
 ---
 
@@ -58,7 +60,8 @@ async-agentic-sdlc/
 │   │   ├── iteration_001/      # Baseline sequential loop (Trapped Test Sabotage)
 │   │   ├── iteration_002/      # Async Fork-Join & QA Node Isolation (Success)
 │   │   └── iteration_003/      # Observability, Token Tracking & Gemini 2.5 Routing
-│   │   └── iteration_004/      # Architectural decoupling & modularization
+│   │   ├── iteration_004/      # Architectural decoupling & modularization
+│   │   └── iteration_005/      # Git-Driven State Tracking & QA Fan-Out Concurrency
 │   ├── docker-on-windows.md    # Active host runtime configuration
 │   └── setup.md                # Active environment configuration
 ├── orchestrator.py             # Thin entrypoint: wires src/ components + FSM loop
@@ -92,7 +95,11 @@ export GEMINI_API_KEY="your-api-key-here"
 Run the main orchestrator loop to initiate the autonomous code-generation and testing pipeline:
 
 ```bash
-python3 orchestrator.py
+# Inline task description
+python3 orchestrator.py "Implement is_prime(num: int) -> bool"
+
+# Task from a file (brownfield — specify the repo's main branch as anchor)
+python3 orchestrator.py -f tickets/003_multi_file_geometry.md --base-branch main
 ```
 
 ---
