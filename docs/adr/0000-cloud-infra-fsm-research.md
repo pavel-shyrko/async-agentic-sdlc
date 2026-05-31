@@ -3,8 +3,8 @@
 * **Timestamp**: May 24, 2026, 15:00 CEST
 * **Research Provider**: Gemini Pro Deep Research
 * **Locally Archived Artifacts**:
-  * **Track 1 (Infrastructure & Costs)**: [Source Prompt](./prompt_infra.txt) | [Full PDF Report](./report_infra.pdf)
-  * **Track 2 (Pipeline Architecture)**: [Source Prompt](./prompt_architecture.txt) | [Full PDF Report](./report_architecture.pdf)
+  * **Track 1 (Infrastructure & Costs)**: [Source Prompt](./assets/prompt_infra.txt) | [Full PDF Report](./assets/report_infra.pdf)
+  * **Track 2 (Pipeline Architecture)**: [Source Prompt](./assets/prompt_architecture.txt) | [Full PDF Report](./assets/report_architecture.pdf)
 * **Final Status**: ✅ COMPLETED (System Topology Defined)
 
 ---

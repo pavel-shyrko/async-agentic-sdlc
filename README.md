@@ -45,7 +45,7 @@ This repository is strictly organized to provide 100% traceability for evaluatio
 ```text
 async-agentic-sdlc/
 ├── src/                        # Source code (the Software Factory itself)
-│   ├── core/                   # Pydantic models, observability, env config
+│   ├── core/                   # Pydantic models, observability, env config, prompt loader
 │   ├── agents/                 # Architect, Developer, QA, Reviewer logic
 │   ├── nodes/                  # FSM validation gates (functional tests, SAST)
 │   └── utils/                  # Subprocess + workspace-path-safe helpers
@@ -55,18 +55,21 @@ async-agentic-sdlc/
 │   ├── logs/                   # Log outputs (sdlc_audit.log)
 │   └── reports/                # Incident reports and json states
 ├── docs/
-│   ├── archive/                # Chronological snapshot history
-│   │   ├── iteration_000/      # Cloud Infra & FSM Architecture Research
-│   │   ├── iteration_001/      # Baseline sequential loop (Trapped Test Sabotage)
-│   │   ├── iteration_002/      # Async Fork-Join & QA Node Isolation (Success)
-│   │   └── iteration_003/      # Observability, Token Tracking & Gemini 2.5 Routing
-│   │   ├── iteration_004/      # Architectural decoupling & modularization
-│   │   ├── iteration_005/      # Git-Driven State Tracking & QA Fan-Out Concurrency
-│   │   └── iteration_006/      # FSM State Serialization & Resume Mechanism
+│   ├── adr/                                    # Architecture Decision Records (MADR)
+│   │   ├── 0000-cloud-infra-fsm-research.md    # Cloud Infra & FSM Architecture Research
+│   │   ├── 0001-baseline-sequential-loop.md    # Baseline sequential loop (Trapped Test Sabotage)
+│   │   ├── 0002-async-qa-node-isolation.md     # Async Fork-Join & QA Node Isolation
+│   │   ├── 0003-dual-channel-observability.md  # Observability, Token Tracking & Gemini 2.5 Routing
+│   │   ├── 0004-modularization-sandbox-hardening.md       # Architectural decoupling & modularization
+│   │   ├── 0005-git-driven-state-tracking-qa-fanout.md    # Git-Driven State Tracking & QA Fan-Out
+│   │   ├── 0006-fsm-state-serialization-resume.md         # FSM State Serialization & Resume Mechanism
+│   │   └── 0007-prompt-schema-layer-separation.md         # Prompt/Schema Layer Separation
 │   ├── docker-on-windows.md    # Active host runtime configuration
 │   └── setup.md                # Active environment configuration
 ├── orchestrator.py             # Thin entrypoint: wires src/ components + FSM loop
-├── PRACTICUM.md                # Global Executive Summary & Engineering Journal
+├── CHANGELOG.md                # Release history (Keep a Changelog), linked to ADRs
+├── PRACTICUM.md                # Project manifest & Key Engineering Takeaways
+├── tag_history.sh              # Annotated Git tags for completed iterations
 ├── requirements.txt            # Explicit dependency manifest
 ├── .gitignore                  # Ignores artifacts/ — runtime state stays out of git
 └── README.md                   # System mission briefing & specifications
@@ -126,4 +129,30 @@ Because the Developer Agent (Claude CLI) runs out-of-band via localized shell pr
 npx ccusage
 ```
 
-For the step-by-step engineering log, metrics tracker, and architectural breakthroughs, see the [Architecture Journal (PRACTICUM.md)](./PRACTICUM.md).
+For the release-by-release history see [CHANGELOG.md](./CHANGELOG.md), the decision records in [docs/adr/](./docs/adr/), and the distilled engineering patterns in [PRACTICUM.md](./PRACTICUM.md).
+
+---
+
+## 🛠️ Developer Meta-Tools (AI-Assisted Maintenance)
+
+The repository includes a set of isolated meta-instructions (skills) for your IDE Assistant (e.g., Claude Code, GitHub Copilot, Cursor) to automate project governance, maintain the engineering journal, and keep documentation in sync. These are strictly separated from the core runtime agent prompts located in `prompts/`.
+
+Run these explicit commands at the end of an iteration or when a milestone is reached:
+
+* **Generate Architecture Decision Records (ADR):**
+    Analyzes recent git diffs to catch systemic architectural shifts and document them using the MADR format into `docs/adr/`.
+    ```bash
+    claude -p "Run .ai/skills/adr_generation.md to document recent architectural changes."
+    ```
+
+* **Synchronize Factual Docs (Changelog & README):**
+    Parses recent commits to automatically update the project `CHANGELOG.md` strictly matching the "Keep a Changelog" standard and align `README.md` with new CLI flags or configuration parameters.
+    ```bash
+    claude -p "Run .ai/skills/docs_sync.md to update factual documentation."
+    ```
+
+* **Distill Engineering Lessons (Practicum Manifest):**
+    Reflects on the latest ADR to extract generalized multi-agent engineering patterns, adding high-level takeaways directly into `PRACTICUM.md`.
+    ```bash
+    claude -p "Run .ai/skills/practicum_update.md to distill engineering lessons from the latest ADR."
+    ```
