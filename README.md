@@ -61,7 +61,8 @@ async-agentic-sdlc/
 │   │   ├── iteration_002/      # Async Fork-Join & QA Node Isolation (Success)
 │   │   └── iteration_003/      # Observability, Token Tracking & Gemini 2.5 Routing
 │   │   ├── iteration_004/      # Architectural decoupling & modularization
-│   │   └── iteration_005/      # Git-Driven State Tracking & QA Fan-Out Concurrency
+│   │   ├── iteration_005/      # Git-Driven State Tracking & QA Fan-Out Concurrency
+│   │   └── iteration_006/      # FSM State Serialization & Resume Mechanism
 │   ├── docker-on-windows.md    # Active host runtime configuration
 │   └── setup.md                # Active environment configuration
 ├── orchestrator.py             # Thin entrypoint: wires src/ components + FSM loop
@@ -100,7 +101,18 @@ python3 orchestrator.py "Implement is_prime(num: int) -> bool"
 
 # Task from a file (brownfield — specify the repo's main branch as anchor)
 python3 orchestrator.py -f tickets/003_multi_file_geometry.md --base-branch main
+
+# Resume from a persisted checkpoint after a crash or process restart
+python3 orchestrator.py --resume artifacts/reports/checkpoint.json
+
+# Resume but reset the Circuit Breaker retry budget (e.g. after fixing an agent prompt)
+python3 orchestrator.py --resume artifacts/reports/checkpoint.json --reset-attempts
 ```
+
+The orchestrator writes a single rolling `artifacts/reports/checkpoint.json` after every
+critical FSM node (Architect approval, QA approval, end of each self-heal cycle). On
+`--resume`, nodes whose outputs are already present in the restored context are bypassed,
+and the Circuit Breaker counter (`current_attempt`) is honoured exactly as it was persisted.
 
 ---
 

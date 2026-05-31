@@ -1,0 +1,130 @@
+[2026-05-28 18:49:33,005] [DEBUG] [_build_genai_client] Initializing Google AI Studio client via GEMINI_API_KEY
+[2026-05-28 18:49:33,387] [INFO] [check_environment] 🔍 Pre-flight environment check...
+[2026-05-28 18:49:33,433] [INFO] [check_environment]   ✓ Environment verified.
+
+[2026-05-28 18:49:33,441] [DEBUG] [main] Initialized global context with PR: We need a standard mathematical utility to check if a given number is prime. 
+The system should return true for prime numbers and false for non-primes and integers less than 2.
+It must be bulletproof against invalid or weird inputs.
+[2026-05-28 18:49:33,442] [INFO] [run_architect_node] 🔷 [ROLE] Architect Agent | [MODEL] gemini-2.5-flash
+[2026-05-28 18:49:46,300] [INFO] [log_token_usage]    [TOKENS] Architect | Input: 78 | Output: 725 | Total: 2613
+[2026-05-28 18:49:46,300] [INFO] [run_architect_node]    [THOUGHT] 1.  **Strict Type Enforcement (`int` only):** Relying on strict `int` type validation prevents silent bugs from implicit type conversions (e.g., `is_prime(5.0)` evaluating to `True` without explicit intent). Floating-point numbers, even those representing whole numbers (e.g., `5.0`), can introduce precision issues or imply a different domain than intended for a mathematical primality test. `bool` values, while often convertible to `int` (`True` to `1`, `False` to `0`), introduce ambiguity: `is_prime(True)` would silently return `False` (as 1 is not prime), potentially masking an incorrect input type. Raising `TypeError` ensures the function contract is upheld and makes misusage immediately apparent.
+2.  **Handling Numbers Less Than 2:** The definition of a prime number requires it to be a natural number greater than 1. By returning `False` for `num < 2` (including 0, 1, and negative numbers), the function adheres directly to the mathematical definition and the user's explicit requirement, treating these as non-prime rather than error states for valid integer inputs.
+3.  **Algorithmic Efficiency and Robustness:** The chosen algorithm (checking divisibility up to the square root of the number, with optimizations for even numbers and 2) is standard, efficient for typical integer ranges, and widely accepted for primality testing. This ensures reliable performance and correctness.
+[2026-05-28 18:49:46,301] [INFO] [run_architect_node]    [ARTIFACT] Contract locked for: ['src/utils/math_helpers.py']
+
+[2026-05-28 18:49:46,302] [DEBUG] [run_architect_node] Architect Node Output: {
+  "files_to_modify": [
+    "src/utils/math_helpers.py"
+  ],
+  "instruction": "Implement a pure function `is_prime(num: int) -> bool` in `src/utils/math_helpers.py`. The function must strictly validate input types and values as per `strict_type_validation_rules`. It must return `True` for prime numbers and `False` for non-primes and any integer less than 2. No external dependencies are allowed beyond standard library math functions. Include a comprehensive docstring.",
+  "function_signatures": "def is_prime(num: int) -> bool:\n    \"\"\"\n    Determines if a given integer is a prime number.\n\n    A prime number is a natural number greater than 1 that has no positive divisors\n    other than 1 and itself.\n\n    Args:\n        num: An integer to check for primality.\n\n    Returns:\n        True if the number is prime, False otherwise.\n\n    Raises:\n        TypeError: If 'num' is not an integer.\n    \"\"\"",
+  "strict_type_validation_rules": "1. The input parameter `num` MUST be an instance of the built-in `int` type.\n2. Any input that is not strictly an `int` (e.g., `float`, `bool`, `str`, `NoneType`, `Decimal`, `Fraction`) MUST raise a `TypeError` with a descriptive message. Implicit type coercion (e.g., treating `5.0` as `5` or `True` as `1`) is explicitly forbidden.\n3. For valid `int` inputs, numbers less than 2 (including 0, 1, and negative integers) MUST return `False`, as per the definition of prime numbers.",
+  "architecture_reasoning": "1.  **Strict Type Enforcement (`int` only):** Relying on strict `int` type validation prevents silent bugs from implicit type conversions (e.g., `is_prime(5.0)` evaluating to `True` without explicit intent). Floating-point numbers, even those representing whole numbers (e.g., `5.0`), can introduce precision issues or imply a different domain than intended for a mathematical primality test. `bool` values, while often convertible to `int` (`True` to `1`, `False` to `0`), introduce ambiguity: `is_prime(True)` would silently return `False` (as 1 is not prime), potentially masking an incorrect input type. Raising `TypeError` ensures the function contract is upheld and makes misusage immediately apparent.\n2.  **Handling Numbers Less Than 2:** The definition of a prime number requires it to be a natural number greater than 1. By returning `False` for `num < 2` (including 0, 1, and negative numbers), the function adheres directly to the mathematical definition and the user's explicit requirement, treating these as non-prime rather than error states for valid integer inputs.\n3.  **Algorithmic Efficiency and Robustness:** The chosen algorithm (checking divisibility up to the square root of the number, with optimizations for even numbers and 2) is standard, efficient for typical integer ranges, and widely accepted for primality testing. This ensures reliable performance and correctness."
+}
+[2026-05-28 18:49:46,302] [INFO] [main] 🔷 Orchestration cycle 1/3
+[2026-05-28 18:49:46,303] [DEBUG] [main] Starting orchestration cycle 1
+[2026-05-28 18:49:46,304] [INFO] [run_qa_agent_node] 🔶 [ROLE] QA Agent | [MODEL] gemini-2.5-flash
+[2026-05-28 18:49:46,567] [DEBUG] [_deploy_gitignore]    [GIT] Deployed .gitignore template to artifacts/tests
+[2026-05-28 18:49:47,204] [INFO] [init_sandbox_git]    [GIT] Initialized sandbox at artifacts/tests on branch agent-workspace (base: main)
+[2026-05-28 18:49:57,870] [INFO] [log_token_usage]    [TOKENS] QA Agent | Input: 468 | Output: 1302 | Total: 2657
+[2026-05-28 18:49:58,003] [INFO] [run_qa_agent_node]    [THOUGHT] Generated deterministic per-module unittest suites targeting strict type enforcement and contract safety.
+[2026-05-28 18:49:58,005] [INFO] [run_qa_agent_node]    [ARTIFACT] Instantiated 1 test file(s): ['artifacts/tests/test_src_utils_math_helpers.py']
+
+[2026-05-28 18:49:58,006] [DEBUG] [run_qa_agent_node] QA Agent generated test files: ['artifacts/tests/test_src_utils_math_helpers.py']
+[2026-05-28 18:49:58,007] [INFO] [run_developer_node] 🟩 [ROLE] Developer Agent | [MODEL] Claude CLI Wrapper
+[2026-05-28 18:49:58,269] [DEBUG] [_deploy_gitignore]    [GIT] Deployed .gitignore template to artifacts/code
+[2026-05-28 18:49:58,964] [INFO] [init_sandbox_git]    [GIT] Initialized sandbox at artifacts/code on branch agent-workspace (base: main)
+[2026-05-28 18:49:58,966] [DEBUG] [run_claude_cli] Executing Developer Subprocess: claude -p Implement the core logic. Directives: Implement a pure function `is_prime(num: int) -> bool` in `src/utils/math_helpers.py`. The function must strictly validate input types and values as per `strict_type_validation_rules`. It must return `True` for prime numbers and `False` for non-primes and any integer less than 2. No external dependencies are allowed beyond standard library math functions. Include a comprehensive docstring.. Signatures: def is_prime(num: int) -> bool:
+    """
+    Determines if a given integer is a prime number.
+
+    A prime number is a natural number greater than 1 that has no positive divisors
+    other than 1 and itself.
+
+    Args:
+        num: An integer to check for primality.
+
+    Returns:
+        True if the number is prime, False otherwise.
+
+    Raises:
+        TypeError: If 'num' is not an integer.
+    """. Strict type rules: 1. The input parameter `num` MUST be an instance of the built-in `int` type.
+2. Any input that is not strictly an `int` (e.g., `float`, `bool`, `str`, `NoneType`, `Decimal`, `Fraction`) MUST raise a `TypeError` with a descriptive message. Implicit type coercion (e.g., treating `5.0` as `5` or `True` as `1`) is explicitly forbidden.
+3. For valid `int` inputs, numbers less than 2 (including 0, 1, and negative integers) MUST return `False`, as per the definition of prime numbers.. Save all files under: artifacts/code --dangerously-skip-permissions artifacts/code/src/utils/math_helpers.py
+[2026-05-28 18:50:21,183] [INFO] [stream_subprocess_output]    [Developer Agent][STDOUT] `artifacts/code/src/utils/math_helpers.py` written.
+[2026-05-28 18:50:21,188] [INFO] [stream_subprocess_output]    [Developer Agent][STDOUT] 
+[2026-05-28 18:50:21,189] [INFO] [stream_subprocess_output]    [Developer Agent][STDOUT] Key implementation notes:
+[2026-05-28 18:50:21,191] [INFO] [stream_subprocess_output]    [Developer Agent][STDOUT] - `isinstance(num, bool)` guard runs before the `int` check — `bool` is a subclass of `int`, so `True`/`False` raise `TypeError` instead of being coerced to `1`/`0`.
+[2026-05-28 18:50:21,193] [INFO] [stream_subprocess_output]    [Developer Agent][STDOUT] - Numbers `< 2` return `False` (covers negatives, 0, 1).
+[2026-05-28 18:50:21,194] [INFO] [stream_subprocess_output]    [Developer Agent][STDOUT] - Trial division up to `math.isqrt(num)` with early-exit on even numbers — no external deps beyond stdlib `math`.
+[2026-05-28 18:50:21,591] [INFO] [run_developer_node]    [TOKENS] Developer Agent | Tracked out-of-band via ccusage
+[2026-05-28 18:50:21,744] [INFO] [run_developer_node]    [MUTATION] Modified: ['src/utils/math_helpers.py'] (Exit Code: 0)
+
+[2026-05-28 18:50:21,745] [DEBUG] [run_developer_node] Developer code snapshot:
+=== FILE: src/utils/math_helpers.py ===
+import math
+
+
+def is_prime(num: int) -> bool:
+    """
+    Determines if a given integer is a prime number.
+
+    A prime number is a natural number greater than 1 that has no positive divisors
+    other than 1 and itself.
+
+    Args:
+        num: An integer to check for primality.
+
+    Returns:
+        True if the number is prime, False otherwise.
+
+    Raises:
+        TypeError: If 'num' is not an integer.
+    """
+    if not isinstance(num, int) or isinstance(num, bool):
+        raise TypeError(
+            f"Expected an integer, got {type(num).__name__!r}. "
+            "Implicit coercion from float, bool, str, or other types is not permitted."
+        )
+    if num < 2:
+        return False
+    if num == 2:
+        return True
+    if num % 2 == 0:
+        return False
+    for i in range(3, math.isqrt(num) + 1, 2):
+        if num % i == 0:
+            return False
+    return True
+
+[2026-05-28 18:50:21,746] [DEBUG] [main] Triggering parallel validation gates (QA & Security)
+[2026-05-28 18:50:21,747] [DEBUG] [run_qa_unit_tests] Executing QA runtime gate: docker run --rm -v /mnt/c/code/async-agentic-sdlc/artifacts:/workspace/artifacts:rw -w /workspace python:3.11-slim bash -c export PYTHONPATH=$PYTHONPATH:/workspace/artifacts/code:/workspace/artifacts/tests; python3 -m unittest discover -s /workspace/artifacts/tests -p 'test_*.py'
+[2026-05-28 18:50:21,749] [DEBUG] [run_security_scan] Executing SAST security gate: /mnt/c/code/async-agentic-sdlc/venv/bin/python3 -m bandit -q -r artifacts/code
+[2026-05-28 18:50:22,457] [DEBUG] [stream_subprocess_output] docker-qa-stderr ....
+[2026-05-28 18:50:22,458] [DEBUG] [stream_subprocess_output] docker-qa-stderr ----------------------------------------------------------------------
+[2026-05-28 18:50:22,458] [DEBUG] [stream_subprocess_output] docker-qa-stderr Ran 4 tests in 0.000s
+[2026-05-28 18:50:22,459] [DEBUG] [stream_subprocess_output] docker-qa-stderr 
+[2026-05-28 18:50:22,459] [DEBUG] [stream_subprocess_output] docker-qa-stderr OK
+[2026-05-28 18:50:22,680] [DEBUG] [run_qa_unit_tests] QA Runtime Gate completed with exit code: 0
+[2026-05-28 18:50:23,189] [DEBUG] [run_security_scan] SAST Security Gate completed with exit code: 0
+[2026-05-28 18:50:23,190] [INFO] [run_reviewer_node] 🔍 [ROLE] Reviewer Agent | [MODEL] gemini-2.5-pro
+[2026-05-28 18:50:42,190] [INFO] [log_token_usage]    [TOKENS] Reviewer Agent | Input: 2551 | Output: 451 | Total: 4506
+[2026-05-28 18:50:42,192] [INFO] [run_reviewer_node]    [THOUGHT] Multi-angle review processed:
+[2026-05-28 18:50:42,192] [INFO] [run_reviewer_node]      ├─ [CODE AUDIT] The production code in `src/utils/math_helpers.py` is exemplary. The `is_prime` function is clean, algorithmically sound, and adheres strictly to the architectural contract. The logic correctly employs an optimized primality test by checking for divisibility only up to the square root of the number and skipping even divisors. Crucially, the input validation is robust: the check `if not isinstance(num, int) or isinstance(num, bool):` correctly handles the nuance that `bool` is a subclass of `int` in Python, thus preventing booleans from being silently processed. This demonstrates a superior understanding of the language and the strict typing requirements.
+[2026-05-28 18:50:42,193] [INFO] [run_reviewer_node]      ├─ [TEST AUDIT] The test suite in `test_src_utils_math_helpers.py` is exhaustive and demonstrates high integrity. It provides excellent coverage for all logical branches: prime numbers, composite numbers, and special cases like 0, 1, and negative integers. The `test_invalid_input_types` method is particularly thorough, correctly using `assertRaises` to verify `TypeError` for a wide range of non-integer inputs (floats, booleans, strings, collections, `NoneType`, `Decimal`, `Fraction`). The tests are deterministic and contain no softening techniques like `try-except-pass` blocks, ensuring the function's contract is rigorously enforced.
+[2026-05-28 18:50:42,193] [INFO] [run_reviewer_node]      └─ [LOG INTERPRETATION] The provided logs confirm the integrity of the code and tests. The `unittest` runner output shows that all 4 test cases passed successfully, indicating the implementation behaves as expected under all tested conditions. The Bandit SAST scan passed with zero vulnerabilities, confirming the absence of common security flaws in this simple utility. The logs are clean and provide full confidence in the deployment.
+[2026-05-28 18:50:42,194] [INFO] [run_reviewer_node]    ├── [GATE][FUNCTIONAL-TESTS] PASSED
+[2026-05-28 18:50:42,194] [INFO] [run_reviewer_node]    ├── [GATE][SAST-SECURITY] PASSED
+[2026-05-28 18:50:42,194] [INFO] [run_reviewer_node]    └── [AUDIT] Code Approved: True | Tests Approved: True
+
+[2026-05-28 18:50:42,195] [DEBUG] [run_reviewer_node] Reviewer Node Output: {
+  "code_quality_analysis": "The production code in `src/utils/math_helpers.py` is exemplary. The `is_prime` function is clean, algorithmically sound, and adheres strictly to the architectural contract. The logic correctly employs an optimized primality test by checking for divisibility only up to the square root of the number and skipping even divisors. Crucially, the input validation is robust: the check `if not isinstance(num, int) or isinstance(num, bool):` correctly handles the nuance that `bool` is a subclass of `int` in Python, thus preventing booleans from being silently processed. This demonstrates a superior understanding of the language and the strict typing requirements.",
+  "test_integrity_analysis": "The test suite in `test_src_utils_math_helpers.py` is exhaustive and demonstrates high integrity. It provides excellent coverage for all logical branches: prime numbers, composite numbers, and special cases like 0, 1, and negative integers. The `test_invalid_input_types` method is particularly thorough, correctly using `assertRaises` to verify `TypeError` for a wide range of non-integer inputs (floats, booleans, strings, collections, `NoneType`, `Decimal`, `Fraction`). The tests are deterministic and contain no softening techniques like `try-except-pass` blocks, ensuring the function's contract is rigorously enforced.",
+  "log_verification_analysis": "The provided logs confirm the integrity of the code and tests. The `unittest` runner output shows that all 4 test cases passed successfully, indicating the implementation behaves as expected under all tested conditions. The Bandit SAST scan passed with zero vulnerabilities, confirming the absence of common security flaws in this simple utility. The logs are clean and provide full confidence in the deployment.",
+  "code_quality_approved": true,
+  "test_integrity_approved": true,
+  "diagnostic_payload": "Exceptional work. Both the production code and test suite meet the highest standards of quality and rigor. The implementation is robust, and the tests are comprehensive. No further action is required. Approved for release."
+}
+[2026-05-28 18:50:42,195] [DEBUG] [main] Approval Checkpoint Status: QA=True, SAST=True, Code_Approve=True, Test_Approve=True
+[2026-05-28 18:50:42,195] [INFO] [main] 🟩 PIPELINE SUCCESS: All validation gates passed.

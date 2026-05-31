@@ -15,7 +15,7 @@ from src.nodes.gates import run_qa_unit_tests, run_security_scan
 # ==========================================
 # CLI ARGUMENT PARSER
 # ==========================================
-def parse_args() -> tuple[str, str]:
+def parse_args() -> tuple[str | None, str, Path | None, bool]:
     parser = argparse.ArgumentParser(
         description="Antigravity SDLC Orchestrator — pass a task description inline or from a file."
     )
@@ -23,8 +23,13 @@ def parse_args() -> tuple[str, str]:
     group.add_argument("description", nargs="?", help="Inline task description string.")
     group.add_argument("-f", "--file", help="Path to a file containing the task description.")
     parser.add_argument("--base-branch", default="main", help="Base branch of the repository.")
+    parser.add_argument("--resume", type=Path, help="Path to a checkpoint JSON file.")
+    parser.add_argument("--reset-attempts", action="store_true", help="Reset circuit breaker counter on resume.")
 
     args = parser.parse_args()
+
+    if args.resume:
+        return None, args.base_branch, args.resume, args.reset_attempts
 
     description = ""
     if args.file:
@@ -39,7 +44,7 @@ def parse_args() -> tuple[str, str]:
         parser.print_help()
         sys.exit(0)
 
-    return description, args.base_branch
+    return description, args.base_branch, None, args.reset_attempts
 
 
 # ==========================================
@@ -47,19 +52,46 @@ def parse_args() -> tuple[str, str]:
 # ==========================================
 async def main():
     check_environment()
-    pr_description, base_branch = parse_args()
+    pr_description, base_branch, resume_path, reset_attempts = parse_args()
 
-    # Initialize unified context state
-    ctx = GlobalPipelineContext(pr_description=pr_description, base_branch=base_branch)
-    log.debug(f"Initialized global context with PR: {pr_description}")
+    if resume_path:
+        try:
+            ctx = GlobalPipelineContext.load_checkpoint(resume_path)
+            log.info(f"Loaded checkpoint from {resume_path}")
+        except Exception as exc:
+            log.error(f"🚨 Failed to load checkpoint '{resume_path}': {exc}")
+            sys.exit(1)
+        if reset_attempts:
+            ctx.current_attempt = 1
+            log.info("🔄 Circuit Breaker budget reset via CLI flag.")
+    else:
+        # Initialize unified context state
+        ctx = GlobalPipelineContext(pr_description=pr_description or "", base_branch=base_branch)
+        log.debug(f"Initialized global context with PR: {pr_description}")
+
+    checkpoint_file = ctx.workspace_paths.reports_dir / "checkpoint.json"
 
     # 1. Architecture Phase (executed once per session)
-    await run_architect_node(ctx)
+    if ctx.contract:
+        log.info("Skipping Architect node: contract already present in context.")
+    else:
+        await run_architect_node(ctx)
+        ctx.save_checkpoint(checkpoint_file)
+        log.debug(f"Checkpoint saved after Architect node: {checkpoint_file}")
 
     max_retries = 3
-    regenerate_tests = True  # Raise the test regeneration flag for initial QA Agent run
 
-    for attempt in range(1, max_retries + 1):
+    # Recover ephemeral regeneration intent from the last persisted review report so a
+    # rejected-tests checkpoint cannot bypass QA on resume.
+    if ctx.review_report and not ctx.review_report.test_integrity_approved:
+        regenerate_tests = True
+    elif ctx.test_code_snapshot:
+        regenerate_tests = False
+    else:
+        regenerate_tests = True
+
+    for attempt in range(ctx.current_attempt, max_retries + 1):
+        ctx.current_attempt = attempt
         log.info(f"🔷 Orchestration cycle {attempt}/{max_retries}")
         log.debug(f"Starting orchestration cycle {attempt}")
 
@@ -67,10 +99,14 @@ async def main():
         current_error_trace = ctx.error_trace
         ctx.error_trace = ""
 
-        # 2. Testing Phase (Runs initially or if the Reviewer rejects the tests)
+        # 2. Testing Phase (Runs initially, on rejected tests, or whenever no snapshot exists)
         if regenerate_tests:
             await run_qa_agent_node(ctx, current_error_trace)
+            ctx.save_checkpoint(checkpoint_file)
+            log.debug(f"Checkpoint saved after QA node: {checkpoint_file}")
             regenerate_tests = False  # Reset the flag until the next rejection
+        elif ctx.test_code_snapshot:
+            log.info("Skipping QA generation: validated test snapshot present in context.")
 
         # 3. Development Phase (Developer fixes production code)
         await run_developer_node(ctx, current_error_trace)
@@ -109,17 +145,25 @@ async def main():
         # Log Approval Checkpoint Status
         log.debug(f"Approval Checkpoint Status: QA={qa_success}, SAST={sec_success}, Code_Approve={ctx.review_report.code_quality_approved}, Test_Approve={ctx.review_report.test_integrity_approved}")
 
-        if all_gates_passed:
-            log.info("🟩 PIPELINE SUCCESS: All validation gates passed.")
-            return
-
         # If the Reviewer rejected the tests specifically, raise the test regeneration flag
-        if not ctx.review_report.test_integrity_approved:
+        if not all_gates_passed and not ctx.review_report.test_integrity_approved:
             log.warning("🔶 Reviewer Agent flagged test suite anomalies. Scheduling test regeneration.")
             regenerate_tests = True
 
-        ctx.error_trace = ctx.review_report.diagnostic_payload
-        log.warning(f"🔶 Cycle {attempt} failed. Routing reviewer diagnostic to target agent.")
+        if not all_gates_passed:
+            ctx.error_trace = ctx.review_report.diagnostic_payload
+            log.warning(f"🔶 Cycle {attempt} failed. Routing reviewer diagnostic to target agent.")
+
+        # Advance the persisted attempt counter so a resumed run cannot exceed the
+        # original retry budget. The counter is bumped before saving so the next
+        # process picks up exactly where this one left off.
+        ctx.current_attempt = attempt + 1
+        ctx.save_checkpoint(checkpoint_file)
+        log.debug(f"Checkpoint saved at end of cycle {attempt}: {checkpoint_file}")
+
+        if all_gates_passed:
+            log.info("🟩 PIPELINE SUCCESS: All validation gates passed.")
+            return
 
     # Escalation on Circuit Breaker open
     log.error("\n🚨 CIRCUIT BREAKER OPEN: Retries exhausted.")

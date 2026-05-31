@@ -1,0 +1,409 @@
+[2026-05-28 16:51:04,314] [DEBUG] [_build_genai_client] Initializing Google AI Studio client via GEMINI_API_KEY
+[2026-05-28 16:51:04,852] [INFO] [check_environment] 🔍 Pre-flight environment check...
+[2026-05-28 16:51:04,901] [INFO] [check_environment]   ✓ Environment verified.
+
+[2026-05-28 16:51:04,912] [DEBUG] [main] Initialized global context with PR: We need a standard mathematical utility to check if a given number is prime. 
+The system should return true for prime numbers and false for non-primes and integers less than 2.
+It must be bulletproof against invalid or weird inputs.
+[2026-05-28 16:51:04,912] [INFO] [run_architect_node] 🔷 [ROLE] Architect Agent | [MODEL] gemini-2.5-flash
+[2026-05-28 16:51:14,238] [INFO] [log_token_usage]    [TOKENS] Architect | Input: 78 | Output: 559 | Total: 1754
+[2026-05-28 16:51:14,240] [INFO] [run_architect_node]    [THOUGHT] 1. **Strict Type Enforcement**: The explicit `TypeError` checks for `bool` and `float` inputs (despite their potential implicit integer compatibility in some languages) establish a rigorously defined API contract. This prevents silent type coercion, guards against common logical pitfalls, and fulfills the 'bulletproof' requirement by eliminating ambiguity about expected input types.2. **Clarity on Primal Definition**: Numbers less than 2 (including 0, 1, and all negatives) are mathematically non-prime. Handling these cases by returning `False` within the core logic, rather than raising `ValueError`, reinforces the function's domain as primality testing for valid integer inputs, consistent with mathematical definitions.3. **Algorithm Efficiency**: For standard integer ranges, trial division up to the square root of `candidate_number` provides a practical balance between computational efficiency and implementation simplicity. This approach is well-suited for a general-purpose utility function.4. **Maintainability and Debugging**: A strict type contract simplifies debugging and maintenance. Developers can rely on the input type without needing to account for various implicitly converted types or unexpected behaviors, leading to more predictable code and reduced cognitive load.
+[2026-05-28 16:51:14,242] [INFO] [run_architect_node]    [ARTIFACT] Contract locked for: ['src/utils/math_utils.py']
+
+[2026-05-28 16:51:14,245] [DEBUG] [run_architect_node] Architect Node Output: {
+  "files_to_modify": [
+    "src/utils/math_utils.py"
+  ],
+  "instruction": "Implement the `is_prime` function as defined below. Ensure all type guards are strictly enforced before any primality testing logic. The function must return a boolean, `True` for prime numbers, `False` for non-primes and integers less than 2. Prioritize robustness against all specified invalid inputs.",
+  "function_signatures": "def is_prime(candidate_number: int) -> bool",
+  "strict_type_validation_rules": "1. The `candidate_number` argument must be an exact instance of `int`.2. If `candidate_number` is a `bool` type (e.g., `True` or `False`), it must raise a `TypeError` with a descriptive message.3. If `candidate_number` is a `float` type (e.g., `3.0` or `5.1`), it must raise a `TypeError` with a descriptive message.4. If `candidate_number` is any other non-`int` type (e.g., `str`, `list`, `None`), it must raise a `TypeError` with a descriptive message.5. No `ValueError` should be raised for valid `int` inputs, regardless of their value (e.g., 0, 1, negative numbers should correctly return `False`).",
+  "architecture_reasoning": "1. **Strict Type Enforcement**: The explicit `TypeError` checks for `bool` and `float` inputs (despite their potential implicit integer compatibility in some languages) establish a rigorously defined API contract. This prevents silent type coercion, guards against common logical pitfalls, and fulfills the 'bulletproof' requirement by eliminating ambiguity about expected input types.2. **Clarity on Primal Definition**: Numbers less than 2 (including 0, 1, and all negatives) are mathematically non-prime. Handling these cases by returning `False` within the core logic, rather than raising `ValueError`, reinforces the function's domain as primality testing for valid integer inputs, consistent with mathematical definitions.3. **Algorithm Efficiency**: For standard integer ranges, trial division up to the square root of `candidate_number` provides a practical balance between computational efficiency and implementation simplicity. This approach is well-suited for a general-purpose utility function.4. **Maintainability and Debugging**: A strict type contract simplifies debugging and maintenance. Developers can rely on the input type without needing to account for various implicitly converted types or unexpected behaviors, leading to more predictable code and reduced cognitive load."
+}
+[2026-05-28 16:51:14,246] [INFO] [main] 🔷 Orchestration cycle 1/3
+[2026-05-28 16:51:14,247] [DEBUG] [main] Starting orchestration cycle 1
+[2026-05-28 16:51:14,247] [INFO] [run_qa_agent_node] 🔶 [ROLE] QA Agent | [MODEL] gemini-2.5-flash
+[2026-05-28 16:51:14,458] [DEBUG] [_deploy_gitignore]    [GIT] Deployed .gitignore template to artifacts/tests
+[2026-05-28 16:51:15,049] [INFO] [init_sandbox_git]    [GIT] Initialized sandbox at artifacts/tests on branch agent-workspace (base: main)
+[2026-05-28 16:51:31,620] [INFO] [log_token_usage]    [TOKENS] QA Agent | Input: 414 | Output: 1300 | Total: 4210
+[2026-05-28 16:51:31,751] [INFO] [run_qa_agent_node]    [THOUGHT] Generated deterministic per-module unittest suites targeting strict type enforcement and contract safety.
+[2026-05-28 16:51:31,751] [INFO] [run_qa_agent_node]    [ARTIFACT] Instantiated 1 test file(s): ['artifacts/tests/test_src_utils_math_utils.py']
+
+[2026-05-28 16:51:31,752] [DEBUG] [run_qa_agent_node] QA Agent generated test files: ['artifacts/tests/test_src_utils_math_utils.py']
+[2026-05-28 16:51:31,752] [INFO] [run_developer_node] 🟩 [ROLE] Developer Agent | [MODEL] Claude CLI Wrapper
+[2026-05-28 16:51:32,031] [DEBUG] [_deploy_gitignore]    [GIT] Deployed .gitignore template to artifacts/code
+[2026-05-28 16:51:32,759] [INFO] [init_sandbox_git]    [GIT] Initialized sandbox at artifacts/code on branch agent-workspace (base: main)
+[2026-05-28 16:51:32,759] [DEBUG] [run_claude_cli] Executing Developer Subprocess: claude -p Implement the core logic. Directives: Implement the `is_prime` function as defined below. Ensure all type guards are strictly enforced before any primality testing logic. The function must return a boolean, `True` for prime numbers, `False` for non-primes and integers less than 2. Prioritize robustness against all specified invalid inputs.. Signatures: def is_prime(candidate_number: int) -> bool. Strict type rules: 1. The `candidate_number` argument must be an exact instance of `int`.2. If `candidate_number` is a `bool` type (e.g., `True` or `False`), it must raise a `TypeError` with a descriptive message.3. If `candidate_number` is a `float` type (e.g., `3.0` or `5.1`), it must raise a `TypeError` with a descriptive message.4. If `candidate_number` is any other non-`int` type (e.g., `str`, `list`, `None`), it must raise a `TypeError` with a descriptive message.5. No `ValueError` should be raised for valid `int` inputs, regardless of their value (e.g., 0, 1, negative numbers should correctly return `False`).. Save all files under: artifacts/code --dangerously-skip-permissions artifacts/code/src/utils/math_utils.py
+[2026-05-28 16:51:48,770] [INFO] [stream_subprocess_output]    [Developer Agent][STDOUT] Created `artifacts/code/is_prime.py`.
+[2026-05-28 16:51:48,771] [INFO] [stream_subprocess_output]    [Developer Agent][STDOUT] 
+[2026-05-28 16:51:48,777] [INFO] [stream_subprocess_output]    [Developer Agent][STDOUT] - Type guards run first, ordered `bool` → `float` → other non-`int`, each raising `TypeError` with a descriptive message.
+[2026-05-28 16:51:48,778] [INFO] [stream_subprocess_output]    [Developer Agent][STDOUT] - `bool` checked before `int` (since `bool` subclasses `int`).
+[2026-05-28 16:51:48,779] [INFO] [stream_subprocess_output]    [Developer Agent][STDOUT] - Valid ints `< 2` return `False`; primality via trial division up to √n on odd divisors.
+[2026-05-28 16:51:49,225] [INFO] [run_developer_node]    [TOKENS] Developer Agent | Tracked out-of-band via ccusage
+[2026-05-28 16:51:49,328] [INFO] [run_developer_node]    [MUTATION] Modified: ['is_prime.py'] (Exit Code: 0)
+
+[2026-05-28 16:51:49,329] [DEBUG] [run_developer_node] Developer code snapshot:
+=== FILE: is_prime.py ===
+def is_prime(candidate_number: int) -> bool:
+    if isinstance(candidate_number, bool):
+        raise TypeError(
+            f"candidate_number must be an int, not bool: {candidate_number!r}"
+        )
+    if isinstance(candidate_number, float):
+        raise TypeError(
+            f"candidate_number must be an int, not float: {candidate_number!r}"
+        )
+    if not isinstance(candidate_number, int):
+        raise TypeError(
+            f"candidate_number must be an int, not {type(candidate_number).__name__}: "
+            f"{candidate_number!r}"
+        )
+
+    if candidate_number < 2:
+        return False
+    if candidate_number < 4:
+        return True
+    if candidate_number % 2 == 0:
+        return False
+
+    divisor = 3
+    while divisor * divisor <= candidate_number:
+        if candidate_number % divisor == 0:
+            return False
+        divisor += 2
+    return True
+
+[2026-05-28 16:51:49,329] [DEBUG] [main] Triggering parallel validation gates (QA & Security)
+[2026-05-28 16:51:49,330] [DEBUG] [run_qa_unit_tests] Executing QA runtime gate: docker run --rm -v /mnt/c/code/async-agentic-sdlc/artifacts:/workspace/artifacts:rw -w /workspace python:3.11-slim bash -c export PYTHONPATH=$PYTHONPATH:/workspace/artifacts/code:/workspace/artifacts/tests; python3 -m unittest discover -s /workspace/artifacts/tests -p 'test_*.py'
+[2026-05-28 16:51:49,332] [DEBUG] [run_security_scan] Executing SAST security gate: /mnt/c/code/async-agentic-sdlc/venv/bin/python3 -m bandit -q -r artifacts/code
+[2026-05-28 16:51:49,921] [DEBUG] [stream_subprocess_output] docker-qa-stderr E
+[2026-05-28 16:51:49,922] [DEBUG] [stream_subprocess_output] docker-qa-stderr ======================================================================
+[2026-05-28 16:51:49,922] [DEBUG] [stream_subprocess_output] docker-qa-stderr ERROR: test_src_utils_math_utils (unittest.loader._FailedTest.test_src_utils_math_utils)
+[2026-05-28 16:51:49,923] [DEBUG] [stream_subprocess_output] docker-qa-stderr ----------------------------------------------------------------------
+[2026-05-28 16:51:49,924] [DEBUG] [stream_subprocess_output] docker-qa-stderr ImportError: Failed to import test module: test_src_utils_math_utils
+[2026-05-28 16:51:49,924] [DEBUG] [stream_subprocess_output] docker-qa-stderr Traceback (most recent call last):
+[2026-05-28 16:51:49,925] [DEBUG] [stream_subprocess_output] docker-qa-stderr   File "/usr/local/lib/python3.11/unittest/loader.py", line 419, in _find_test_path
+[2026-05-28 16:51:49,925] [DEBUG] [stream_subprocess_output] docker-qa-stderr     module = self._get_module_from_name(name)
+[2026-05-28 16:51:49,926] [DEBUG] [stream_subprocess_output] docker-qa-stderr              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-05-28 16:51:49,926] [DEBUG] [stream_subprocess_output] docker-qa-stderr   File "/usr/local/lib/python3.11/unittest/loader.py", line 362, in _get_module_from_name
+[2026-05-28 16:51:49,927] [DEBUG] [stream_subprocess_output] docker-qa-stderr     __import__(name)
+[2026-05-28 16:51:49,927] [DEBUG] [stream_subprocess_output] docker-qa-stderr   File "/workspace/artifacts/tests/test_src_utils_math_utils.py", line 2, in <module>
+[2026-05-28 16:51:49,928] [DEBUG] [stream_subprocess_output] docker-qa-stderr     import src.utils.math_utils
+[2026-05-28 16:51:49,928] [DEBUG] [stream_subprocess_output] docker-qa-stderr ModuleNotFoundError: No module named 'src'
+[2026-05-28 16:51:49,929] [DEBUG] [stream_subprocess_output] docker-qa-stderr 
+[2026-05-28 16:51:49,929] [DEBUG] [stream_subprocess_output] docker-qa-stderr 
+[2026-05-28 16:51:49,930] [DEBUG] [stream_subprocess_output] docker-qa-stderr ----------------------------------------------------------------------
+[2026-05-28 16:51:49,930] [DEBUG] [stream_subprocess_output] docker-qa-stderr Ran 1 test in 0.000s
+[2026-05-28 16:51:49,931] [DEBUG] [stream_subprocess_output] docker-qa-stderr 
+[2026-05-28 16:51:49,932] [DEBUG] [stream_subprocess_output] docker-qa-stderr FAILED (errors=1)
+[2026-05-28 16:51:50,143] [DEBUG] [run_qa_unit_tests] QA Runtime Gate completed with exit code: 1
+[2026-05-28 16:51:50,717] [DEBUG] [run_security_scan] SAST Security Gate completed with exit code: 0
+[2026-05-28 16:51:50,717] [INFO] [run_reviewer_node] 🔍 [ROLE] Reviewer Agent | [MODEL] gemini-2.5-pro
+[2026-05-28 16:52:13,007] [INFO] [log_token_usage]    [TOKENS] Reviewer Agent | Input: 2582 | Output: 518 | Total: 5343
+[2026-05-28 16:52:13,009] [INFO] [run_reviewer_node]    [THOUGHT] Multi-angle review processed:
+[2026-05-28 16:52:13,010] [INFO] [run_reviewer_node]      ├─ [CODE AUDIT] The logical implementation of the `is_prime` function is algorithmically correct and robust. The type guards are implemented exactly as specified in the contract, correctly handling `bool`, `float`, and other non-`int` types before the main logic. However, the code is delivered in `is_prime.py`, a direct and critical violation of the architect contract which explicitly mandates the file path `src/utils/math_utils.py`. This architectural non-compliance makes the code unusable in its current state, as demonstrated by the import failures in the test suite. Code must exist where the system expects to find it.
+[2026-05-28 16:52:13,010] [INFO] [run_reviewer_node]      ├─ [TEST AUDIT] The test suite is exemplary. It is comprehensive, covering valid primes, non-primes, edge cases (0, 1, negatives), and a wide array of invalid types as required by the contract. Assertions are strict (`assertRaises`, `assertTrue`/`False`) with no evidence of test softening. The tests are well-structured and correctly identified a catastrophic integration failure (the `ModuleNotFoundError`), proving their value. The test suite itself is approved.
+[2026-05-28 16:52:13,011] [INFO] [run_reviewer_node]      └─ [LOG INTERPRETATION] The runner logs report a fatal `ModuleNotFoundError: No module named 'src'`, which directly confirms the analysis of the code quality. The test harness failed because it could not import `src.utils.math_utils`, as the submitted code was incorrectly placed in a top-level file `is_prime.py`. The error is not in the test code, but in the production code's file location. The successful Bandit scan is noted, indicating no security flaws in the function's implementation.
+[2026-05-28 16:52:13,011] [INFO] [run_reviewer_node]    ├── [GATE][FUNCTIONAL-TESTS] FAILED
+[2026-05-28 16:52:13,012] [INFO] [run_reviewer_node]    ├── [GATE][SAST-SECURITY] PASSED
+[2026-05-28 16:52:13,013] [INFO] [run_reviewer_node]    └── [AUDIT] Code Approved: False | Tests Approved: True
+
+[2026-05-28 16:52:13,013] [DEBUG] [run_reviewer_node] Reviewer Node Output: {
+  "code_quality_analysis": "The logical implementation of the `is_prime` function is algorithmically correct and robust. The type guards are implemented exactly as specified in the contract, correctly handling `bool`, `float`, and other non-`int` types before the main logic. However, the code is delivered in `is_prime.py`, a direct and critical violation of the architect contract which explicitly mandates the file path `src/utils/math_utils.py`. This architectural non-compliance makes the code unusable in its current state, as demonstrated by the import failures in the test suite. Code must exist where the system expects to find it.",
+  "test_integrity_analysis": "The test suite is exemplary. It is comprehensive, covering valid primes, non-primes, edge cases (0, 1, negatives), and a wide array of invalid types as required by the contract. Assertions are strict (`assertRaises`, `assertTrue`/`False`) with no evidence of test softening. The tests are well-structured and correctly identified a catastrophic integration failure (the `ModuleNotFoundError`), proving their value. The test suite itself is approved.",
+  "log_verification_analysis": "The runner logs report a fatal `ModuleNotFoundError: No module named 'src'`, which directly confirms the analysis of the code quality. The test harness failed because it could not import `src.utils.math_utils`, as the submitted code was incorrectly placed in a top-level file `is_prime.py`. The error is not in the test code, but in the production code's file location. The successful Bandit scan is noted, indicating no security flaws in the function's implementation.",
+  "code_quality_approved": false,
+  "test_integrity_approved": true,
+  "diagnostic_payload": "Code rejected for failing to adhere to the specified file structure. 1. Create the required directory structure: `src/utils/`. 2. Ensure `src/` and `src/utils/` each contain an empty `__init__.py` file to be recognized as Python packages. 3. Move the `is_prime` function from `is_prime.py` into the file `src/utils/math_utils.py`. 4. Delete the extraneous `is_prime.py` file. The test suite is correctly configured to import from the specified path and will pass once the code is in its contractually-mandated location."
+}
+[2026-05-28 16:52:13,014] [INFO] [main]   [GATE][FUNCTIONAL-TESTS] Failure raw output:
+[2026-05-28 16:52:13,015] [INFO] [main]     E
+[2026-05-28 16:52:13,016] [INFO] [main]     ======================================================================
+[2026-05-28 16:52:13,016] [INFO] [main]     ERROR: test_src_utils_math_utils (unittest.loader._FailedTest.test_src_utils_math_utils)
+[2026-05-28 16:52:13,017] [INFO] [main]     ----------------------------------------------------------------------
+[2026-05-28 16:52:13,017] [INFO] [main]     ImportError: Failed to import test module: test_src_utils_math_utils
+[2026-05-28 16:52:13,018] [INFO] [main]     Traceback (most recent call last):
+[2026-05-28 16:52:13,018] [INFO] [main]       File "/usr/local/lib/python3.11/unittest/loader.py", line 419, in _find_test_path
+[2026-05-28 16:52:13,019] [INFO] [main]         module = self._get_module_from_name(name)
+[2026-05-28 16:52:13,020] [INFO] [main]                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2026-05-28 16:52:13,020] [INFO] [main]       File "/usr/local/lib/python3.11/unittest/loader.py", line 362, in _get_module_from_name
+[2026-05-28 16:52:13,021] [INFO] [main]         __import__(name)
+[2026-05-28 16:52:13,021] [INFO] [main]       File "/workspace/artifacts/tests/test_src_utils_math_utils.py", line 2, in <module>
+[2026-05-28 16:52:13,022] [INFO] [main]         import src.utils.math_utils
+[2026-05-28 16:52:13,022] [INFO] [main]     ModuleNotFoundError: No module named 'src'
+[2026-05-28 16:52:13,023] [INFO] [main]     
+[2026-05-28 16:52:13,023] [INFO] [main]     
+[2026-05-28 16:52:13,024] [INFO] [main]     ----------------------------------------------------------------------
+[2026-05-28 16:52:13,025] [INFO] [main]     Ran 1 test in 0.000s
+[2026-05-28 16:52:13,025] [INFO] [main]     
+[2026-05-28 16:52:13,026] [INFO] [main]     FAILED (errors=1)
+[2026-05-28 16:52:13,026] [DEBUG] [main] Approval Checkpoint Status: QA=False, SAST=True, Code_Approve=False, Test_Approve=True
+[2026-05-28 16:52:13,027] [WARNING] [main] 🔶 Cycle 1 failed. Routing reviewer diagnostic to target agent.
+[2026-05-28 16:52:13,028] [INFO] [main] 🔷 Orchestration cycle 2/3
+[2026-05-28 16:52:13,028] [DEBUG] [main] Starting orchestration cycle 2
+[2026-05-28 16:52:13,028] [INFO] [run_developer_node] 🟩 [ROLE] Developer Agent | [MODEL] Claude CLI Wrapper
+[2026-05-28 16:52:13,030] [DEBUG] [run_claude_cli] Executing Developer Subprocess: claude -p Implement the core logic. Directives: Implement the `is_prime` function as defined below. Ensure all type guards are strictly enforced before any primality testing logic. The function must return a boolean, `True` for prime numbers, `False` for non-primes and integers less than 2. Prioritize robustness against all specified invalid inputs.. Signatures: def is_prime(candidate_number: int) -> bool. Strict type rules: 1. The `candidate_number` argument must be an exact instance of `int`.2. If `candidate_number` is a `bool` type (e.g., `True` or `False`), it must raise a `TypeError` with a descriptive message.3. If `candidate_number` is a `float` type (e.g., `3.0` or `5.1`), it must raise a `TypeError` with a descriptive message.4. If `candidate_number` is any other non-`int` type (e.g., `str`, `list`, `None`), it must raise a `TypeError` with a descriptive message.5. No `ValueError` should be raised for valid `int` inputs, regardless of their value (e.g., 0, 1, negative numbers should correctly return `False`).. Save all files under: artifacts/code
+
+Validation Failure Context:
+Code rejected for failing to adhere to the specified file structure. 1. Create the required directory structure: `src/utils/`. 2. Ensure `src/` and `src/utils/` each contain an empty `__init__.py` file to be recognized as Python packages. 3. Move the `is_prime` function from `is_prime.py` into the file `src/utils/math_utils.py`. 4. Delete the extraneous `is_prime.py` file. The test suite is correctly configured to import from the specified path and will pass once the code is in its contractually-mandated location. --dangerously-skip-permissions artifacts/code/src/utils/math_utils.py
+[2026-05-28 16:52:38,221] [INFO] [stream_subprocess_output]    [Developer Agent][STDOUT] Done. Structure now matches the contract:
+[2026-05-28 16:52:38,227] [INFO] [stream_subprocess_output]    [Developer Agent][STDOUT] 
+[2026-05-28 16:52:38,229] [INFO] [stream_subprocess_output]    [Developer Agent][STDOUT] - `src/__init__.py`, `src/utils/__init__.py` — empty packages
+[2026-05-28 16:52:38,229] [INFO] [stream_subprocess_output]    [Developer Agent][STDOUT] - `src/utils/math_utils.py` — `is_prime` with bool/float/other-type guards enforced before primality logic
+[2026-05-28 16:52:38,230] [INFO] [stream_subprocess_output]    [Developer Agent][STDOUT] - `is_prime.py` — deleted
+[2026-05-28 16:52:38,231] [INFO] [stream_subprocess_output]    [Developer Agent][STDOUT] 
+[2026-05-28 16:52:38,233] [INFO] [stream_subprocess_output]    [Developer Agent][STDOUT] Type guards order is correct (bool before int, since `bool` is an `int` subclass), and `< 2` returns `False`.
+[2026-05-28 16:52:38,604] [INFO] [run_developer_node]    [TOKENS] Developer Agent | Tracked out-of-band via ccusage
+[2026-05-28 16:52:38,729] [INFO] [run_developer_node]    [MUTATION] Modified: ['src/__init__.py', 'src/utils/__init__.py', 'src/utils/math_utils.py'] (Exit Code: 0)
+
+[2026-05-28 16:52:38,730] [DEBUG] [run_developer_node] Developer code snapshot:
+=== FILE: src/__init__.py ===
+
+
+=== FILE: src/utils/__init__.py ===
+
+
+=== FILE: src/utils/math_utils.py ===
+def is_prime(candidate_number: int) -> bool:
+    if isinstance(candidate_number, bool):
+        raise TypeError(
+            f"candidate_number must be an int, not bool: {candidate_number!r}"
+        )
+    if isinstance(candidate_number, float):
+        raise TypeError(
+            f"candidate_number must be an int, not float: {candidate_number!r}"
+        )
+    if not isinstance(candidate_number, int):
+        raise TypeError(
+            f"candidate_number must be an int, not {type(candidate_number).__name__}: "
+            f"{candidate_number!r}"
+        )
+
+    if candidate_number < 2:
+        return False
+    if candidate_number < 4:
+        return True
+    if candidate_number % 2 == 0:
+        return False
+
+    divisor = 3
+    while divisor * divisor <= candidate_number:
+        if candidate_number % divisor == 0:
+            return False
+        divisor += 2
+    return True
+
+[2026-05-28 16:52:38,730] [DEBUG] [main] Triggering parallel validation gates (QA & Security)
+[2026-05-28 16:52:38,731] [DEBUG] [run_qa_unit_tests] Executing QA runtime gate: docker run --rm -v /mnt/c/code/async-agentic-sdlc/artifacts:/workspace/artifacts:rw -w /workspace python:3.11-slim bash -c export PYTHONPATH=$PYTHONPATH:/workspace/artifacts/code:/workspace/artifacts/tests; python3 -m unittest discover -s /workspace/artifacts/tests -p 'test_*.py'
+[2026-05-28 16:52:38,732] [DEBUG] [run_security_scan] Executing SAST security gate: /mnt/c/code/async-agentic-sdlc/venv/bin/python3 -m bandit -q -r artifacts/code
+[2026-05-28 16:52:39,420] [DEBUG] [stream_subprocess_output] docker-qa-stderr ..........
+[2026-05-28 16:52:39,421] [DEBUG] [stream_subprocess_output] docker-qa-stderr ----------------------------------------------------------------------
+[2026-05-28 16:52:39,422] [DEBUG] [stream_subprocess_output] docker-qa-stderr Ran 10 tests in 0.000s
+[2026-05-28 16:52:39,422] [DEBUG] [stream_subprocess_output] docker-qa-stderr 
+[2026-05-28 16:52:39,423] [DEBUG] [stream_subprocess_output] docker-qa-stderr OK
+[2026-05-28 16:52:39,628] [DEBUG] [run_qa_unit_tests] QA Runtime Gate completed with exit code: 0
+[2026-05-28 16:52:40,084] [DEBUG] [run_security_scan] SAST Security Gate completed with exit code: 0
+[2026-05-28 16:52:40,085] [INFO] [run_reviewer_node] 🔍 [ROLE] Reviewer Agent | [MODEL] gemini-2.5-pro
+[2026-05-28 16:52:55,778] [INFO] [log_token_usage]    [TOKENS] Reviewer Agent | Input: 2380 | Output: 425 | Total: 4063
+[2026-05-28 16:52:55,779] [INFO] [run_reviewer_node]    [THOUGHT] Multi-angle review processed:
+[2026-05-28 16:52:55,780] [INFO] [run_reviewer_node]      ├─ [CODE AUDIT] The production code in `src/utils/math_utils.py` is exemplary. It strictly adheres to the architectural contract, implementing all required type guards with precision. The specific check for `isinstance(..., bool)` *before* the general `isinstance(..., int)` check is critically important and correctly implemented, as `bool` is a subclass of `int` in Python. This demonstrates a deep understanding of the language's type system and prevents subtle bugs. The primality testing algorithm is a standard and efficient trial division method, optimized to skip even divisors. The code is clean, readable, and robust.
+[2026-05-28 16:52:55,780] [INFO] [run_reviewer_node]      ├─ [TEST AUDIT] The test suite in `test_src_utils_math_utils.py` is comprehensive and rigorously enforces the function's contract. It demonstrates excellent coverage of valid inputs (primes, non-primes, edge cases like 0, 1, and negative numbers) and invalid types (bool, float, str, list, tuple, dict, None, and custom objects). The use of `assertRaises(TypeError)` is correct and strict, ensuring that the specified type guards are functioning as designed. There is no evidence of test softening, such as `try-except-pass` blocks or other loopholes. The tests are deterministic and provide high confidence in the code's correctness.
+[2026-05-28 16:52:55,780] [INFO] [run_reviewer_node]      └─ [LOG INTERPRETATION] The provided logs confirm the quality of the submission. The `unittest` runner output shows that all 10 test cases passed successfully, validating the correctness of both the implementation and the test suite itself. The clean pass from the Bandit SAST scanner indicates the absence of common security vulnerabilities, which is expected for this type of utility but is a necessary quality gate.
+[2026-05-28 16:52:55,781] [INFO] [run_reviewer_node]    ├── [GATE][FUNCTIONAL-TESTS] PASSED
+[2026-05-28 16:52:55,781] [INFO] [run_reviewer_node]    ├── [GATE][SAST-SECURITY] PASSED
+[2026-05-28 16:52:55,782] [INFO] [run_reviewer_node]    └── [AUDIT] Code Approved: True | Tests Approved: True
+
+[2026-05-28 16:52:55,782] [DEBUG] [run_reviewer_node] Reviewer Node Output: {
+  "code_quality_analysis": "The production code in `src/utils/math_utils.py` is exemplary. It strictly adheres to the architectural contract, implementing all required type guards with precision. The specific check for `isinstance(..., bool)` *before* the general `isinstance(..., int)` check is critically important and correctly implemented, as `bool` is a subclass of `int` in Python. This demonstrates a deep understanding of the language's type system and prevents subtle bugs. The primality testing algorithm is a standard and efficient trial division method, optimized to skip even divisors. The code is clean, readable, and robust.",
+  "test_integrity_analysis": "The test suite in `test_src_utils_math_utils.py` is comprehensive and rigorously enforces the function's contract. It demonstrates excellent coverage of valid inputs (primes, non-primes, edge cases like 0, 1, and negative numbers) and invalid types (bool, float, str, list, tuple, dict, None, and custom objects). The use of `assertRaises(TypeError)` is correct and strict, ensuring that the specified type guards are functioning as designed. There is no evidence of test softening, such as `try-except-pass` blocks or other loopholes. The tests are deterministic and provide high confidence in the code's correctness.",
+  "log_verification_analysis": "The provided logs confirm the quality of the submission. The `unittest` runner output shows that all 10 test cases passed successfully, validating the correctness of both the implementation and the test suite itself. The clean pass from the Bandit SAST scanner indicates the absence of common security vulnerabilities, which is expected for this type of utility but is a necessary quality gate.",
+  "code_quality_approved": true,
+  "test_integrity_approved": true,
+  "diagnostic_payload": "The submission is approved. The code is of high quality, and the tests are robust and comprehensive. No further action is required."
+}
+[2026-05-28 16:52:55,783] [DEBUG] [main] Approval Checkpoint Status: QA=True, SAST=True, Code_Approve=True, Test_Approve=True
+[2026-05-28 16:52:55,784] [INFO] [main] 🟩 PIPELINE SUCCESS: All validation gates passed.
+[2026-05-28 16:53:34,890] [DEBUG] [_build_genai_client] Initializing Google AI Studio client via GEMINI_API_KEY
+[2026-05-28 16:53:35,259] [INFO] [check_environment] 🔍 Pre-flight environment check...
+[2026-05-28 16:53:35,292] [INFO] [check_environment]   ✓ Environment verified.
+
+[2026-05-28 16:53:35,299] [DEBUG] [main] Initialized global context with PR: Implement a highly optimized function to calculate the n-th Fibonacci number (where F(0)=0, F(1)=1).
+The execution must be extremely fast even for large numbers like n=50, preventing any stack overflow or deep recursion slowdowns.
+The system must be strictly safe: it must accept only discrete integers, and reject negative indexes or improper input types with standard system exceptions.
+[2026-05-28 16:53:35,299] [INFO] [run_architect_node] 🔷 [ROLE] Architect Agent | [MODEL] gemini-2.5-flash
+[2026-05-28 16:53:46,145] [INFO] [log_token_usage]    [TOKENS] Architect | Input: 110 | Output: 438 | Total: 2138
+[2026-05-28 16:53:46,146] [INFO] [run_architect_node]    [THOUGHT] 1. **Performance:** An iterative approach yields `O(n)` time complexity and `O(1)` space complexity, which is optimal for calculating Fibonacci numbers up to `n=50` and significantly larger values, preventing the exponential `O(2^n)` complexity of naive recursion or `O(n)` stack depth of memoized recursion. This fulfills the 'extremely fast' and 'preventing stack overflow' requirements. 2. **Type Safety:** Explicit type checking for `int` and specific rejection of `bool` with `TypeError` establishes a strict contract, preventing implicit type coercion issues common in dynamically typed languages. This aligns with 'strictly safe' and 'reject improper input types'. 3. **Input Validation:** Checking for `n < 0` and raising `ValueError` ensures domain correctness, preventing undefined behavior for negative indices. 4. **Robustness:** Using standard Python exceptions (`TypeError`, `ValueError`) provides clear and actionable feedback to callers, adhering to Pythonic error handling practices. 5. **Maintainability:** The iterative solution is straightforward, highly readable, and easily verifiable, contributing to long-term maintainability.
+[2026-05-28 16:53:46,149] [INFO] [run_architect_node]    [ARTIFACT] Contract locked for: ['src/utils/math_utils.py']
+
+[2026-05-28 16:53:46,150] [DEBUG] [run_architect_node] Architect Node Output: {
+  "files_to_modify": [
+    "src/utils/math_utils.py"
+  ],
+  "instruction": "Instantiate `src/utils/math_utils.py` with the `fibonacci` function. Implement the function exactly as per the `function_signatures` and `strict_type_validation_rules`. Ensure `O(1)` space complexity and `O(n)` time complexity using an iterative approach. No recursion.",
+  "function_signatures": "def fibonacci(n: int) -> int:",
+  "strict_type_validation_rules": "Input `n` must be a non-negative instance of `int`. If `n` is `bool`, raise `TypeError`. If `n` is any other type than `int` (and not `bool`), raise `TypeError`. If `n < 0`, raise `ValueError`.",
+  "architecture_reasoning": "1. **Performance:** An iterative approach yields `O(n)` time complexity and `O(1)` space complexity, which is optimal for calculating Fibonacci numbers up to `n=50` and significantly larger values, preventing the exponential `O(2^n)` complexity of naive recursion or `O(n)` stack depth of memoized recursion. This fulfills the 'extremely fast' and 'preventing stack overflow' requirements. 2. **Type Safety:** Explicit type checking for `int` and specific rejection of `bool` with `TypeError` establishes a strict contract, preventing implicit type coercion issues common in dynamically typed languages. This aligns with 'strictly safe' and 'reject improper input types'. 3. **Input Validation:** Checking for `n < 0` and raising `ValueError` ensures domain correctness, preventing undefined behavior for negative indices. 4. **Robustness:** Using standard Python exceptions (`TypeError`, `ValueError`) provides clear and actionable feedback to callers, adhering to Pythonic error handling practices. 5. **Maintainability:** The iterative solution is straightforward, highly readable, and easily verifiable, contributing to long-term maintainability."
+}
+[2026-05-28 16:53:46,152] [INFO] [main] 🔷 Orchestration cycle 1/3
+[2026-05-28 16:53:46,153] [DEBUG] [main] Starting orchestration cycle 1
+[2026-05-28 16:53:46,154] [INFO] [run_qa_agent_node] 🔶 [ROLE] QA Agent | [MODEL] gemini-2.5-flash
+[2026-05-28 16:53:51,302] [INFO] [log_token_usage]    [TOKENS] QA Agent | Input: 291 | Output: 703 | Total: 1329
+[2026-05-28 16:53:51,440] [INFO] [run_qa_agent_node]    [THOUGHT] Generated deterministic per-module unittest suites targeting strict type enforcement and contract safety.
+[2026-05-28 16:53:51,440] [INFO] [run_qa_agent_node]    [ARTIFACT] Instantiated 1 test file(s): ['artifacts/tests/test_src_utils_math_utils.py']
+
+[2026-05-28 16:53:51,442] [DEBUG] [run_qa_agent_node] QA Agent generated test files: ['artifacts/tests/test_src_utils_math_utils.py']
+[2026-05-28 16:53:51,445] [INFO] [run_developer_node] 🟩 [ROLE] Developer Agent | [MODEL] Claude CLI Wrapper
+[2026-05-28 16:53:51,446] [DEBUG] [run_claude_cli] Executing Developer Subprocess: claude -p Implement the core logic. Directives: Instantiate `src/utils/math_utils.py` with the `fibonacci` function. Implement the function exactly as per the `function_signatures` and `strict_type_validation_rules`. Ensure `O(1)` space complexity and `O(n)` time complexity using an iterative approach. No recursion.. Signatures: def fibonacci(n: int) -> int:. Strict type rules: Input `n` must be a non-negative instance of `int`. If `n` is `bool`, raise `TypeError`. If `n` is any other type than `int` (and not `bool`), raise `TypeError`. If `n < 0`, raise `ValueError`.. Save all files under: artifacts/code --dangerously-skip-permissions artifacts/code/src/utils/math_utils.py
+[2026-05-28 16:56:06,697] [INFO] [stream_subprocess_output]    [Developer Agent][STDOUT] Added `fibonacci` to `artifacts/code/src/utils/math_utils.py:32`. Iterative, O(n) time / O(1) space, no recursion. Verified: sequence correct, `bool`/`float`/`str` raise `TypeError`, negatives raise `ValueError`.
+[2026-05-28 16:56:07,083] [INFO] [run_developer_node]    [TOKENS] Developer Agent | Tracked out-of-band via ccusage
+[2026-05-28 16:56:07,249] [INFO] [run_developer_node]    [MUTATION] Modified: ['src/__init__.py', 'src/utils/__init__.py', 'src/utils/math_utils.py'] (Exit Code: 0)
+
+[2026-05-28 16:56:07,249] [DEBUG] [run_developer_node] Developer code snapshot:
+=== FILE: src/__init__.py ===
+
+
+=== FILE: src/utils/__init__.py ===
+
+
+=== FILE: src/utils/math_utils.py ===
+def is_prime(candidate_number: int) -> bool:
+    if isinstance(candidate_number, bool):
+        raise TypeError(
+            f"candidate_number must be an int, not bool: {candidate_number!r}"
+        )
+    if isinstance(candidate_number, float):
+        raise TypeError(
+            f"candidate_number must be an int, not float: {candidate_number!r}"
+        )
+    if not isinstance(candidate_number, int):
+        raise TypeError(
+            f"candidate_number must be an int, not {type(candidate_number).__name__}: "
+            f"{candidate_number!r}"
+        )
+
+    if candidate_number < 2:
+        return False
+    if candidate_number < 4:
+        return True
+    if candidate_number % 2 == 0:
+        return False
+
+    divisor = 3
+    while divisor * divisor <= candidate_number:
+        if candidate_number % divisor == 0:
+            return False
+        divisor += 2
+    return True
+
+
+def fibonacci(n: int) -> int:
+    if isinstance(n, bool):
+        raise TypeError(f"n must be an int, not bool: {n!r}")
+    if not isinstance(n, int):
+        raise TypeError(f"n must be an int, not {type(n).__name__}: {n!r}")
+    if n < 0:
+        raise ValueError(f"n must be non-negative: {n!r}")
+
+    previous, current = 0, 1
+    for _ in range(n):
+        previous, current = current, previous + current
+    return previous
+
+[2026-05-28 16:56:07,250] [DEBUG] [main] Triggering parallel validation gates (QA & Security)
+[2026-05-28 16:56:07,251] [DEBUG] [run_qa_unit_tests] Executing QA runtime gate: docker run --rm -v /mnt/c/code/async-agentic-sdlc/artifacts:/workspace/artifacts:rw -w /workspace python:3.11-slim bash -c export PYTHONPATH=$PYTHONPATH:/workspace/artifacts/code:/workspace/artifacts/tests; python3 -m unittest discover -s /workspace/artifacts/tests -p 'test_*.py'
+[2026-05-28 16:56:07,252] [DEBUG] [run_security_scan] Executing SAST security gate: /mnt/c/code/async-agentic-sdlc/venv/bin/python3 -m bandit -q -r artifacts/code
+[2026-05-28 16:56:07,868] [DEBUG] [stream_subprocess_output] docker-qa-stderr ...............
+[2026-05-28 16:56:07,868] [DEBUG] [stream_subprocess_output] docker-qa-stderr ----------------------------------------------------------------------
+[2026-05-28 16:56:07,869] [DEBUG] [stream_subprocess_output] docker-qa-stderr Ran 15 tests in 0.000s
+[2026-05-28 16:56:07,869] [DEBUG] [stream_subprocess_output] docker-qa-stderr 
+[2026-05-28 16:56:07,869] [DEBUG] [stream_subprocess_output] docker-qa-stderr OK
+[2026-05-28 16:56:08,080] [DEBUG] [run_qa_unit_tests] QA Runtime Gate completed with exit code: 0
+[2026-05-28 16:56:08,560] [DEBUG] [run_security_scan] SAST Security Gate completed with exit code: 0
+[2026-05-28 16:56:08,561] [INFO] [run_reviewer_node] 🔍 [ROLE] Reviewer Agent | [MODEL] gemini-2.5-pro
+[2026-05-28 16:56:33,896] [INFO] [log_token_usage]    [TOKENS] Reviewer Agent | Input: 1836 | Output: 555 | Total: 4601
+[2026-05-28 16:56:33,898] [INFO] [run_reviewer_node]    [THOUGHT] Multi-angle review processed:
+[2026-05-28 16:56:33,899] [INFO] [run_reviewer_node]      ├─ [CODE AUDIT] The `fibonacci` function is implemented correctly and efficiently, adhering to the O(n) time and O(1) space complexity requirements. The type and value validation logic is robust and strictly follows the contract by raising `TypeError` for non-integers (including `bool`) and `ValueError` for negative inputs. However, the submission is critically flawed by the inclusion of an extraneous `is_prime` function within `src/utils/math_utils.py`. This function was not requested in the user requirements or the architect contract. Its presence constitutes a scope violation, introduces untested code, and pollutes the module's namespace with unrelated functionality. This is a severe breach of contract.
+[2026-05-28 16:56:33,900] [INFO] [run_reviewer_node]      ├─ [TEST AUDIT] The test suite for the `fibonacci` function is comprehensive and well-structured. It correctly covers base cases, positive integers, and a wide array of invalid inputs (negative numbers, booleans, floats, strings, etc.), using the strict `assertRaises` context manager. There is no evidence of test softening. However, the test suite is fundamentally incomplete because it provides zero coverage for the `is_prime` function, which was improperly added to the production code. Any code committed to the repository must be accompanied by corresponding tests. The failure to test `is_prime` renders the test suite inadequate for the submitted module.
+[2026-05-28 16:56:33,901] [INFO] [run_reviewer_node]      └─ [LOG INTERPRETATION] The functional test runner output confirms that all 15 tests for the `fibonacci` function passed successfully. The Bandit SAST scan found no security vulnerabilities. While these logs are clean, they are misleading. They only validate the tested portion of the code (`fibonacci`) and fail to highlight the risk introduced by the untested, out-of-scope `is_prime` function.
+[2026-05-28 16:56:33,901] [INFO] [run_reviewer_node]    ├── [GATE][FUNCTIONAL-TESTS] PASSED
+[2026-05-28 16:56:33,902] [INFO] [run_reviewer_node]    ├── [GATE][SAST-SECURITY] PASSED
+[2026-05-28 16:56:33,902] [INFO] [run_reviewer_node]    └── [AUDIT] Code Approved: False | Tests Approved: False
+
+[2026-05-28 16:56:33,903] [DEBUG] [run_reviewer_node] Reviewer Node Output: {
+  "code_quality_analysis": "The `fibonacci` function is implemented correctly and efficiently, adhering to the O(n) time and O(1) space complexity requirements. The type and value validation logic is robust and strictly follows the contract by raising `TypeError` for non-integers (including `bool`) and `ValueError` for negative inputs. However, the submission is critically flawed by the inclusion of an extraneous `is_prime` function within `src/utils/math_utils.py`. This function was not requested in the user requirements or the architect contract. Its presence constitutes a scope violation, introduces untested code, and pollutes the module's namespace with unrelated functionality. This is a severe breach of contract.",
+  "test_integrity_analysis": "The test suite for the `fibonacci` function is comprehensive and well-structured. It correctly covers base cases, positive integers, and a wide array of invalid inputs (negative numbers, booleans, floats, strings, etc.), using the strict `assertRaises` context manager. There is no evidence of test softening. However, the test suite is fundamentally incomplete because it provides zero coverage for the `is_prime` function, which was improperly added to the production code. Any code committed to the repository must be accompanied by corresponding tests. The failure to test `is_prime` renders the test suite inadequate for the submitted module.",
+  "log_verification_analysis": "The functional test runner output confirms that all 15 tests for the `fibonacci` function passed successfully. The Bandit SAST scan found no security vulnerabilities. While these logs are clean, they are misleading. They only validate the tested portion of the code (`fibonacci`) and fail to highlight the risk introduced by the untested, out-of-scope `is_prime` function.",
+  "code_quality_approved": false,
+  "test_integrity_approved": false,
+  "diagnostic_payload": "REJECTED. 1. **Scope Violation:** You have included an `is_prime` function in `src/utils/math_utils.py`. The contract was exclusively for the implementation of a `fibonacci` function. Remove the `is_prime` function and all associated code immediately. All submitted code must be directly traceable to a requirement. 2. **Incomplete Testing:** Because you added untested code (`is_prime`), the test suite is incomplete. All production code requires 100% test coverage. Remove the unauthorized function to resolve this issue. The implementation and tests for `fibonacci` are correct, but the module as a whole is contaminated with this out-of-scope addition."
+}
+[2026-05-28 16:56:33,903] [DEBUG] [main] Approval Checkpoint Status: QA=True, SAST=True, Code_Approve=False, Test_Approve=False
+[2026-05-28 16:56:33,904] [WARNING] [main] 🔶 Reviewer Agent flagged test suite anomalies. Scheduling test regeneration.
+[2026-05-28 16:56:33,905] [WARNING] [main] 🔶 Cycle 1 failed. Routing reviewer diagnostic to target agent.
+[2026-05-28 16:56:33,905] [INFO] [main] 🔷 Orchestration cycle 2/3
+[2026-05-28 16:56:33,906] [DEBUG] [main] Starting orchestration cycle 2
+[2026-05-28 16:56:33,906] [INFO] [run_qa_agent_node] 🔶 [ROLE] QA Agent | [MODEL] gemini-2.5-flash
+[2026-05-28 16:56:39,220] [INFO] [log_token_usage]    [TOKENS] QA Agent | Input: 446 | Output: 651 | Total: 1554
+[2026-05-28 16:56:39,343] [INFO] [run_qa_agent_node]    [THOUGHT] Generated deterministic per-module unittest suites targeting strict type enforcement and contract safety.
+[2026-05-28 16:56:39,343] [INFO] [run_qa_agent_node]    [ARTIFACT] Instantiated 1 test file(s): ['artifacts/tests/test_src_utils_math_utils.py']
+
+[2026-05-28 16:56:39,344] [DEBUG] [run_qa_agent_node] QA Agent generated test files: ['artifacts/tests/test_src_utils_math_utils.py']
+[2026-05-28 16:56:39,344] [INFO] [run_developer_node] 🟩 [ROLE] Developer Agent | [MODEL] Claude CLI Wrapper
+[2026-05-28 16:56:39,346] [DEBUG] [run_claude_cli] Executing Developer Subprocess: claude -p Implement the core logic. Directives: Instantiate `src/utils/math_utils.py` with the `fibonacci` function. Implement the function exactly as per the `function_signatures` and `strict_type_validation_rules`. Ensure `O(1)` space complexity and `O(n)` time complexity using an iterative approach. No recursion.. Signatures: def fibonacci(n: int) -> int:. Strict type rules: Input `n` must be a non-negative instance of `int`. If `n` is `bool`, raise `TypeError`. If `n` is any other type than `int` (and not `bool`), raise `TypeError`. If `n < 0`, raise `ValueError`.. Save all files under: artifacts/code
+
+Validation Failure Context:
+REJECTED. 1. **Scope Violation:** You have included an `is_prime` function in `src/utils/math_utils.py`. The contract was exclusively for the implementation of a `fibonacci` function. Remove the `is_prime` function and all associated code immediately. All submitted code must be directly traceable to a requirement. 2. **Incomplete Testing:** Because you added untested code (`is_prime`), the test suite is incomplete. All production code requires 100% test coverage. Remove the unauthorized function to resolve this issue. The implementation and tests for `fibonacci` are correct, but the module as a whole is contaminated with this out-of-scope addition. --dangerously-skip-permissions artifacts/code/src/utils/math_utils.py
+[2026-05-28 16:56:55,932] [INFO] [stream_subprocess_output]    [Developer Agent][STDOUT] `is_prime` removed. `artifacts/code/src/utils/math_utils.py` now contains only `fibonacci` — iterative O(n) time, O(1) space, with bool/type/negative guards.
+[2026-05-28 16:56:56,387] [INFO] [run_developer_node]    [TOKENS] Developer Agent | Tracked out-of-band via ccusage
+[2026-05-28 16:56:56,534] [INFO] [run_developer_node]    [MUTATION] Modified: ['src/__init__.py', 'src/utils/__init__.py', 'src/utils/math_utils.py'] (Exit Code: 0)
+
+[2026-05-28 16:56:56,535] [DEBUG] [run_developer_node] Developer code snapshot:
+=== FILE: src/__init__.py ===
+
+
+=== FILE: src/utils/__init__.py ===
+
+
+=== FILE: src/utils/math_utils.py ===
+def fibonacci(n: int) -> int:
+    if isinstance(n, bool):
+        raise TypeError(f"n must be an int, not bool: {n!r}")
+    if not isinstance(n, int):
+        raise TypeError(f"n must be an int, not {type(n).__name__}: {n!r}")
+    if n < 0:
+        raise ValueError(f"n must be non-negative: {n!r}")
+
+    previous, current = 0, 1
+    for _ in range(n):
+        previous, current = current, previous + current
+    return previous
+
+[2026-05-28 16:56:56,535] [DEBUG] [main] Triggering parallel validation gates (QA & Security)
+[2026-05-28 16:56:56,536] [DEBUG] [run_qa_unit_tests] Executing QA runtime gate: docker run --rm -v /mnt/c/code/async-agentic-sdlc/artifacts:/workspace/artifacts:rw -w /workspace python:3.11-slim bash -c export PYTHONPATH=$PYTHONPATH:/workspace/artifacts/code:/workspace/artifacts/tests; python3 -m unittest discover -s /workspace/artifacts/tests -p 'test_*.py'
+[2026-05-28 16:56:56,537] [DEBUG] [run_security_scan] Executing SAST security gate: /mnt/c/code/async-agentic-sdlc/venv/bin/python3 -m bandit -q -r artifacts/code
+[2026-05-28 16:56:57,212] [DEBUG] [stream_subprocess_output] docker-qa-stderr ................
+[2026-05-28 16:56:57,213] [DEBUG] [stream_subprocess_output] docker-qa-stderr ----------------------------------------------------------------------
+[2026-05-28 16:56:57,214] [DEBUG] [stream_subprocess_output] docker-qa-stderr Ran 16 tests in 0.000s
+[2026-05-28 16:56:57,215] [DEBUG] [stream_subprocess_output] docker-qa-stderr 
+[2026-05-28 16:56:57,215] [DEBUG] [stream_subprocess_output] docker-qa-stderr OK
+[2026-05-28 16:56:57,410] [DEBUG] [run_qa_unit_tests] QA Runtime Gate completed with exit code: 0
+[2026-05-28 16:56:57,916] [DEBUG] [run_security_scan] SAST Security Gate completed with exit code: 0
+[2026-05-28 16:56:57,917] [INFO] [run_reviewer_node] 🔍 [ROLE] Reviewer Agent | [MODEL] gemini-2.5-pro
+[2026-05-28 16:57:18,074] [INFO] [log_token_usage]    [TOKENS] Reviewer Agent | Input: 1549 | Output: 479 | Total: 3831
+[2026-05-28 16:57:18,078] [INFO] [run_reviewer_node]    [THOUGHT] Multi-angle review processed:
+[2026-05-28 16:57:18,079] [INFO] [run_reviewer_node]      ├─ [CODE AUDIT] The production code in `src/utils/math_utils.py` is exemplary. The `fibonacci` function adheres perfectly to the architectural contract. The iterative approach correctly implements an O(n) time complexity and O(1) space complexity solution, satisfying the performance requirements. Type and value validation is implemented with surgical precision: the check for `bool` correctly precedes the check for `int` to prevent `isinstance(True, int)` from causing a loophole, and standard `TypeError` and `ValueError` exceptions are raised with informative messages as specified. The variable naming is clear, and the logic is clean and algorithmically sound. This implementation is production-grade.
+[2026-05-28 16:57:18,080] [INFO] [run_reviewer_node]      ├─ [TEST AUDIT] The test suite in `test_src_utils_math_utils.py` is robust and comprehensive. It demonstrates complete contract coverage. Tests for valid inputs include base cases (0, 1), small values (2, 3, 5), and larger values (10, 20) to validate correctness across a range. Crucially, the tests for invalid inputs are exhaustive, covering `bool`, `float`, `str`, `None`, `list`, and `dict` to enforce the `TypeError` contract, and negative integers to enforce the `ValueError` contract. The tests use `self.assertEqual` and `self.assertRaises` correctly, with no evidence of test softening (e.g., `try-except` blocks). The suite is deterministic and rigorously validates the function's behavior.
+[2026-05-28 16:57:18,083] [INFO] [run_reviewer_node]      └─ [LOG INTERPRETATION] The provided logs confirm a flawless execution. The `unittest` runner output shows that all 16 tests passed in negligible time (`0.000s`), verifying the functional correctness and efficiency of the implementation. The Bandit SAST scan passed with zero vulnerabilities identified, confirming the code's security posture. All signals indicate a successful and clean build.
+[2026-05-28 16:57:18,085] [INFO] [run_reviewer_node]    ├── [GATE][FUNCTIONAL-TESTS] PASSED
+[2026-05-28 16:57:18,086] [INFO] [run_reviewer_node]    ├── [GATE][SAST-SECURITY] PASSED
+[2026-05-28 16:57:18,087] [INFO] [run_reviewer_node]    └── [AUDIT] Code Approved: True | Tests Approved: True
+
+[2026-05-28 16:57:18,088] [DEBUG] [run_reviewer_node] Reviewer Node Output: {
+  "code_quality_analysis": "The production code in `src/utils/math_utils.py` is exemplary. The `fibonacci` function adheres perfectly to the architectural contract. The iterative approach correctly implements an O(n) time complexity and O(1) space complexity solution, satisfying the performance requirements. Type and value validation is implemented with surgical precision: the check for `bool` correctly precedes the check for `int` to prevent `isinstance(True, int)` from causing a loophole, and standard `TypeError` and `ValueError` exceptions are raised with informative messages as specified. The variable naming is clear, and the logic is clean and algorithmically sound. This implementation is production-grade.",
+  "test_integrity_analysis": "The test suite in `test_src_utils_math_utils.py` is robust and comprehensive. It demonstrates complete contract coverage. Tests for valid inputs include base cases (0, 1), small values (2, 3, 5), and larger values (10, 20) to validate correctness across a range. Crucially, the tests for invalid inputs are exhaustive, covering `bool`, `float`, `str`, `None`, `list`, and `dict` to enforce the `TypeError` contract, and negative integers to enforce the `ValueError` contract. The tests use `self.assertEqual` and `self.assertRaises` correctly, with no evidence of test softening (e.g., `try-except` blocks). The suite is deterministic and rigorously validates the function's behavior.",
+  "log_verification_analysis": "The provided logs confirm a flawless execution. The `unittest` runner output shows that all 16 tests passed in negligible time (`0.000s`), verifying the functional correctness and efficiency of the implementation. The Bandit SAST scan passed with zero vulnerabilities identified, confirming the code's security posture. All signals indicate a successful and clean build.",
+  "code_quality_approved": true,
+  "test_integrity_approved": true,
+  "diagnostic_payload": "No action required. The implementation is a perfect execution of the requirements. The code is clean, efficient, and robust. The test suite is comprehensive and strict. This work is approved for production without reservation."
+}
+[2026-05-28 16:57:18,089] [DEBUG] [main] Approval Checkpoint Status: QA=True, SAST=True, Code_Approve=True, Test_Approve=True
+[2026-05-28 16:57:18,089] [INFO] [main] 🟩 PIPELINE SUCCESS: All validation gates passed.

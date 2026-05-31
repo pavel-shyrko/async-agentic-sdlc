@@ -86,3 +86,5 @@ logs/
 # Pipeline Sandbox Artifacts
 # ==========================================
 artifacts/
+!docs/archive/
+!docs/archive/**

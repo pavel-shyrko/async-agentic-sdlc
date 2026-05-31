@@ -1,0 +1,160 @@
+(venv) pshyrko@INV-1495PL-L:/mnt/c/code/async-agentic-sdlc$ python3 orchestrator.py
+[SYSTEM] Initializing environment pre-flight check...
+[SYSTEM] Environment verification completed successfully.
+
+========================================================================
+[NODE][ARCHITECT] Synthesizing system design from requirement...
+========================================================================
+[DECISION][ARCHITECT] Contract locked:
+{
+  "files_to_modify": [
+    "math_lib.py"
+  ],
+  "instruction": "Implement a robust 'factorial' function in 'math_lib.py'. The function must take an integer 'n' as argument. If 'n' is a negative integer, raise a ValueError with a descriptive message. For n equal to 0 or 1, return 1. For n greater than 1, return the calculated factorial using an efficient iterative or recursive approach. Add type hinting and appropriate docstrings.",
+  "function_signatures": "def factorial(n: int) -> int"
+}
+
+========================================================================
+[NODE][QA-GENERATOR] Writing physical test suite based on contract signatures...
+========================================================================
+[DECISION][QA-GENERATOR] Physical test suite saved to 'test_math_lib.py'
+
+================================================================================
+ STARTING ORCHESTRATION CYCLE: ITERATION 1/3
+================================================================================
+========================================================================
+[NODE][DEVELOPER] Executing source code generation...
+========================================================================
+  [DEVELOPER][STDOUT] `math_lib.py` is created with an iterative implementation. It raises `ValueError` for negative inputs, returns `1` for `n=0` and `n=1`, and computes the product iteratively for `n>1`.
+
+[ORCHESTRATOR] Triggering parallel validation layer against real test file...
+  [DOCKER-QA] Initializing ephemeral testing container...
+  [SAST-SECURITY] Initiating bandit static analysis scan...
+  [DOCKER-QA][STDERR] FF.....
+  [DOCKER-QA][STDERR] ======================================================================
+  [DOCKER-QA][STDERR] FAIL: test_factorial_invalid_types_raise_type_error (test_math_lib.TestFactorial.test_factorial_invalid_types_raise_type_error) (val=True)
+  [DOCKER-QA][STDERR] Test that non-integer types raise a TypeError.
+  [DOCKER-QA][STDERR] ----------------------------------------------------------------------
+  [DOCKER-QA][STDERR] Traceback (most recent call last):
+  [DOCKER-QA][STDERR]   File "/workspace/test_math_lib.py", line 46, in test_factorial_invalid_types_raise_type_error
+  [DOCKER-QA][STDERR]     with self.assertRaises(TypeError):
+  [DOCKER-QA][STDERR] AssertionError: TypeError not raised
+  [DOCKER-QA][STDERR]
+  [DOCKER-QA][STDERR] ======================================================================
+  [DOCKER-QA][STDERR] FAIL: test_factorial_invalid_types_raise_type_error (test_math_lib.TestFactorial.test_factorial_invalid_types_raise_type_error) (val=False)
+  [DOCKER-QA][STDERR] Test that non-integer types raise a TypeError.
+  [DOCKER-QA][STDERR] ----------------------------------------------------------------------
+  [DOCKER-QA][STDERR] Traceback (most recent call last):
+  [DOCKER-QA][STDERR]   File "/workspace/test_math_lib.py", line 46, in test_factorial_invalid_types_raise_type_error
+  [DOCKER-QA][STDERR]     with self.assertRaises(TypeError):
+  [DOCKER-QA][STDERR] AssertionError: TypeError not raised
+  [DOCKER-QA][STDERR]
+  [DOCKER-QA][STDERR] ----------------------------------------------------------------------
+  [DOCKER-QA][STDERR] Ran 6 tests in 0.005s
+  [DOCKER-QA][STDERR]
+  [DOCKER-QA][STDERR] FAILED (failures=2)
+  [DOCKER-QA] Functional verification ended. Status: FAILED (Code 1)
+  [SAST-SECURITY][STDOUT] Bandit execution passed. Zero vulnerabilities identified.
+
+[DECISION] Evaluation Summary -> Functional QA: FAIL | Security SAST: OK
+[ORCHESTRATOR] Cycle failed. Routing diagnostics to Developer Agent.
+
+================================================================================
+ STARTING ORCHESTRATION CYCLE: ITERATION 2/3
+================================================================================
+========================================================================
+[NODE][DEVELOPER] Executing source code generation...
+========================================================================
+  [DEVELOPER][STDOUT] All 6 tests pass. The fix adds `isinstance(n, bool)` to the type check — since `bool` is a subclass of `int` in Python, the original code treated `True`/`False` as valid integers. The guard `not isinstance(n, int) or isinstance(n, bool)` now correctly rejects booleans with a `TypeError`.
+
+[ORCHESTRATOR] Triggering parallel validation layer against real test file...
+  [DOCKER-QA] Initializing ephemeral testing container...
+  [SAST-SECURITY] Initiating bandit static analysis scan...
+  [DOCKER-QA][STDERR] ......
+  [DOCKER-QA][STDERR] ----------------------------------------------------------------------
+  [DOCKER-QA][STDERR] Ran 6 tests in 0.000s
+  [DOCKER-QA][STDERR]
+  [DOCKER-QA][STDERR] OK
+  [DOCKER-QA] Functional verification ended. Status: PASSED (Code 0)
+  [SAST-SECURITY][STDOUT] Bandit execution passed. Zero vulnerabilities identified.
+
+[DECISION] Evaluation Summary -> Functional QA: OK | Security SAST: OK
+
+========================================================================
+ ✅ PIPELINE SUCCESS: All explicit validation gates passed.
+========================================================================
+(venv) pshyrko@INV-1495PL-L:/mnt/c/code/async-agentic-sdlc$ ls
+PRACTICUM.md  README.md  __pycache__  docs  math_lib.py  orchestrator.py  test_math_lib.py  venv
+(venv) pshyrko@INV-1495PL-L:/mnt/c/code/async-agentic-sdlc$ cat math_lib.py
+def factorial(n: int) -> int:
+    """Compute the factorial of a non-negative integer.
+
+    Args:
+        n: A non-negative integer.
+
+    Returns:
+        The factorial of n (n!).
+
+    Raises:
+        TypeError: If n is not an integer (bool is excluded).
+        ValueError: If n is negative.
+    """
+    if not isinstance(n, int) or isinstance(n, bool):
+        raise TypeError(f"factorial() requires an integer argument, got {type(n).__name__}")
+    if n < 0:
+        raise ValueError(f"factorial() is not defined for negative integers, got {n}")
+    result = 1
+    for i in range(2, n + 1):
+        result *= i
+    return result
+(venv) pshyrko@INV-1495PL-L:/mnt/c/code/async-agentic-sdlc$ cat test_math_lib.py
+import unittest
+from math_lib import factorial
+
+class TestFactorial(unittest.TestCase):
+    def test_factorial_zero(self):
+        """Test that factorial of 0 is 1."""
+        self.assertEqual(factorial(0), 1)
+
+    def test_factorial_one(self):
+        """Test that factorial of 1 is 1."""
+        self.assertEqual(factorial(1), 1)
+
+    def test_factorial_positive_integers(self):
+        """Test typical positive integers."""
+        self.assertEqual(factorial(2), 2)
+        self.assertEqual(factorial(3), 6)
+        self.assertEqual(factorial(4), 24)
+        self.assertEqual(factorial(5), 120)
+        self.assertEqual(factorial(10), 3628800)
+
+    def test_factorial_large_integer(self):
+        """Test a larger integer to ensure no overflow issues and performance is acceptable."""
+        # 20! = 2432902008176640000
+        self.assertEqual(factorial(20), 2432902008176640000)
+
+    def test_factorial_negative_raises_value_error(self):
+        """Test that negative integers raise a ValueError."""
+        with self.assertRaises(ValueError):
+            factorial(-1)
+        with self.assertRaises(ValueError):
+            factorial(-100)
+
+    def test_factorial_invalid_types_raise_type_error(self):
+        """Test that non-integer types raise a TypeError."""
+        invalid_inputs = [
+            5.5,
+            "5",
+            [5],
+            {"n": 5},
+            None,
+            True,  # Booleans are technically subclasses of int in Python, but usually disallowed for factorial
+            False
+        ]
+        for val in invalid_inputs:
+            with self.subTest(val=val):
+                with self.assertRaises(TypeError):
+                    factorial(val)
+
+if __name__ == '__main__':
+    unittest.main()(venv) pshyrko@INV-1495PL-L:/mnt/c/code/async-agentic-sdlc$
