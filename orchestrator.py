@@ -81,14 +81,7 @@ async def main():
 
     max_retries = 3
 
-    # Recover ephemeral regeneration intent from the last persisted review report so a
-    # rejected-tests checkpoint cannot bypass QA on resume.
-    if ctx.review_report and not ctx.review_report.test_integrity_approved:
-        regenerate_tests = True
-    elif ctx.test_code_snapshot:
-        regenerate_tests = False
-    else:
-        regenerate_tests = True
+    regenerate_tests = ctx.needs_test_regeneration()
 
     for attempt in range(ctx.current_attempt, max_retries + 1):
         ctx.current_attempt = attempt

@@ -64,6 +64,17 @@ class GlobalPipelineContext(BaseModel):
     review_report: ReviewReport | None = None
     current_attempt: int = 1
 
+    def needs_test_regeneration(self) -> bool:
+        """Whether QA must (re)generate tests before the next cycle.
+
+        Recovers ephemeral regeneration intent from the last persisted review report so a
+        rejected-tests checkpoint cannot bypass QA on resume: regenerate when the review
+        rejected the test suite, or when no validated test snapshot exists yet.
+        """
+        if self.review_report and not self.review_report.test_integrity_approved:
+            return True
+        return not self.test_code_snapshot
+
     def save_checkpoint(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(self.model_dump_json(indent=2), encoding="utf-8")

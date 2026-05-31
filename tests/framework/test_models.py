@@ -160,6 +160,46 @@ class ContractModelTests(unittest.TestCase):
         self.assertIsInstance(ctx.workspace_paths, WorkspacePaths)
 
 
+class NeedsTestRegenerationTests(unittest.TestCase):
+    """Initial recovery decision: regenerate tests on rejection or when no snapshot exists."""
+
+    def _context(self, **kwargs) -> GlobalPipelineContext:
+        with mock.patch.object(Path, "mkdir"):
+            return GlobalPipelineContext(pr_description="x", **kwargs)
+
+    def _report(self, *, test_integrity_approved: bool) -> ReviewReport:
+        return ReviewReport(
+            code_quality_analysis="",
+            test_integrity_analysis="",
+            log_verification_analysis="",
+            code_quality_approved=True,
+            test_integrity_approved=test_integrity_approved,
+            diagnostic_payload="",
+        )
+
+    def test_rejected_tests_force_regeneration_even_with_snapshot(self) -> None:
+        ctx = self._context(
+            test_code_snapshot="assert True",
+            review_report=self._report(test_integrity_approved=False),
+        )
+        self.assertTrue(ctx.needs_test_regeneration())
+
+    def test_no_report_no_snapshot_regenerates(self) -> None:
+        ctx = self._context()
+        self.assertTrue(ctx.needs_test_regeneration())
+
+    def test_no_report_with_snapshot_skips(self) -> None:
+        ctx = self._context(test_code_snapshot="assert True")
+        self.assertFalse(ctx.needs_test_regeneration())
+
+    def test_approved_tests_with_snapshot_skips(self) -> None:
+        ctx = self._context(
+            test_code_snapshot="assert True",
+            review_report=self._report(test_integrity_approved=True),
+        )
+        self.assertFalse(ctx.needs_test_regeneration())
+
+
 class GlobalContextCheckpointTests(unittest.TestCase):
     """Checkpoint save/load APIs must persist and restore full context state."""
 
