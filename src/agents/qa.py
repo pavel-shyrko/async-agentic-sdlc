@@ -6,6 +6,7 @@ from pathlib import Path
 from src.core.observability import log, log_token_usage
 from src.core.config import instructor_client, QA_MODEL
 from src.core.models import QATestSuite, GlobalPipelineContext
+from src.core.prompts import get_system_prompt, get_skill
 from src.utils.api_retry import with_api_retry
 from src.utils.git_helpers import init_sandbox_git, get_pipeline_snapshot_files
 
@@ -20,19 +21,21 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
     await init_sandbox_git(str(ctx.workspace_paths.tests_dir), ctx.base_branch)
     tests_dir = ctx.workspace_paths.tests_dir
 
-    shared_rules = (
-        f"Strict validation rules to enforce: {ctx.contract.strict_type_validation_rules}\n"
-        f"CRITICAL RULE: The generated test suite must be completely deterministic. You are STRICTLY FORBIDDEN from wrapping boundary tests or type validation checks in try-except blocks, pass statements, or conditional if-else assertions. If a type or value is invalid according to the contract, use self.assertRaises() exclusively.\n"
-        f"CRITICAL RULE: You are STRICTLY FORBIDDEN from asserting, matching, or validating the string message of ANY exception (e.g., using assertIn, assertEqual, assertRegex, or assertRaisesRegex on exception strings, .args, or str(exception)). You must ONLY verify the exception type using 'with self.assertRaises(ExceptionType):' and leave the exception object uninspected."
+    qa_raw = get_system_prompt("qa")
+    qa_system_prompt, user_template = qa_raw.split("\n---\n", 1)
+    qa_system_prompt += "\n\n" + get_skill("engineering_guide")
+
+    shared_rules = get_skill("strict_validation").format(
+        strict_type_validation_rules=ctx.contract.strict_type_validation_rules
     )
     feedback = f"\n\nPrevious failure feedback to address:\n{error_trace}" if error_trace else ""
 
     def _build_prompt(module_dot: str) -> str:
-        return (
-            f"You are a QA Agent. Write a comprehensive, robust Python unittest suite that covers ONLY the module '{module_dot}'.\n"
-            f"Import the module under test exactly via its dotted path (e.g. `import {module_dot}` or `from {module_dot} import ...`).\n"
-            f"Relevant contract function signatures (test only what belongs to '{module_dot}'): {ctx.contract.function_signatures}\n"
-            f"{shared_rules}{feedback}"
+        return user_template.format(
+            module_dot=module_dot,
+            function_signatures=ctx.contract.function_signatures,
+            shared_rules=shared_rules,
+            feedback=feedback,
         )
 
     @with_api_retry(max_retries=3, agent_name="QA Agent")
@@ -43,25 +46,21 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
                 model=model_name,
                 response_model=QATestSuite,
                 messages=[
-                    {"role": "system", "content": "You are an automated QA engineer producing pure Python unittest files. No markdown, no commentary. CRITICAL RULE: You are STRICTLY FORBIDDEN from asserting, matching, or validating the string message of ANY exception. Do not use assertRaisesRegex. Do not call assertIn, assertEqual, assertRegex, or any other comparison against the exception object, its .args, its str() representation, or any attribute derived from its message. You must ONLY verify the exception type using 'with self.assertRaises(ExceptionType):' and leave the exception object uninspected."},
+                    {"role": "system", "content": qa_system_prompt},
                     {"role": "user", "content": prompt}
                 ]
             )
         )
 
     async def _generate(module_file: str) -> tuple[str, str, object]:
-        # Unique flat test name derived from the full module path — no collisions across packages.
         slug = module_file.removesuffix(".py").replace("/", "_").replace("\\", "_")
         module_dot = module_file.removesuffix(".py").replace("/", ".").replace("\\", ".")
         test_path = tests_dir / f"test_{slug}.py"
         suite, raw_response = await _invoke_llm(_build_prompt(module_dot))
         return str(test_path), suite.test_code, raw_response
 
-    # Facade modules (__init__.py) only re-export package members and carry no own logic —
-    # testing them in isolation explodes into duplicate suites. Drop them from fan-out.
     target_modules = [m for m in ctx.contract.files_to_modify if not m.endswith("__init__.py")]
 
-    # Independent modules have no generation ordering — fan out concurrently.
     results = await asyncio.gather(*[_generate(m) for m in target_modules])
 
     for test_path, code, raw_response in results:
@@ -69,7 +68,6 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
         with open(test_path, "w", encoding="utf-8") as f:
             f.write(code)
 
-    # Cumulative Git Anchor delta against the base branch.
     tests_dir_str = str(tests_dir)
     changed_files = await get_pipeline_snapshot_files(tests_dir_str, ctx.base_branch)
 

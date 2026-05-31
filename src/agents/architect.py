@@ -3,6 +3,7 @@ import asyncio
 from src.core.observability import log, log_token_usage
 from src.core.config import instructor_client, ARCHITECT_MODEL
 from src.core.models import ArchitectureContract, GlobalPipelineContext
+from src.core.prompts import get_system_prompt, get_skill
 from src.utils.api_retry import with_api_retry
 
 # ==========================================
@@ -12,13 +13,7 @@ async def run_architect_node(ctx: GlobalPipelineContext) -> None:
     model_name = ARCHITECT_MODEL
     log.info(f"🔷 [ROLE] Architect Agent | [MODEL] {model_name}")
 
-    sys_prompt = (
-        "You are a Principal Architect. Define strict production file mappings, type guards, and function signatures. Be concise. No prose.\n"
-        "CRITICAL ARCHITECTURE RULES:\n"
-        "1. Enforce strict Dependency Injection (DI) for class composition. "
-        "Classes must receive their dependencies via the constructor (e.g., `def __init__(self, base_shape: Shape, ...)`). "
-        "They are STRICTLY FORBIDDEN from instantiating their dependencies internally."
-    )
+    sys_prompt = get_system_prompt("architect") + "\n\n" + get_skill("engineering_guide")
 
     @with_api_retry(max_retries=3, agent_name="Architect Agent")
     async def _invoke_llm() -> tuple:

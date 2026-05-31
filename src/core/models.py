@@ -27,11 +27,11 @@ class WorkspacePaths(BaseModel):
 # CONTRACTS & PIPELINE STATE
 # ==========================================
 class ArchitectureContract(BaseModel):
-    files_to_modify: list[str] = Field(description="Target production source files to modify or instantiate.")
-    instruction: str = Field(description="Strict technical directives for the Developer Agent.")
-    function_signatures: str = Field(description="Exact names, arguments, types, and expected exceptions.")
-    strict_type_validation_rules: str = Field(description="Explicit rules regarding language-specific sub-types, like whether bool inputs must raise TypeError or be treated as integers.")
-    architecture_reasoning: str = Field(description="Detailed step-by-step engineering justification for the chosen design constraints and type guards.")
+    files_to_modify: list[str] = Field(description="List of target source file paths.")
+    instruction: str = Field(description="Technical directives for the Developer Agent.")
+    function_signatures: str = Field(description="Function names, arguments, types, and exceptions.")
+    strict_type_validation_rules: str = Field(description="Type validation rules for the implementation.")
+    architecture_reasoning: str = Field(description="Justification for the chosen design.")
 
 class QATestSuite(BaseModel):
     test_code: str = Field(description="Raw Python code only.")
@@ -46,12 +46,12 @@ class QATestSuite(BaseModel):
         return v.strip()
 
 class ReviewReport(BaseModel):
-    code_quality_analysis: str = Field(description="Detailed audit of production code for readability, cleanliness, and algorithmic correctness.")
-    test_integrity_analysis: str = Field(description="Strict test validation for determinism, contract coverage, and absence of Test Softening (try-except bypasses).")
-    log_verification_analysis: str = Field(description="Analysis and interpretation of Docker test results and Bandit scanner output.")
-    code_quality_approved: bool = Field(description="Set to True only if production code is fully ready for release.")
-    test_integrity_approved: bool = Field(description="Set to True only if tests are written without loopholes or softening.")
-    diagnostic_payload: str = Field(description="Detailed fix instructions for the Developer or QA Agent in case of rejection.")
+    code_quality_analysis: str = Field(description="Audit text for production code quality.")
+    test_integrity_analysis: str = Field(description="Audit text for test integrity.")
+    log_verification_analysis: str = Field(description="Analysis text for test runner and scanner output.")
+    code_quality_approved: bool = Field(description="Boolean flag indicating production code approval status.")
+    test_integrity_approved: bool = Field(description="Boolean flag indicating test integrity approval status.")
+    diagnostic_payload: str = Field(description="Fix instructions returned on rejection.")
 
 class GlobalPipelineContext(BaseModel):
     pr_description: str

@@ -13,7 +13,7 @@ from src.core.models import ARTIFACTS_DIR, CODE_DIR, TESTS_DIR, LOGS_DIR, REPORT
 # ==========================================
 ARCHITECT_MODEL = "gemini-2.5-flash"
 QA_MODEL = "gemini-2.5-flash"
-REVIEWER_MODEL = "gemini-2.5-pro"
+REVIEWER_MODEL = "gemini-2.5-flash"
 DEVELOPER_MODEL_LABEL = "Claude CLI Wrapper"  # real model is managed by the Claude CLI config
 
 # ==========================================
