@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each release maps to a completed SDLC iteration; the corresponding Architecture
 Decision Record (ADR) is linked from the version heading.
 
+## [v0.8.0] - 2026-06-01 — Git-Anchored Sessions & Atomic Commit
+
+ADR: [0008-git-anchored-sessions-atomic-commit](./docs/adr/0008-git-anchored-sessions-atomic-commit.md)
+
+### Added
+- Git-anchored sessions: each run generates a UUID base directory `runs/run_<uuid>/`, shallow-clones the target repo (`git clone --depth 1`) into `runs/run_<uuid>/repo/`, checks out a `feat/ticket-<ticket>` branch, and force-fetches the base branch into a local ref.
+- New CLI surface: `--repo` (target git URL/path) and `--ticket` (required for fresh runs), `--src-dir` / `--tests-dir` (default `src/` / `tests/`), and `--push` to publish the feature branch after a successful commit. `--resume` / `--reset-attempts` retained.
+- `WorkspacePaths.for_run` — resolves absolute, run-rooted paths (code/tests inside the clone, logs/reports outside) with a path-traversal guard rejecting `..`/absolute `--src-dir`/`--tests-dir` escapes.
+- `get_git_root` (`git rev-parse --show-toplevel`) and `reconfigure_logging` (per-session audit-log redirection).
+- Atomic commit-on-success (`finalize_transaction`): a single identity-pinned `feat(<ticket>): <summary>` commit on the feature branch, guarded against empty commits via `git diff --cached --quiet`.
+- `tests/framework/test_gates.py` and bootstrap/finalize/git-root suites covering the new flow.
+
+### Changed
+- Workspace moved from the static `artifacts/` sandbox to the git-anchored clone under `runs/run_<uuid>/`; `PIPELINE_RUNS_BASE` mirrors the existing `PIPELINE_ARTIFACTS_BASE` override.
+- Snapshot collection switched to the index diff: `git add -A` → `git diff --cached <base_branch> --name-only -- <subdir>`, capturing untracked files and scoping Developer/QA to their subtrees within one repo.
+- QA docker gate (`run_qa_unit_tests`) mounts the whole clone root at `/workspace/repo` with `PYTHONPATH=/workspace/repo`, replacing the hardcoded `/workspace/artifacts/{code,tests}` paths.
+
+### Removed
+- `init_sandbox_git`, `_deploy_gitignore`, and `commit_sandbox` — the nested per-directory sandbox-repo API. The single cloned `.git` is now the transactional Unit-of-Work.
+
+### Security
+- All network git invocations run with `GIT_TERMINAL_PROMPT=0` and a wall-clock timeout (child killed and reaped on expiry), so a missing-credential prompt can never hang the pipeline.
+- `get_pipeline_snapshot_files` now raises `RuntimeError` on any git failure (e.g. an orphaned `.git/index.lock`) instead of silently returning an empty snapshot.
+
 ## [v0.7.0] - 2026-05-31 — Prompt/Schema Layer Separation
 
 ADR: [0007-prompt-schema-layer-separation](./docs/adr/0007-prompt-schema-layer-separation.md)
@@ -114,6 +138,7 @@ ADR: [0000-cloud-infra-fsm-research](./docs/adr/0000-cloud-infra-fsm-research.md
 ### Added
 - System topology blueprint: custom Python/Pydantic FSM (over LangGraph), localized Docker sandboxing (over Cloud Run), hybrid Gemini/Claude model routing with context + prompt caching, GitHub App RS256 auth, and a 10-cycle FinOps cost model (~$5.83).
 
+[v0.8.0]: ./docs/adr/0008-git-anchored-sessions-atomic-commit.md
 [v0.7.0]: ./docs/adr/0007-prompt-schema-layer-separation.md
 [v0.6.0]: ./docs/adr/0006-fsm-state-serialization-resume.md
 [v0.5.0]: ./docs/adr/0005-git-driven-state-tracking-qa-fanout.md

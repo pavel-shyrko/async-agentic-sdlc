@@ -33,8 +33,8 @@ As determined during the initial research phase, this project intentionally reje
    * **Claude 4.6 Sonnet**: Lead Software Engineer (sandboxed CLI executions via Claude Code).
 3. **Sandboxed Runtimes**: Isolated Docker containers run code execution and verification gates to prevent agent workspace corruption.
 4. **Dual-Channel Observability**: Complete console diagnostics split from a persistent, rotating debug audit log (`sdlc_audit.log`). Real-time input/output token metrics tracked natively.
-5. **Git-Driven State Tracking**: Agent sandboxes are initialized as isolated Git repositories. All snapshot collection uses `git diff <base_branch> --name-only`, providing a strict causal delta and protecting context windows from binary pollution and retry bleed.
-6. **Brownfield & Multi-File Support**: The pipeline accepts multi-file architecture contracts and processes them via a `--base-branch` CLI flag. QA test generation fans out concurrently via `asyncio.gather` — one isolated test file per production module — bypassing LLM output token ceilings.
+5. **Git-Anchored Sessions**: Each run shallow-clones the target repository into an isolated session directory (`runs/run_<uuid>/repo/`), checks out a `feat/ticket-<ticket>` branch, and treats the single clone's `.git` as the transactional Unit-of-Work. Snapshots use the index diff (`git add -A` → `git diff --cached <base_branch> --name-only`), giving a strict causal delta — including untracked files — while protecting context windows from binary pollution and retry bleed. On full success the orchestrator makes one atomic `feat(<ticket>): …` commit (opt-in `--push`).
+6. **Brownfield & Multi-File Support**: The pipeline operates on any external repository via `--repo` and `--ticket`, with `--src-dir` / `--tests-dir` selecting the target paths inside the clone and `--base-branch` as the diff anchor. QA test generation fans out concurrently via `asyncio.gather` — one isolated test file per production module — bypassing LLM output token ceilings.
 
 ---
 
@@ -53,11 +53,13 @@ async-agentic-sdlc/
 │   ├── system/                 # Per-role system prompts (planner, architect, developer, qa, reviewer)
 │   └── skills/                 # Reusable prompt fragments injected into agents (engineering_guide, strict_validation, deterministic_mutation)
 ├── tickets/                    # Sample requirement tickets consumed via -f / --file
-├── artifacts/                  # Volatile runtime state (created dynamically, ignored by git)
-│   ├── code/                   # Generated production source files
-│   ├── tests/                  # Generated unit test files
-│   ├── logs/                   # Log outputs (sdlc_audit.log)
-│   └── reports/                # Incident reports and json states
+├── runs/                       # Volatile per-run sessions (created dynamically, ignored by git)
+│   └── run_<uuid>/             # One isolated session per orchestrator run
+│       ├── repo/               # Shallow clone of the target repo on branch feat/ticket-<ticket>
+│       │   ├── <src-dir>/      # Production source the Developer agent mutates (default src/)
+│       │   └── <tests-dir>/    # Tests the QA agent generates (default tests/)
+│       ├── logs/               # Per-session audit log (sdlc_audit.log)
+│       └── reports/            # Checkpoint + incident json states (kept OUTSIDE the clone)
 ├── docs/
 │   ├── adr/                                    # Architecture Decision Records (MADR)
 │   │   ├── 0000-cloud-infra-fsm-research.md    # Cloud Infra & FSM Architecture Research
@@ -74,13 +76,14 @@ async-agentic-sdlc/
 ├── CHANGELOG.md                # Release history (Keep a Changelog), linked to ADRs
 ├── PRACTICUM.md                # Project manifest & Key Engineering Takeaways
 ├── requirements.txt            # Explicit dependency manifest
-├── .gitignore                  # Ignores artifacts/ — runtime state stays out of git
+├── .gitignore                  # Ignores artifacts/ and runs/ — runtime state stays out of git
 └── README.md                   # System mission briefing & specifications
 ```
 
-**Separation of concerns:** `src/` holds the committed source code, while `artifacts/` holds
-all volatile runtime state produced by the agents. The repo root stays clean because
-`.gitignore` excludes `artifacts/` — you keep local iteration history without polluting
+**Separation of concerns:** `src/` holds the committed engine source code, while each
+`runs/run_<uuid>/` holds one volatile, git-anchored session — the cloned target repo plus its
+own logs/reports. The engine repo root stays clean because `.gitignore` excludes both
+`artifacts/` (legacy) and `runs/`, so you keep local session history without polluting
 `git status`.
 
 ---
@@ -102,23 +105,30 @@ export GEMINI_API_KEY="your-api-key-here"
 Run the main orchestrator loop to initiate the autonomous code-generation and testing pipeline:
 
 ```bash
-# Inline task description
-python3 orchestrator.py "Implement is_prime(num: int) -> bool"
+# Target repo + ticket are required; inline description is the task body (falls back to the ticket).
+python3 orchestrator.py --repo https://github.com/acme/widgets.git --ticket WID-42 \
+    "Implement is_prime(num: int) -> bool"
 
-# Task from a file (brownfield — specify the repo's main branch as anchor)
-python3 orchestrator.py -f tickets/003_multi_file_geometry.md --base-branch main
+# Task body from a file, with custom source/tests paths inside the repo and a base-branch anchor.
+python3 orchestrator.py --repo /path/to/local/repo --ticket WID-43 \
+    -f tickets/003_multi_file_geometry.md --src-dir src/ --tests-dir tests/ --base-branch main
 
-# Resume from a persisted checkpoint after a crash or process restart
-python3 orchestrator.py --resume artifacts/reports/checkpoint.json
+# Push the feature branch (feat/ticket-<ticket>) to origin after the atomic success commit.
+python3 orchestrator.py --repo git@github.com:acme/widgets.git --ticket WID-44 "..." --push
 
-# Resume but reset the Circuit Breaker retry budget (e.g. after fixing an agent prompt)
-python3 orchestrator.py --resume artifacts/reports/checkpoint.json --reset-attempts
+# Resume from a persisted checkpoint after a crash or process restart (path is run-scoped).
+python3 orchestrator.py --resume runs/run_<uuid>/reports/checkpoint.json
+
+# Resume but reset the Circuit Breaker retry budget (e.g. after fixing an agent prompt).
+python3 orchestrator.py --resume runs/run_<uuid>/reports/checkpoint.json --reset-attempts
 ```
 
-The orchestrator writes a single rolling `artifacts/reports/checkpoint.json` after every
-critical FSM node (Architect approval, QA approval, end of each self-heal cycle). On
-`--resume`, nodes whose outputs are already present in the restored context are bypassed,
-and the Circuit Breaker counter (`current_attempt`) is honoured exactly as it was persisted.
+Each run is isolated under `runs/run_<uuid>/`: the target repo is shallow-cloned into `repo/` on a
+`feat/ticket-<ticket>` branch, and a single rolling `runs/run_<uuid>/reports/checkpoint.json` is written
+after every critical FSM node (Architect approval, QA approval, end of each self-heal cycle). On `--resume`,
+nodes whose outputs are already present in the restored context are bypassed, and the Circuit Breaker
+counter (`current_attempt`) is honoured exactly as it was persisted. When all gates pass, the verified work
+is committed atomically to the feature branch.
 
 ---
 

@@ -6,7 +6,7 @@
 * **Plan Mode**: For multi-file changes or ambiguous errors, ALWAYS outline a 3-line plan before mutating code.
 
 ## Development Commands
-* **Run Orchestrator**: `python3 orchestrator.py -f <ticket_path>`
+* **Run Orchestrator**: `python3 orchestrator.py --repo <url|path> --ticket <ID> -f <ticket_path>`
 * **Run Tests**: `python3 -m unittest discover -s tests`
 * **Check Lint/Security**: `bandit -r src/`
 

@@ -1,7 +1,5 @@
 import asyncio
 
-from src.core.observability import log
-
 
 async def _run_git(args: list[str], cwd: str) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_exec(
@@ -33,18 +31,21 @@ async def get_pipeline_snapshot_files(repo_path: str, base_branch: str, subdir: 
     INDEX diff (``git diff --cached``) — a plain ``git diff`` would silently omit untracked files and
     starve the Reviewer of context. Paths are repo-root-relative; the ``subdir`` pathspec isolates an
     agent to its own subtree within the shared index. Agents never commit — changes remain staged.
+
+    Any non-zero git exit (e.g. an orphaned ``.git/index.lock``) raises ``RuntimeError`` so the FSM
+    fails fast instead of silently feeding the Reviewer an empty snapshot.
     """
-    await _run_git(["add", "-A"], cwd=repo_path)
+    add_rc, add_out = await _run_git(["add", "-A"], cwd=repo_path)
+    if add_rc != 0:
+        raise RuntimeError(f"Git snapshot failed (exit {add_rc}): {add_out}")
 
     diff_args = ["diff", "--cached", base_branch, "--name-only"]
     if subdir:
         diff_args += ["--", subdir]
 
     returncode, output = await _run_git(diff_args, cwd=repo_path)
-
     if returncode != 0:
-        log.error(f"🚨 CRITICAL: Base branch '{base_branch}' not found for diff.")
-        return []
+        raise RuntimeError(f"Git snapshot failed (exit {returncode}): {output}")
 
     files = [p for p in output.splitlines() if p]
     if ".gitignore" in files:

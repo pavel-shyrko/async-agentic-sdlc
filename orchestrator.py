@@ -137,8 +137,17 @@ async def bootstrap_session(cfg: RunConfig) -> tuple[Path, WorkspacePaths]:
     # Atomic shallow clone (single subprocess, HEAD only) — origin is configured automatically.
     # Network op: bounded by GIT_NETWORK_TIMEOUT so a credential prompt can never hang the run.
     await _run_checked(["git", "clone", "--depth", "1", cfg.repo, str(repo_dir)], "git clone", timeout=GIT_NETWORK_TIMEOUT)
+
     branch = f"feat/ticket-{cfg.ticket}"
     await _run_checked(["git", "-C", str(repo_dir), "checkout", "-b", branch], "git checkout -b")
+
+    # Force a LOCAL ref for the base branch via an explicit refspec (<base>:<base>) so the snapshot diff
+    # `git diff --cached <base_branch>` resolves it — a bare fetch lands only in FETCH_HEAD. Done AFTER
+    # the feature-branch checkout: git refuses to fetch into the still-checked-out default branch.
+    await _run_checked(
+        ["git", "-C", str(repo_dir), "fetch", "--depth", "1", "origin", f"{cfg.base_branch}:{cfg.base_branch}"],
+        "git fetch base branch", timeout=GIT_NETWORK_TIMEOUT,
+    )
     log.info(f"   [GIT] Shallow-cloned {cfg.repo} -> {repo_dir} (branch: {branch})")
 
     try:

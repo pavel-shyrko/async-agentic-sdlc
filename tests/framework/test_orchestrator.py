@@ -627,8 +627,8 @@ class BootstrapSessionTests(unittest.IsolatedAsyncioTestCase):
                 # Act
                 run_dir, paths = await orchestrator.bootstrap_session(cfg)
 
-            # Assert — two git subprocesses: shallow clone then feature-branch checkout.
-            self.assertEqual(exec_mock.call_count, 2)
+            # Assert — three git subprocesses: shallow clone, feature-branch checkout, base-branch fetch.
+            self.assertEqual(exec_mock.call_count, 3)
             clone_args = exec_mock.call_args_list[0].args
             self.assertEqual(clone_args[:5], ("git", "clone", "--depth", "1", "some-repo"))
             # Interactive credential prompts are disabled so a private repo fails fast, never hangs.
@@ -637,6 +637,10 @@ class BootstrapSessionTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("checkout", checkout_args)
             self.assertIn("-b", checkout_args)
             self.assertIn("feat/ticket-DEMO-1", checkout_args)
+            # The base branch is force-fetched into a LOCAL ref (refspec) AFTER checkout so the snapshot diff resolves it.
+            fetch_args = exec_mock.call_args_list[2].args
+            self.assertIn("fetch", fetch_args)
+            self.assertIn("main:main", fetch_args)
             # Assert — workspace anchored to the clone; logging re-pointed at the run logs dir.
             self.assertEqual(paths.code_dir.name, "src")
             self.assertEqual(paths.tests_dir.name, "tests")

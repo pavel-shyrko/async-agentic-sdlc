@@ -8,7 +8,6 @@ import unittest
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
-from src.utils import git_helpers
 from src.utils.git_helpers import (
     get_git_root,
     get_pipeline_snapshot_files,
@@ -30,14 +29,6 @@ def _git_subcommands(mock_exec: AsyncMock) -> list[tuple[str, ...]]:
 
 class GetPipelineSnapshotFilesTests(unittest.IsolatedAsyncioTestCase):
     """Cumulative INDEX diff against the anchor branch drives the snapshot."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        # The missing-branch path logs a 🚨 ERROR that the Windows console
-        # cannot encode; mute it so the expected fallback stays quiet.
-        patcher = mock.patch.object(git_helpers, "log")
-        self.addCleanup(patcher.stop)
-        patcher.start()
 
     @mock.patch("src.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
     async def test_returns_changed_files_excluding_gitignore(self, mock_exec: AsyncMock) -> None:
@@ -61,13 +52,20 @@ class GetPipelineSnapshotFilesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(files, ["src/a.py", "src/c.py"])
 
     @mock.patch("src.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
-    async def test_falls_back_to_empty_list_when_base_branch_missing(self, mock_exec: AsyncMock) -> None:
-        # Arrange — non-zero diff returncode signals an unknown anchor branch.
+    async def test_raises_when_diff_fails(self, mock_exec: AsyncMock) -> None:
+        # Arrange — non-zero diff returncode (e.g. unknown anchor branch / index.lock).
         mock_exec.side_effect = [_fake_proc(0), _fake_proc(128, b"")]
-        # Act
-        files = await get_pipeline_snapshot_files("/repo", "ghost-branch")
-        # Assert
-        self.assertEqual(files, [])
+        # Act / Assert — fail fast instead of silently feeding an empty snapshot.
+        with self.assertRaises(RuntimeError):
+            await get_pipeline_snapshot_files("/repo", "ghost-branch")
+
+    @mock.patch("src.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    async def test_raises_when_git_add_fails(self, mock_exec: AsyncMock) -> None:
+        # Arrange — staging itself fails (e.g. orphaned .git/index.lock).
+        mock_exec.side_effect = [_fake_proc(128, b"")]
+        # Act / Assert
+        with self.assertRaises(RuntimeError):
+            await get_pipeline_snapshot_files("/repo", "main")
 
     @mock.patch("src.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
     async def test_stages_all_then_diffs_cached_against_base_branch(self, mock_exec: AsyncMock) -> None:

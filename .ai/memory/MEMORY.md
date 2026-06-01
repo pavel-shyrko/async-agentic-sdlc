@@ -1,3 +1,3 @@
 - [Context Isolation Guardrail](feedback_context_isolation.md) — Strict domain isolation between CLI config and FSM engine runtime.
-- [Workspace Topology Guardrail](workspace_topology.md) — Strict boundary between Orchestrator Engine code and Agent Sandbox artifacts.
+- [Workspace Topology Guardrail](workspace_topology.md) — Strict boundary between Orchestrator Engine code and the git-anchored agent session (runs/run_<uuid>/).
 - [Debugging Protocol](debugging_protocol.md) — Mandatory log and checkpoint inspection sequence for FSM failures.
