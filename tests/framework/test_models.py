@@ -115,6 +115,46 @@ class WorkspacePathsTests(unittest.TestCase):
         self.assertEqual(paths.code_dir, custom)
 
 
+class WorkspacePathsForRunTests(unittest.TestCase):
+    """Git-anchored mapping resolves absolute paths and blocks traversal escapes."""
+
+    def _make_run(self, base: Path) -> tuple[Path, Path]:
+        run_dir = base / "run_abc"
+        repo_dir = run_dir / "repo"
+        repo_dir.mkdir(parents=True)
+        return run_dir, repo_dir
+
+    def test_maps_code_tests_inside_repo_and_meta_state_outside(self) -> None:
+        # Arrange
+        with TemporaryDirectory() as td:
+            run_dir, repo_dir = self._make_run(Path(td))
+            # Act
+            paths = WorkspacePaths.for_run(run_dir, repo_dir, "src/", "tests/")
+            # Assert — code/tests anchor in the clone; logs/reports stay outside it.
+            self.assertEqual(paths.code_dir, (repo_dir / "src").resolve())
+            self.assertEqual(paths.tests_dir, (repo_dir / "tests").resolve())
+            self.assertEqual(paths.logs_dir, (run_dir / "logs").resolve())
+            self.assertEqual(paths.reports_dir, (run_dir / "reports").resolve())
+            self.assertTrue(paths.code_dir.is_relative_to(repo_dir.resolve()))
+            self.assertFalse(paths.logs_dir.is_relative_to(repo_dir.resolve()))
+
+    def test_rejects_dotdot_traversal_in_src_dir(self) -> None:
+        # Arrange
+        with TemporaryDirectory() as td:
+            run_dir, repo_dir = self._make_run(Path(td))
+            # Act / Assert
+            with self.assertRaises(ValueError):
+                WorkspacePaths.for_run(run_dir, repo_dir, "../../etc", "tests/")
+
+    def test_rejects_absolute_path_injection_in_tests_dir(self) -> None:
+        # Arrange
+        with TemporaryDirectory() as td:
+            run_dir, repo_dir = self._make_run(Path(td))
+            # Act / Assert — an absolute operand would otherwise escape the repo root.
+            with self.assertRaises(ValueError):
+                WorkspacePaths.for_run(run_dir, repo_dir, "src/", "/etc")
+
+
 class ContractModelTests(unittest.TestCase):
     """Pydantic contracts parse expected payloads and defaults."""
 

@@ -1,6 +1,7 @@
 ﻿"""Unit tests for checkpoint/resume orchestration flow."""
 import os
 import sys
+import asyncio
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,28 +16,74 @@ from src.core.models import GlobalPipelineContext, ReviewReport, WorkspacePaths
 
 
 class ParseArgsResumeTests(unittest.TestCase):
-    """CLI parser must accept --resume without requiring task description input."""
+    """CLI parser must accept --resume without requiring repo/ticket/description input."""
 
-    def test_resume_does_not_require_description(self) -> None:
+    def test_resume_does_not_require_repo_or_description(self) -> None:
         # Arrange
         argv = ["orchestrator.py", "--resume", "artifacts/reports/checkpoint.json"]
         # Act
         with mock.patch.object(sys, "argv", argv):
-            description, base_branch, resume_path, reset_attempts = orchestrator.parse_args()
+            cfg = orchestrator.parse_args()
         # Assert
-        self.assertIsNone(description)
-        self.assertEqual(base_branch, "main")
-        self.assertEqual(resume_path, Path("artifacts/reports/checkpoint.json"))
-        self.assertFalse(reset_attempts)
+        self.assertIsNone(cfg.description)
+        self.assertEqual(cfg.base_branch, "main")
+        self.assertEqual(cfg.resume, Path("artifacts/reports/checkpoint.json"))
+        self.assertFalse(cfg.reset_attempts)
 
     def test_reset_attempts_flag_is_propagated(self) -> None:
         # Arrange
         argv = ["orchestrator.py", "--resume", "cp.json", "--reset-attempts"]
         # Act
         with mock.patch.object(sys, "argv", argv):
-            _description, _base_branch, _resume, reset_attempts = orchestrator.parse_args()
+            cfg = orchestrator.parse_args()
         # Assert
-        self.assertTrue(reset_attempts)
+        self.assertTrue(cfg.reset_attempts)
+
+
+class ParseArgsFreshRunTests(unittest.TestCase):
+    """Fresh runs require --repo/--ticket and resolve the task description deterministically."""
+
+    def test_missing_repo_and_ticket_errors(self) -> None:
+        # Arrange — a bare task with no repo/ticket cannot bootstrap a git-anchored session.
+        argv = ["orchestrator.py", "do a thing"]
+        # Act / Assert — argparse aborts with exit code 2.
+        with mock.patch.object(sys, "argv", argv):
+            with self.assertRaises(SystemExit) as exit_ctx:
+                orchestrator.parse_args()
+        self.assertEqual(exit_ctx.exception.code, 2)
+
+    def test_ticket_is_used_as_description_fallback(self) -> None:
+        # Arrange — no inline/-f description supplied.
+        argv = ["orchestrator.py", "--repo", "git@host:proj.git", "--ticket", "DEMO-1"]
+        # Act
+        with mock.patch.object(sys, "argv", argv):
+            cfg = orchestrator.parse_args()
+        # Assert
+        self.assertEqual(cfg.repo, "git@host:proj.git")
+        self.assertEqual(cfg.ticket, "DEMO-1")
+        self.assertEqual(cfg.description, "DEMO-1")
+        self.assertEqual(cfg.src_dir, "src/")
+        self.assertEqual(cfg.tests_dir, "tests/")
+        self.assertIsNone(cfg.resume)
+
+    def test_inline_description_overrides_ticket_fallback(self) -> None:
+        # Arrange
+        argv = ["orchestrator.py", "build the X", "--repo", "r", "--ticket", "T-9"]
+        # Act
+        with mock.patch.object(sys, "argv", argv):
+            cfg = orchestrator.parse_args()
+        # Assert
+        self.assertEqual(cfg.description, "build the X")
+
+    def test_src_and_tests_dir_overrides_are_captured(self) -> None:
+        # Arrange
+        argv = ["orchestrator.py", "--repo", "r", "--ticket", "T", "--src-dir", "app/", "--tests-dir", "spec/"]
+        # Act
+        with mock.patch.object(sys, "argv", argv):
+            cfg = orchestrator.parse_args()
+        # Assert
+        self.assertEqual(cfg.src_dir, "app/")
+        self.assertEqual(cfg.tests_dir, "spec/")
 
 
 class MainResumeSkipFlowTests(unittest.IsolatedAsyncioTestCase):
@@ -77,7 +124,8 @@ class MainResumeSkipFlowTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 mock.patch.object(orchestrator, "check_environment"),
-                mock.patch.object(orchestrator, "parse_args", return_value=(None, "main", Path("cp.json"), False)),
+                mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
+                    description=None, base_branch="main", resume=Path("cp.json"), reset_attempts=False)),
                 mock.patch.object(GlobalPipelineContext, "load_checkpoint", return_value=ctx),
                 mock.patch.object(orchestrator, "run_architect_node", new_callable=AsyncMock) as architect,
                 mock.patch.object(orchestrator, "run_qa_agent_node", new_callable=AsyncMock) as qa,
@@ -100,7 +148,8 @@ class MainResumeSkipFlowTests(unittest.IsolatedAsyncioTestCase):
         # Arrange / Act / Assert
         with (
             mock.patch.object(orchestrator, "check_environment"),
-            mock.patch.object(orchestrator, "parse_args", return_value=(None, "main", Path("bad.json"), False)),
+            mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
+                description=None, base_branch="main", resume=Path("bad.json"), reset_attempts=False)),
             mock.patch.object(GlobalPipelineContext, "load_checkpoint", side_effect=ValueError("invalid")),
         ):
             with self.assertRaises(SystemExit) as exit_ctx:
@@ -135,7 +184,10 @@ class MainCheckpointWritePointsTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 mock.patch.object(orchestrator, "check_environment"),
-                mock.patch.object(orchestrator, "parse_args", return_value=("fresh run", "main", None, False)),
+                mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
+                    description="fresh run", base_branch="main", resume=None, reset_attempts=False,
+                    repo="dummy-repo", ticket="DEMO-1")),
+                mock.patch.object(orchestrator, "bootstrap_session", new=AsyncMock(return_value=(base / "run", paths))),
                 mock.patch.object(GlobalPipelineContext, "save_checkpoint", autospec=True) as save_checkpoint,
                 mock.patch.object(orchestrator, "run_architect_node", new=AsyncMock(side_effect=lambda c: setattr(c, "contract", {
                     "files_to_modify": ["src/core/models.py"],
@@ -198,7 +250,8 @@ class MainCheckpointWritePointsTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 mock.patch.object(orchestrator, "check_environment"),
-                mock.patch.object(orchestrator, "parse_args", return_value=(None, "main", Path("cp.json"), False)),
+                mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
+                    description=None, base_branch="main", resume=Path("cp.json"), reset_attempts=False)),
                 mock.patch.object(GlobalPipelineContext, "load_checkpoint", return_value=ctx),
                 mock.patch.object(orchestrator, "run_architect_node", new_callable=AsyncMock) as architect,
                 mock.patch.object(orchestrator, "run_qa_agent_node", new=AsyncMock(side_effect=lambda c, _e: setattr(c, "test_code_snapshot", "new tests"))) as qa,
@@ -257,7 +310,10 @@ class MainCheckpointWritePointsTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 mock.patch.object(orchestrator, "check_environment"),
-                mock.patch.object(orchestrator, "parse_args", return_value=("fresh run", "main", None, False)),
+                mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
+                    description="fresh run", base_branch="main", resume=None, reset_attempts=False,
+                    repo="dummy-repo", ticket="DEMO-1")),
+                mock.patch.object(orchestrator, "bootstrap_session", new=AsyncMock(return_value=(base / "run", paths))),
                 mock.patch.object(GlobalPipelineContext, "save_checkpoint", autospec=True) as save_checkpoint,
                 mock.patch.object(orchestrator, "run_architect_node", new=AsyncMock(side_effect=lambda c: setattr(c, "contract", {
                     "files_to_modify": ["src/core/models.py"],
@@ -340,7 +396,8 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 mock.patch.object(orchestrator, "check_environment"),
-                mock.patch.object(orchestrator, "parse_args", return_value=(None, "main", Path("cp.json"), False)),
+                mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
+                    description=None, base_branch="main", resume=Path("cp.json"), reset_attempts=False)),
                 mock.patch.object(GlobalPipelineContext, "load_checkpoint", return_value=ctx),
                 mock.patch.object(orchestrator, "run_architect_node", new_callable=AsyncMock) as architect,
                 mock.patch.object(orchestrator, "run_qa_agent_node", new=AsyncMock(side_effect=lambda c, _e: setattr(c, "test_code_snapshot", "fresh tests"))) as qa,
@@ -402,7 +459,8 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 mock.patch.object(orchestrator, "check_environment"),
-                mock.patch.object(orchestrator, "parse_args", return_value=(None, "main", Path("cp.json"), False)),
+                mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
+                    description=None, base_branch="main", resume=Path("cp.json"), reset_attempts=False)),
                 mock.patch.object(GlobalPipelineContext, "load_checkpoint", return_value=ctx),
                 mock.patch.object(orchestrator, "run_architect_node", new_callable=AsyncMock),
                 mock.patch.object(orchestrator, "run_qa_agent_node", new_callable=AsyncMock) as qa,
@@ -446,7 +504,8 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 mock.patch.object(orchestrator, "check_environment"),
-                mock.patch.object(orchestrator, "parse_args", return_value=(None, "main", Path("cp.json"), False)),
+                mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
+                    description=None, base_branch="main", resume=Path("cp.json"), reset_attempts=False)),
                 mock.patch.object(GlobalPipelineContext, "load_checkpoint", return_value=ctx),
                 mock.patch.object(orchestrator, "run_architect_node", new_callable=AsyncMock) as architect,
                 mock.patch.object(orchestrator, "run_qa_agent_node", new_callable=AsyncMock) as qa,
@@ -510,7 +569,8 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 mock.patch.object(orchestrator, "check_environment"),
-                mock.patch.object(orchestrator, "parse_args", return_value=(None, "main", Path("cp.json"), True)),
+                mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
+                    description=None, base_branch="main", resume=Path("cp.json"), reset_attempts=True)),
                 mock.patch.object(GlobalPipelineContext, "load_checkpoint", return_value=ctx),
                 mock.patch.object(orchestrator, "run_architect_node", new_callable=AsyncMock) as architect,
                 mock.patch.object(orchestrator, "run_qa_agent_node", new=AsyncMock(side_effect=lambda c, _e: setattr(c, "test_code_snapshot", "fresh tests"))) as qa,
@@ -528,6 +588,95 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(developer.await_count, 1)
             # After the single successful cycle the persisted counter advances from 1 to 2.
             self.assertEqual(ctx.current_attempt, 2)
+
+
+class BootstrapSessionTests(unittest.IsolatedAsyncioTestCase):
+    """Session bootstrap must shallow-clone, branch, map paths, and re-anchor logging."""
+
+    async def test_shallow_clone_branch_and_logging_reconfigured(self) -> None:
+        # Arrange
+        with TemporaryDirectory() as td:
+            cfg = orchestrator.RunConfig(
+                description="d", base_branch="main", resume=None, reset_attempts=False,
+                repo="some-repo", ticket="DEMO-1", src_dir="src/", tests_dir="tests/",
+            )
+            proc = mock.MagicMock()
+            proc.returncode = 0
+            proc.communicate = AsyncMock(return_value=(b"", b""))
+            with (
+                mock.patch.object(orchestrator, "RUNS_BASE", Path(td)),
+                mock.patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)) as exec_mock,
+                mock.patch.object(orchestrator, "reconfigure_logging") as reconf,
+            ):
+                # Act
+                run_dir, paths = await orchestrator.bootstrap_session(cfg)
+
+            # Assert — two git subprocesses: shallow clone then feature-branch checkout.
+            self.assertEqual(exec_mock.call_count, 2)
+            clone_args = exec_mock.call_args_list[0].args
+            self.assertEqual(clone_args[:5], ("git", "clone", "--depth", "1", "some-repo"))
+            # Interactive credential prompts are disabled so a private repo fails fast, never hangs.
+            self.assertEqual(exec_mock.call_args_list[0].kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
+            checkout_args = exec_mock.call_args_list[1].args
+            self.assertIn("checkout", checkout_args)
+            self.assertIn("-b", checkout_args)
+            self.assertIn("feat/ticket-DEMO-1", checkout_args)
+            # Assert — workspace anchored to the clone; logging re-pointed at the run logs dir.
+            self.assertEqual(paths.code_dir.name, "src")
+            self.assertEqual(paths.tests_dir.name, "tests")
+            self.assertEqual(paths.logs_dir.name, "logs")
+            reconf.assert_called_once_with(paths.logs_dir)
+            self.assertTrue(str(run_dir).startswith(str(Path(td).resolve())))
+
+    async def test_clone_failure_aborts_with_exit_1(self) -> None:
+        # Arrange — git clone returns non-zero; the run must abort and surface the child's stderr.
+        with TemporaryDirectory() as td:
+            cfg = orchestrator.RunConfig(
+                description="d", base_branch="main", resume=None, reset_attempts=False,
+                repo="bad-repo", ticket="T", src_dir="src/", tests_dir="tests/",
+            )
+            proc = mock.MagicMock()
+            proc.returncode = 128
+            proc.communicate = AsyncMock(return_value=(b"", b"fatal: repository not found"))
+            with (
+                mock.patch.object(orchestrator, "RUNS_BASE", Path(td)),
+                mock.patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)),
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "log") as mock_log,
+            ):
+                # Act / Assert
+                with self.assertRaises(SystemExit) as exit_ctx:
+                    await orchestrator.bootstrap_session(cfg)
+            self.assertEqual(exit_ctx.exception.code, 1)
+            # The child's stderr must reach the operator's error log (requirement #3).
+            logged = " ".join(str(c) for c in mock_log.error.call_args_list)
+            self.assertIn("repository not found", logged)
+
+    async def test_clone_timeout_kills_process_and_exits_1(self) -> None:
+        # Arrange — the network clone exceeds its timeout; the child must be killed AND reaped
+        # (kill alone would leave a <defunct> zombie in the OS process table).
+        with TemporaryDirectory() as td:
+            cfg = orchestrator.RunConfig(
+                description="d", base_branch="main", resume=None, reset_attempts=False,
+                repo="slow-repo", ticket="T", src_dir="src/", tests_dir="tests/",
+            )
+            proc = mock.MagicMock()
+            proc.kill = mock.MagicMock()
+            proc.wait = AsyncMock()
+            # Plain (non-coroutine) return so the patched wait_for leaves no un-awaited coroutine.
+            proc.communicate = mock.MagicMock(return_value=None)
+            with (
+                mock.patch.object(orchestrator, "RUNS_BASE", Path(td)),
+                mock.patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)),
+                mock.patch("asyncio.wait_for", new=AsyncMock(side_effect=asyncio.TimeoutError)),
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+            ):
+                # Act / Assert
+                with self.assertRaises(SystemExit) as exit_ctx:
+                    await orchestrator.bootstrap_session(cfg)
+            self.assertEqual(exit_ctx.exception.code, 1)
+            proc.kill.assert_called_once()
+            proc.wait.assert_awaited_once()
 
 
 if __name__ == "__main__":

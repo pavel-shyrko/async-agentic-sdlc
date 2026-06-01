@@ -3,15 +3,19 @@
 Unlike the unit suites (which mock ``asyncio.create_subprocess_exec`` and the whole agent
 nodes), this drives the full orchestrator through the real
 architect/qa/developer/reviewer nodes so the genuine ``git`` binary, real file creation, and
-OS-specific path/CRLF handling are all exercised. Only the model boundaries are mocked:
+OS-specific path/CRLF handling are all exercised — including the new git-anchored bootstrap,
+which performs a **real shallow clone** of a programmatically-created source repo. Only the
+model boundaries are mocked:
 
 * Gemini  -> ``src.utils.llm.instructor_client`` (structured output for architect/qa/reviewer)
 * Claude  -> ``src.agents.developer.run_claude_cli`` (file mutation)
 * docker QA gate -> ``orchestrator.run_qa_unit_tests`` (docker cannot be assumed portable)
 
-The bandit SAST gate runs for real (pure-Python, portable).
+The bandit SAST gate runs for real (pure-Python, portable). ``reconfigure_logging`` is stubbed
+so the per-session log handler never pins an open file inside the auto-cleaned temp tree.
 """
 import os
+import json
 import shutil
 import subprocess
 import unittest
@@ -27,10 +31,8 @@ os.environ.setdefault("GEMINI_API_KEY", "test-key")
 import orchestrator
 from src.core.models import (
     ArchitectureContract,
-    GlobalPipelineContext,
     QATestSuite,
     ReviewReport,
-    WorkspacePaths,
 )
 
 # Deterministic production code the (mocked) Claude developer "writes", and a trivial but
@@ -82,41 +84,54 @@ async def _fake_claude_cli(prompt, files, allowed_root):
     return 0
 
 
+def _git(args: list[str], cwd: Path) -> None:
+    subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True)
+
+
 class PipelineEndToEndTests(unittest.IsolatedAsyncioTestCase):
-    """Full pipeline over real git + real files, mocking only Gemini/Claude/docker."""
+    """Full pipeline over a REAL shallow clone, mocking only Gemini/Claude/docker."""
 
     def setUp(self) -> None:
         super().setUp()
         if not shutil.which("git"):
             self.skipTest("git binary not available on PATH")
 
-    async def test_full_pipeline_creates_real_files_and_commits(self) -> None:
-        # Arrange — isolate the entire artifact tree under a temp dir.
+    def _seed_source_repo(self, root: Path) -> Path:
+        """Builds a real git repo with a single commit so ``clone --depth 1`` has a HEAD."""
+        source = root / "source"
+        source.mkdir()
+        _git(["init"], source)
+        _git(["config", "user.email", "seed@sdlc.local"], source)
+        _git(["config", "user.name", "Seed"], source)
+        (source / "README.md").write_text("seed\n", encoding="utf-8")
+        _git(["add", "."], source)
+        _git(["commit", "-m", "seed commit"], source)
+        return source
+
+    async def test_full_pipeline_clones_creates_real_files_and_commits(self) -> None:
+        # Arrange — isolate both the source repo and the run tree under a temp dir.
         with TemporaryDirectory() as td:
             base = Path(td)
-            paths = WorkspacePaths(
-                code_dir=base / "code",
-                tests_dir=base / "tests",
-                logs_dir=base / "logs",
-                reports_dir=base / "reports",
-            )
-            ctx = GlobalPipelineContext(
-                pr_description="add two ints", base_branch="main", workspace_paths=paths
-            )
+            source = self._seed_source_repo(base)
+            runs_base = base / "runs"
 
             client = mock.MagicMock()
             client.chat.completions.create_with_completion.side_effect = _fake_structured_llm
 
             with (
                 mock.patch.object(orchestrator, "check_environment"),
+                mock.patch.object(orchestrator, "RUNS_BASE", runs_base),
+                # Avoid pinning an open audit-log file inside the auto-cleaned temp tree.
+                mock.patch.object(orchestrator, "reconfigure_logging"),
                 mock.patch.object(
                     orchestrator,
                     "parse_args",
-                    return_value=("add two ints", "main", None, False),
+                    return_value=orchestrator.RunConfig(
+                        description="add two ints", base_branch="main", resume=None,
+                        reset_attempts=False, repo=str(source), ticket="DEMO-1",
+                        src_dir="src/", tests_dir="tests/",
+                    ),
                 ),
-                mock.patch.object(
-                    orchestrator, "GlobalPipelineContext", wraps=GlobalPipelineContext
-                ) as wrapped_ctx_cls,
                 mock.patch("src.utils.llm.instructor_client", client),
                 mock.patch(
                     "src.agents.developer.run_claude_cli",
@@ -128,35 +143,39 @@ class PipelineEndToEndTests(unittest.IsolatedAsyncioTestCase):
                     new=AsyncMock(return_value=(True, [])),
                 ),
             ):
-                wrapped_ctx_cls.return_value = ctx
-
-                # Act — real architect/qa/developer/reviewer nodes + real git + real bandit.
+                # Act — real bootstrap (shallow clone + feature branch) + real agents + real bandit.
                 await orchestrator.main()
 
-            # Assert — real files were created on disk.
-            code_file = paths.code_dir / "calculator.py"
-            test_file = paths.tests_dir / "test_calculator.py"
+            # Assert — exactly one session was bootstrapped with a real clone.
+            repos = list(runs_base.glob("run_*/repo"))
+            self.assertEqual(len(repos), 1, "expected one cloned session repo")
+            repo_dir = repos[0]
+            run_dir = repo_dir.parent
+
+            # Assert — the clone is on the feature branch.
+            head = subprocess.run(
+                ["git", "-C", str(repo_dir), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            self.assertEqual(head, "feat/ticket-DEMO-1")
+
+            # Assert — real files were created under the dynamic code/tests dirs inside the clone.
+            code_file = repo_dir / "src" / "calculator.py"
+            test_file = repo_dir / "tests" / "test_calculator.py"
             self.assertTrue(code_file.is_file(), "developer did not write production code")
             self.assertEqual(code_file.read_text(encoding="utf-8"), _PROD_CODE)
             self.assertTrue(test_file.is_file(), "QA did not write the test file")
             self.assertIn("CalculatorTests", test_file.read_text(encoding="utf-8"))
 
-            # Assert — real sandbox git repos were initialised and hold a real commit.
-            self.assertTrue((paths.code_dir / ".git").is_dir())
-            self.assertTrue((paths.tests_dir / ".git").is_dir())
-            commit_count = subprocess.run(
-                ["git", "-C", str(paths.code_dir), "rev-list", "--count", "HEAD"],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout.strip()
-            self.assertGreaterEqual(int(commit_count), 1)
-
-            # Assert — the real git-diff snapshot path captured both artifacts. This is where
-            # path-separator ("\\" vs "/") and CRLF/LF discrepancies would surface.
-            self.assertIn("=== FILE: calculator.py ===", ctx.production_code_snapshot)
-            self.assertIn("def add", ctx.production_code_snapshot)
-            self.assertIn("CalculatorTests", ctx.test_code_snapshot)
+            # Assert — meta-state lives OUTSIDE the clone, and the real checkpoint captured the
+            # git-diff snapshots (where path-separator / CRLF discrepancies would surface).
+            self.assertFalse((repo_dir / "logs").exists())
+            checkpoint = run_dir / "reports" / "checkpoint.json"
+            self.assertTrue(checkpoint.is_file(), "checkpoint not written to run reports dir")
+            data = json.loads(checkpoint.read_text(encoding="utf-8"))
+            self.assertIn("calculator.py", data["production_code_snapshot"])
+            self.assertIn("def add", data["production_code_snapshot"])
+            self.assertIn("CalculatorTests", data["test_code_snapshot"])
 
 
 if __name__ == "__main__":

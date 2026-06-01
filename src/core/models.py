@@ -13,6 +13,10 @@ TESTS_DIR = ARTIFACTS_DIR / "tests"
 LOGS_DIR = ARTIFACTS_DIR / "logs"
 REPORTS_DIR = ARTIFACTS_DIR / "reports"
 
+# Root for per-run, git-anchored sessions (runs/run_<uuid>/...). Env-overridable so
+# tests and parallel orchestrators can relocate the session tree off the engine repo.
+RUNS_BASE = Path(os.environ.get("PIPELINE_RUNS_BASE", "runs"))
+
 class WorkspacePaths(BaseModel):
     code_dir: Path = CODE_DIR
     tests_dir: Path = TESTS_DIR
@@ -22,6 +26,31 @@ class WorkspacePaths(BaseModel):
     def model_post_init(self, __context) -> None:
         for d in (self.code_dir, self.tests_dir, self.logs_dir, self.reports_dir):
             d.mkdir(parents=True, exist_ok=True)
+
+    @classmethod
+    def for_run(cls, run_dir: Path, repo_dir: Path, src_dir: str, tests_dir: str) -> "WorkspacePaths":
+        """Maps a git-anchored run onto absolute workspace paths.
+
+        ``code_dir``/``tests_dir`` resolve inside the cloned repo; ``logs_dir``/``reports_dir``
+        live under the run root (OUTSIDE the clone) to keep meta-state out of the target tree.
+
+        A containment guard (analogous to ``_assert_within_root``) rejects any ``--src-dir`` /
+        ``--tests-dir`` that escapes the repo via ``..`` traversal, so a hostile or fat-fingered
+        argument cannot map the workspace onto the filesystem root.
+        """
+        repo_root = repo_dir.resolve()
+        code_dir = (repo_root / src_dir).resolve()
+        tests_dir_abs = (repo_root / tests_dir).resolve()
+        for label, p in (("--src-dir", code_dir), ("--tests-dir", tests_dir_abs)):
+            if p != repo_root and not p.is_relative_to(repo_root):
+                raise ValueError(f"Path traversal blocked: {label} resolves outside repo ({p}).")
+        run_root = run_dir.resolve()
+        return cls(
+            code_dir=code_dir,
+            tests_dir=tests_dir_abs,
+            logs_dir=run_root / "logs",
+            reports_dir=run_root / "reports",
+        )
 
 # ==========================================
 # CONTRACTS & PIPELINE STATE
