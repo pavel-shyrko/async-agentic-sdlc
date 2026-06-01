@@ -1,6 +1,7 @@
 import os
 import asyncio
-import subprocess
+# subprocess: only PIPE/DEVNULL constants with fixed-argument exec, never shell=True.
+import subprocess  # nosec B404
 
 from src.core.observability import log
 

@@ -1,7 +1,8 @@
 import os
 import sys
 import asyncio
-import subprocess
+# subprocess: only trusted, fixed-argument tool invocations (docker/bandit), never shell=True.
+import subprocess  # nosec B404
 
 from src.core.observability import log
 from src.utils.subprocess_helpers import stream_subprocess_output
