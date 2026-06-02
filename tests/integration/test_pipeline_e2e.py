@@ -175,8 +175,12 @@ class PipelineEndToEndTests(unittest.IsolatedAsyncioTestCase):
             checkpoint = run_dir / "reports" / "checkpoint.json"
             self.assertTrue(checkpoint.is_file(), "checkpoint not written to run reports dir")
             data = json.loads(checkpoint.read_text(encoding="utf-8"))
-            self.assertIn("calculator.py", data["production_code_snapshot"])
-            self.assertIn("def add", data["production_code_snapshot"])
+            # production_code_snapshot is now a {repo-relative path: full content} dict built from the
+            # real working tree; tests are excluded by the snapshot builder.
+            prod = data["production_code_snapshot"]
+            self.assertIn("src/calculator.py", prod)
+            self.assertIn("def add", prod["src/calculator.py"])
+            self.assertNotIn("tests/test_calculator.py", prod)
             self.assertIn("CalculatorTests", data["test_code_snapshot"])
 
             # Assert — the atomic success transaction produced exactly one commit on the feature

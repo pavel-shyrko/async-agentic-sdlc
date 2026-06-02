@@ -195,7 +195,7 @@ class ContractModelTests(unittest.TestCase):
         self.assertEqual(ctx.base_branch, "main")
         self.assertIsNone(ctx.contract)
         self.assertIsNone(ctx.review_report)
-        self.assertEqual(ctx.production_code_snapshot, "")
+        self.assertEqual(ctx.production_code_snapshot, {})
         self.assertEqual(ctx.current_attempt, 1)
         self.assertIsInstance(ctx.workspace_paths, WorkspacePaths)
 
@@ -257,7 +257,7 @@ class GlobalContextCheckpointTests(unittest.TestCase):
                 pr_description="ship checkpoint support",
                 base_branch="main",
                 workspace_paths=paths,
-                production_code_snapshot="print('ok')",
+                production_code_snapshot={"src/m.py": "print('ok')"},
                 test_code_snapshot="assert True",
                 error_trace="none",
             )
@@ -269,7 +269,7 @@ class GlobalContextCheckpointTests(unittest.TestCase):
 
             # Assert
             self.assertEqual(loaded.pr_description, "ship checkpoint support")
-            self.assertEqual(loaded.production_code_snapshot, "print('ok')")
+            self.assertEqual(loaded.production_code_snapshot, {"src/m.py": "print('ok')"})
             self.assertEqual(loaded.test_code_snapshot, "assert True")
             self.assertEqual(loaded.error_trace, "none")
 

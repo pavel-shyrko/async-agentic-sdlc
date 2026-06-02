@@ -3,6 +3,7 @@ import sys
 import uuid
 import argparse
 import asyncio
+import subprocess
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -123,13 +124,13 @@ async def _run_checked(cmd: list[str], action: str, timeout: float | None = None
         sys.exit(1)
 
 
-async def bootstrap_session(cfg: RunConfig) -> tuple[Path, WorkspacePaths]:
+async def bootstrap_session(cfg: RunConfig, run_dir: Path) -> WorkspacePaths:
     """Isolates a run: shallow-clone the target repo, cut the feature branch, map the workspace.
 
-    Produces ``runs/run_<uuid>/repo/`` (shallow clone on ``feat/ticket-<ticket>``) and points the
-    audit log at the run-local ``logs/`` dir so parallel orchestrators never share a trail.
+    The caller owns ``run_dir`` (and has already re-anchored logging to it), so the run id is
+    bound once, up front — no late binding. Produces ``run_dir/repo/`` (shallow clone on
+    ``feat/ticket-<ticket>``) and returns the mapped workspace paths.
     """
-    run_dir = (RUNS_BASE / f"run_{uuid.uuid4().hex}").resolve()
     repo_dir = run_dir / "repo"
     run_dir.mkdir(parents=True, exist_ok=True)
     log.info(f"🌱 Bootstrapping session at {run_dir}")
@@ -156,9 +157,7 @@ async def bootstrap_session(cfg: RunConfig) -> tuple[Path, WorkspacePaths]:
         log.error(f"🚨 {exc}")
         sys.exit(1)
 
-    # Redirect the audit trail into this session's logs/ before any pipeline node runs.
-    reconfigure_logging(paths.logs_dir)
-    return run_dir, paths
+    return paths
 
 
 # ==========================================
@@ -223,13 +222,87 @@ async def finalize_transaction(ctx: GlobalPipelineContext, push: bool = False) -
 
 
 # ==========================================
+# PRODUCTION SNAPSHOT BUILDER
+# ==========================================
+def build_production_snapshot(ctx: GlobalPipelineContext) -> None:
+    """Rebuilds ``ctx.production_code_snapshot`` from the ACTUAL git working-tree state.
+
+    Replaces the Developer agent's self-reported, subtree-scoped output: git reports the exact set
+    of new/modified files (``git ls-files --others --modified --exclude-standard``) and we capture
+    each changed Git-tracked file's FULL content from disk (any text file — .py, json, yaml,
+    Dockerfile, …, not just Python). The snapshot the Reviewer audits is then byte-for-byte what
+    the validation gates ran against — including files the agent mis-placed (the Developer↔Reviewer
+    desync this resolves). Tests are excluded (they live in ``test_code_snapshot``); deleted paths
+    and binary/non-UTF-8 files are recorded with explicit markers instead of crashing the read or
+    flooding the Reviewer with garbage.
+
+    ``ls-files`` is read BEFORE ``git add -A`` so untracked/modified files still appear; we then
+    re-stage the whole tree so the atomic success commit in ``finalize_transaction`` still captures
+    every mutation (the removed Developer call used to stage via the same ``git add -A``).
+    """
+    repo_dir = ctx.workspace_paths.repo_dir
+    # Derive the test-dir prefix dynamically (honours --tests-dir, e.g. spec/) — never hardcode "tests/".
+    # .as_posix() is required: git emits forward-slash paths, so the prefix must match on Windows too.
+    # A tests_dir outside the repo can't collide with repo-relative paths, so no prefix is needed.
+    try:
+        test_prefix = f"{ctx.workspace_paths.tests_dir.relative_to(repo_dir).as_posix()}/"
+    except ValueError:
+        test_prefix = None  # tests_dir lives outside the repo root → no prefix collision possible
+    # -z emits raw NUL-terminated paths (no quoting/escaping of spaces/newlines/unicode) — split on NUL.
+    listing = subprocess.run(
+        ["git", "ls-files", "--others", "--modified", "--exclude-standard", "-z"],
+        cwd=str(repo_dir), capture_output=True, text=True, check=True,
+    )
+
+    snapshot: dict[str, str] = {}
+    for rel in listing.stdout.split('\0'):
+        rel = rel.strip()
+        if not rel:
+            continue
+        # Domain purity: QA-generated tests belong to test_code_snapshot, never the production one.
+        if (test_prefix and rel.startswith(test_prefix)) or Path(rel).name.startswith("test_"):
+            continue
+        file_path = repo_dir / rel
+        if not file_path.exists():
+            # `--modified` also reports deletions (e.g. Developer ghost-file GC) — record, don't crash.
+            snapshot[rel] = "<FILE DELETED BY DEVELOPER>"
+            continue
+        try:
+            snapshot[rel] = file_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            # Never inject binary garbage into the Reviewer context (token explosion) — mark instead.
+            snapshot[rel] = "<BINARY OR NON-UTF8 FILE EXCLUDED>"
+
+    ctx.production_code_snapshot = snapshot
+
+    # Re-stage the working tree so finalize_transaction's atomic commit captures the production delta.
+    subprocess.run(["git", "add", "-A"], cwd=str(repo_dir), check=True)
+
+    log.info(f"   [SNAPSHOT] Captured {len(snapshot)} production file(s): {sorted(snapshot)}")
+
+
+# ==========================================
 # MAIN ORCHESTRATOR
 # ==========================================
 async def main():
     check_environment()
     cfg = parse_args()
 
+    # Bind the run id ONCE, up front (before any logging), so the audit trail is anchored to the
+    # correct run dir from the very first line — fixing the late-binding bug. On resume we reuse
+    # the original run dir derived from the checkpoint path; a fresh run mints a new one.
     if cfg.resume:
+        run_dir = cfg.resume.parent.parent  # runs/run_<uuid>/reports/checkpoint.json -> runs/run_<uuid>
+    else:
+        run_id = uuid.uuid4().hex
+        run_dir = RUNS_BASE / f"run_{run_id}"
+
+    # Re-anchor the audit trail to THIS run's logs/ dir before any other log line is emitted.
+    # Append mode keeps a resumed run's timeline linear in the SAME file instead of splitting it.
+    reconfigure_logging(run_dir / "logs")
+
+    if cfg.resume:
+        log.info(f"▶️ RESUMING FSM EXECUTION FROM CHECKPOINT: {cfg.resume}")
         try:
             ctx = GlobalPipelineContext.load_checkpoint(cfg.resume)
             log.info(f"Loaded checkpoint from {cfg.resume}")
@@ -240,8 +313,8 @@ async def main():
             ctx.current_attempt = 1
             log.info("🔄 Circuit Breaker budget reset via CLI flag.")
     else:
-        # Bootstrap an isolated git-anchored session, then bind the context to its workspace.
-        run_dir, paths = await bootstrap_session(cfg)
+        # Bootstrap an isolated git-anchored session into the pre-bound run dir.
+        paths = await bootstrap_session(cfg, run_dir)
         ctx = GlobalPipelineContext(
             pr_description=cfg.description or "",
             base_branch=cfg.base_branch,
@@ -284,6 +357,9 @@ async def main():
 
         # 3. Development Phase (Developer fixes production code)
         await run_developer_node(ctx, current_error_trace)
+
+        # Snapshot the real working-tree production delta (git-tracked, full content) for the Reviewer.
+        build_production_snapshot(ctx)
 
         # 4. Automated Validation Phase (Runtime gates)
         log.debug("Triggering parallel validation gates (QA & Security)")

@@ -132,6 +132,8 @@ class MainResumeSkipFlowTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 mock.patch.object(orchestrator, "check_environment"),
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "build_production_snapshot"),
                 mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
                     description=None, base_branch="main", resume=Path("cp.json"), reset_attempts=False)),
                 mock.patch.object(GlobalPipelineContext, "load_checkpoint", return_value=ctx),
@@ -193,10 +195,12 @@ class MainCheckpointWritePointsTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 mock.patch.object(orchestrator, "check_environment"),
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "build_production_snapshot"),
                 mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
                     description="fresh run", base_branch="main", resume=None, reset_attempts=False,
                     repo="dummy-repo", ticket="DEMO-1")),
-                mock.patch.object(orchestrator, "bootstrap_session", new=AsyncMock(return_value=(base / "run", paths))),
+                mock.patch.object(orchestrator, "bootstrap_session", new=AsyncMock(return_value=paths)),
                 mock.patch.object(GlobalPipelineContext, "save_checkpoint", autospec=True) as save_checkpoint,
                 mock.patch.object(orchestrator, "run_architect_node", new=AsyncMock(side_effect=lambda c: setattr(c, "contract", {
                     "files_to_modify": ["src/core/models.py"],
@@ -260,6 +264,8 @@ class MainCheckpointWritePointsTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 mock.patch.object(orchestrator, "check_environment"),
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "build_production_snapshot"),
                 mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
                     description=None, base_branch="main", resume=Path("cp.json"), reset_attempts=False)),
                 mock.patch.object(GlobalPipelineContext, "load_checkpoint", return_value=ctx),
@@ -321,10 +327,12 @@ class MainCheckpointWritePointsTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 mock.patch.object(orchestrator, "check_environment"),
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "build_production_snapshot"),
                 mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
                     description="fresh run", base_branch="main", resume=None, reset_attempts=False,
                     repo="dummy-repo", ticket="DEMO-1")),
-                mock.patch.object(orchestrator, "bootstrap_session", new=AsyncMock(return_value=(base / "run", paths))),
+                mock.patch.object(orchestrator, "bootstrap_session", new=AsyncMock(return_value=paths)),
                 mock.patch.object(GlobalPipelineContext, "save_checkpoint", autospec=True) as save_checkpoint,
                 mock.patch.object(orchestrator, "run_architect_node", new=AsyncMock(side_effect=lambda c: setattr(c, "contract", {
                     "files_to_modify": ["src/core/models.py"],
@@ -408,6 +416,8 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 mock.patch.object(orchestrator, "check_environment"),
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "build_production_snapshot"),
                 mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
                     description=None, base_branch="main", resume=Path("cp.json"), reset_attempts=False)),
                 mock.patch.object(GlobalPipelineContext, "load_checkpoint", return_value=ctx),
@@ -472,6 +482,8 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 mock.patch.object(orchestrator, "check_environment"),
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "build_production_snapshot"),
                 mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
                     description=None, base_branch="main", resume=Path("cp.json"), reset_attempts=False)),
                 mock.patch.object(GlobalPipelineContext, "load_checkpoint", return_value=ctx),
@@ -518,6 +530,8 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 mock.patch.object(orchestrator, "check_environment"),
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "build_production_snapshot"),
                 mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
                     description=None, base_branch="main", resume=Path("cp.json"), reset_attempts=False)),
                 mock.patch.object(GlobalPipelineContext, "load_checkpoint", return_value=ctx),
@@ -584,6 +598,8 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 mock.patch.object(orchestrator, "check_environment"),
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "build_production_snapshot"),
                 mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
                     description=None, base_branch="main", resume=Path("cp.json"), reset_attempts=True)),
                 mock.patch.object(GlobalPipelineContext, "load_checkpoint", return_value=ctx),
@@ -609,23 +625,20 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
 class BootstrapSessionTests(unittest.IsolatedAsyncioTestCase):
     """Session bootstrap must shallow-clone, branch, map paths, and re-anchor logging."""
 
-    async def test_shallow_clone_branch_and_logging_reconfigured(self) -> None:
-        # Arrange
+    async def test_shallow_clone_branch_and_workspace_mapping(self) -> None:
+        # Arrange — the caller owns run_dir (logging is re-anchored by main(), not bootstrap).
         with TemporaryDirectory() as td:
             cfg = orchestrator.RunConfig(
                 description="d", base_branch="main", resume=None, reset_attempts=False,
                 repo="some-repo", ticket="DEMO-1", src_dir="src/", tests_dir="tests/",
             )
+            run_dir = Path(td) / "run_test"
             proc = mock.MagicMock()
             proc.returncode = 0
             proc.communicate = AsyncMock(return_value=(b"", b""))
-            with (
-                mock.patch.object(orchestrator, "RUNS_BASE", Path(td)),
-                mock.patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)) as exec_mock,
-                mock.patch.object(orchestrator, "reconfigure_logging") as reconf,
-            ):
+            with mock.patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)) as exec_mock:
                 # Act
-                run_dir, paths = await orchestrator.bootstrap_session(cfg)
+                paths = await orchestrator.bootstrap_session(cfg, run_dir)
 
             # Assert — three git subprocesses: shallow clone, feature-branch checkout, base-branch fetch.
             self.assertEqual(exec_mock.call_count, 3)
@@ -641,12 +654,11 @@ class BootstrapSessionTests(unittest.IsolatedAsyncioTestCase):
             fetch_args = exec_mock.call_args_list[2].args
             self.assertIn("fetch", fetch_args)
             self.assertIn("main:main", fetch_args)
-            # Assert — workspace anchored to the clone; logging re-pointed at the run logs dir.
+            # Assert — workspace anchored under the caller's run_dir; meta-state (logs/reports) outside the clone.
             self.assertEqual(paths.code_dir.name, "src")
             self.assertEqual(paths.tests_dir.name, "tests")
-            self.assertEqual(paths.logs_dir.name, "logs")
-            reconf.assert_called_once_with(paths.logs_dir)
-            self.assertTrue(str(run_dir).startswith(str(Path(td).resolve())))
+            self.assertEqual(paths.logs_dir, (run_dir / "logs").resolve())
+            self.assertEqual(paths.reports_dir, (run_dir / "reports").resolve())
 
     async def test_clone_failure_aborts_with_exit_1(self) -> None:
         # Arrange — git clone returns non-zero; the run must abort and surface the child's stderr.
@@ -666,7 +678,7 @@ class BootstrapSessionTests(unittest.IsolatedAsyncioTestCase):
             ):
                 # Act / Assert
                 with self.assertRaises(SystemExit) as exit_ctx:
-                    await orchestrator.bootstrap_session(cfg)
+                    await orchestrator.bootstrap_session(cfg, Path(td) / "run_test")
             self.assertEqual(exit_ctx.exception.code, 1)
             # The child's stderr must reach the operator's error log (requirement #3).
             logged = " ".join(str(c) for c in mock_log.error.call_args_list)
@@ -693,7 +705,7 @@ class BootstrapSessionTests(unittest.IsolatedAsyncioTestCase):
             ):
                 # Act / Assert
                 with self.assertRaises(SystemExit) as exit_ctx:
-                    await orchestrator.bootstrap_session(cfg)
+                    await orchestrator.bootstrap_session(cfg, Path(td) / "run_test")
             self.assertEqual(exit_ctx.exception.code, 1)
             proc.kill.assert_called_once()
             proc.wait.assert_awaited_once()

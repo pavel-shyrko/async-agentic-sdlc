@@ -11,10 +11,16 @@ async def run_reviewer_node(ctx: GlobalPipelineContext, qa_success: bool, qa_log
     qa_report = "\n".join(qa_log) if qa_log else "No logs produced."
     sec_report = "\n".join(sec_log) if sec_log else "No logs produced."
 
+    # production_code_snapshot is a {repo-relative path: full content} dict; render it as labelled
+    # file blocks so the Reviewer sees the same format as the test suite (not a raw dict repr).
+    production_code = "\n\n".join(
+        f"=== FILE: {path} ===\n{content}" for path, content in ctx.production_code_snapshot.items()
+    ) or "No production code changes detected."
+
     user_content = (
         f"=== ORIGINAL USER REQUIREMENT ===\n{ctx.pr_description}\n\n"
         f"=== ARCHITECT CONTRACT ===\n{ctx.contract.model_dump_json(indent=2)}\n\n"
-        f"=== GENERATED PRODUCTION CODE ===\n{ctx.production_code_snapshot}\n\n"
+        f"=== GENERATED PRODUCTION CODE ===\n{production_code}\n\n"
         f"=== GENERATED TEST SUITE ===\n{ctx.test_code_snapshot}\n\n"
         f"=== FUNCTIONAL TESTS RUN ({'PASSED' if qa_success else 'FAILED'}) ===\n{qa_report}\n\n"
         f"=== SAST SECURITY SCAN ({'PASSED' if sec_success else 'FAILED'}) ===\n{sec_report}"

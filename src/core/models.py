@@ -22,6 +22,7 @@ class WorkspacePaths(BaseModel):
     tests_dir: Path = TESTS_DIR
     logs_dir: Path = LOGS_DIR
     reports_dir: Path = REPORTS_DIR
+    repo_dir: Path = ARTIFACTS_DIR  # git working-tree root; the snapshot builder runs `git ls-files` here
 
     def model_post_init(self, __context) -> None:
         for d in (self.code_dir, self.tests_dir, self.logs_dir, self.reports_dir):
@@ -50,6 +51,7 @@ class WorkspacePaths(BaseModel):
             tests_dir=tests_dir_abs,
             logs_dir=run_root / "logs",
             reports_dir=run_root / "reports",
+            repo_dir=repo_root,
         )
 
 # ==========================================
@@ -88,7 +90,7 @@ class GlobalPipelineContext(BaseModel):
     ticket: str = ""
     workspace_paths: WorkspacePaths = Field(default_factory=WorkspacePaths)
     contract: ArchitectureContract | None = None
-    production_code_snapshot: str = ""
+    production_code_snapshot: dict[str, str] = Field(default_factory=dict)
     test_code_snapshot: str = ""
     error_trace: str = ""
     review_report: ReviewReport | None = None

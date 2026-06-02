@@ -34,6 +34,8 @@ class ReconfigureLoggingTests(unittest.TestCase):
             ]
             self.assertEqual(len(file_handlers), 1, "exactly one audit file handler expected")
             self.assertEqual(Path(file_handlers[0].baseFilename).resolve().parent, new_dir.resolve())
+            # Append mode is mandatory: a resumed run must continue the SAME log, never truncate it.
+            self.assertEqual(file_handlers[0].mode, "a")
             # Console handler must survive the swap.
             self.assertGreaterEqual(len(console_handlers), 1, "console handler must be preserved")
             # The session logs dir is created eagerly.
