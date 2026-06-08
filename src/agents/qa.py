@@ -5,7 +5,7 @@ from pathlib import Path
 from src.core.observability import log, log_token_usage
 from src.core.config import QA_MODEL
 from src.core.models import QATestSuite, GlobalPipelineContext
-from src.core.prompts import get_system_prompt_sections, build_agent_context
+from src.core.prompts import get_system_prompt_sections, build_agent_context, generate_repo_map
 from src.utils.llm import run_structured_llm
 from src.utils.git_helpers import get_git_root, get_pipeline_snapshot_files
 
@@ -22,6 +22,10 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
 
     qa_system_prompt, user_template = get_system_prompt_sections("qa")
     qa_system_prompt += "\n\n" + await build_agent_context("qa", ctx, is_retry=bool(error_trace))
+
+    if not ctx.repository_map:
+        ctx.repository_map = generate_repo_map(ctx.workspace_paths.repo_dir)
+    qa_system_prompt += f"\n\n=== EXISTING REPOSITORY TOPOLOGY ===\n{ctx.repository_map}\n"
 
     if error_trace and ctx.test_code_snapshot:
         qa_system_prompt += f"\n\n=== PREVIOUS TEST SUITE STATE ===\n{ctx.test_code_snapshot}"

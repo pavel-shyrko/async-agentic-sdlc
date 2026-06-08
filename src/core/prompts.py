@@ -37,6 +37,38 @@ def get_system_prompt_sections(agent_name: str, separator: str = PROMPT_SECTION_
     return head, tail
 
 
+def generate_repo_map(repo_dir: Path) -> str:
+    """Render a recursive, depth-unlimited tree of ``repo_dir`` for topology-aware prompting.
+
+    Prunes hidden dirs (``.git``, ``.venv``, ``.pytest_cache``, …) and ``__pycache__`` so the map
+    reflects meaningful source/test topology. Returns "" when the dir is absent, so callers can
+    inject it unconditionally.
+    """
+    root = Path(repo_dir)
+    if not root.is_dir():
+        return ""
+
+    def _ignored(name: str) -> bool:
+        return name.startswith(".") or name == "__pycache__"
+
+    lines: list[str] = [f"{root.name}/"]
+
+    def _walk(directory: Path, prefix: str) -> None:
+        entries = sorted(
+            (e for e in directory.iterdir() if not _ignored(e.name)),
+            key=lambda e: (e.is_file(), e.name.lower()),  # dirs first, then files, alpha
+        )
+        for i, entry in enumerate(entries):
+            last = i == len(entries) - 1
+            connector = "└── " if last else "├── "
+            lines.append(f"{prefix}{connector}{entry.name}{'/' if entry.is_dir() else ''}")
+            if entry.is_dir():
+                _walk(entry, prefix + ("    " if last else "│   "))
+
+    _walk(root, "")
+    return "\n".join(lines)
+
+
 @lru_cache(maxsize=16)
 def get_skill(skill_name: str) -> str:
     path = _SKILLS_DIR / f"{skill_name}.md"

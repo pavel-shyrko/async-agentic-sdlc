@@ -1,7 +1,7 @@
 from src.core.observability import log, log_token_usage
 from src.core.config import ARCHITECT_MODEL
 from src.core.models import ArchitectureContract, GlobalPipelineContext
-from src.core.prompts import get_system_prompt, build_agent_context
+from src.core.prompts import get_system_prompt, build_agent_context, generate_repo_map
 from src.utils.llm import run_structured_llm
 
 # ==========================================
@@ -16,12 +16,19 @@ async def run_architect_node(ctx: GlobalPipelineContext) -> None:
         "architect", ctx, topology_kwargs={"code_prefix": code_prefix}
     )
 
+    if not ctx.repository_map:
+        ctx.repository_map = generate_repo_map(ctx.workspace_paths.repo_dir)
+
     contract, raw_response = await run_structured_llm(
         "architect",
         ArchitectureContract,
         [
             {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": ctx.pr_description},
+            {
+                "role": "user",
+                "content": f"=== EXISTING REPOSITORY TOPOLOGY ===\n{ctx.repository_map}\n\n"
+                + ctx.pr_description,
+            },
         ],
     )
     ctx.contract = contract

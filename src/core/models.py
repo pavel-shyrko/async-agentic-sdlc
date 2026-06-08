@@ -99,6 +99,7 @@ class GlobalPipelineContext(BaseModel):
     error_trace: str = ""
     review_report: ReviewReport | None = None
     current_attempt: int = 1
+    repository_map: str = ""
 
     def needs_test_regeneration(self) -> bool:
         """Whether QA must (re)generate tests before the next cycle.
