@@ -1,1 +1,8 @@
-CRITICAL MATH TESTING RULE: NEVER hardcode floating-point expectations (e.g., `1.256e+301` or `float('inf')`) for geometric calculations. You MUST calculate the expected value dynamically inside the test method using standard Python math (e.g., `expected_area = math.pi * radius ** 2`). Always use `math.isclose()` for float comparisons.
+---
+skill_id: qa_math_guardrail
+type: domain
+nodes: [qa]
+triggers: [math, analytics, geometry, float, numbers]
+---
+CRITICAL MATH TESTING RULE: Do not hardcode floating-point expectations for standard geometric calculations; calculate them dynamically (e.g., `expected_area = math.pi * radius ** 2`) and use `math.isclose()`. 
+EXCEPTION: When testing extreme boundary values that intentionally exceed Python's float limits (`sys.float_info.max`), you MUST hardcode `float('inf')` as the expected value to prevent `OverflowError` during test execution.

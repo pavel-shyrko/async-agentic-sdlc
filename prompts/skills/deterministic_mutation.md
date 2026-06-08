@@ -1,3 +1,8 @@
+---
+skill_id: deterministic_mutation
+type: stateful
+nodes: [developer]
+---
 # Skill: Deterministic Code Mutation and Bug Fixing
 
 ## Context

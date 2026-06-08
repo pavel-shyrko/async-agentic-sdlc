@@ -52,7 +52,7 @@ def _fake_structured_llm(*, model, response_model, messages):
     if response_model is ArchitectureContract:
         return (
             ArchitectureContract(
-                files_to_modify=["calculator.py"],
+                files_to_modify=["src/calculator.py"],
                 instruction="Implement add(a, b).",
                 function_signatures="def add(a: int, b: int) -> int",
                 strict_type_validation_rules="Operands must be int.",
@@ -163,7 +163,7 @@ class PipelineEndToEndTests(unittest.IsolatedAsyncioTestCase):
 
             # Assert — real files were created under the dynamic code/tests dirs inside the clone.
             code_file = repo_dir / "src" / "calculator.py"
-            test_file = repo_dir / "tests" / "test_calculator.py"
+            test_file = repo_dir / "tests" / "test_src_calculator.py"
             self.assertTrue(code_file.is_file(), "developer did not write production code")
             self.assertEqual(code_file.read_text(encoding="utf-8"), _PROD_CODE)
             self.assertTrue(test_file.is_file(), "QA did not write the test file")
@@ -180,7 +180,7 @@ class PipelineEndToEndTests(unittest.IsolatedAsyncioTestCase):
             prod = data["production_code_snapshot"]
             self.assertIn("src/calculator.py", prod)
             self.assertIn("def add", prod["src/calculator.py"])
-            self.assertNotIn("tests/test_calculator.py", prod)
+            self.assertNotIn("tests/test_src_calculator.py", prod)
             self.assertIn("CalculatorTests", data["test_code_snapshot"])
 
             # Assert — the atomic success transaction produced exactly one commit on the feature

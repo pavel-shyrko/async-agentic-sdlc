@@ -5,7 +5,7 @@ from pathlib import Path
 from src.core.observability import log, log_token_usage
 from src.core.config import QA_MODEL
 from src.core.models import QATestSuite, GlobalPipelineContext
-from src.core.prompts import get_system_prompt_sections, get_skill
+from src.core.prompts import get_system_prompt_sections, build_agent_context
 from src.utils.llm import run_structured_llm
 from src.utils.git_helpers import get_git_root, get_pipeline_snapshot_files
 
@@ -21,26 +21,17 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
     tests_dir = ctx.workspace_paths.tests_dir
 
     qa_system_prompt, user_template = get_system_prompt_sections("qa")
-    qa_system_prompt += "\n\n" + get_skill("engineering_guide")
-    qa_system_prompt += "\n\n" + get_skill("qa_integrity")
-    qa_system_prompt += "\n\n" + get_skill("qa_math_guardrail")
+    qa_system_prompt += "\n\n" + await build_agent_context("qa", ctx, is_retry=bool(error_trace))
 
     if error_trace and ctx.test_code_snapshot:
-        qa_system_prompt += (
-            f"\n\n=== PREVIOUS TEST SUITE STATE ===\n{ctx.test_code_snapshot}"
-            f"\n\n{get_skill('qa_retry_fix')}"
-        )
+        qa_system_prompt += f"\n\n=== PREVIOUS TEST SUITE STATE ===\n{ctx.test_code_snapshot}"
 
-    shared_rules = get_skill("strict_validation").format(
-        strict_type_validation_rules=ctx.contract.strict_type_validation_rules
-    )
     feedback = f"\n\nPrevious failure feedback to address:\n{error_trace}" if error_trace else ""
 
     def _build_prompt(module_dot: str) -> str:
         return user_template.format(
             module_dot=module_dot,
             function_signatures=ctx.contract.function_signatures,
-            shared_rules=shared_rules,
             feedback=feedback,
         )
 

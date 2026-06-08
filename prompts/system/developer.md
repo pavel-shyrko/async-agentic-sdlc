@@ -7,7 +7,7 @@ Implement the core logic.
 
 ## Execution Guardrails
 * **CRITICAL**: DO NOT write any unit tests or test files. The QA node handles testing. Write ONLY production code.
-* **PATH ROUTING**: All files MUST be created preserving the exact directory structure specified in the contract, relative to {code_dir}. Example: if the contract says `src/api/main.py`, you must create `{code_dir}/src/api/main.py`.
+* **PATH ROUTING**: All files MUST be created preserving the exact directory structure specified in the contract, which is relative to the repository root {code_dir}. Contract paths already include any leading `src/` segment, so do NOT prepend another one. Example: if the contract says `src/api/main.py`, create `{code_dir}/src/api/main.py` — NOT `{code_dir}/src/src/api/main.py`.
 
 ## Token Economy Rules
 * **Brevity Mandate**: Answer with raw code modifications or tight technical bullets. Never output conversational prose, greetings, summaries, or explanatory filler.

@@ -1,3 +1,8 @@
+---
+skill_id: engineering_guide
+type: global
+nodes: [architect, developer, qa, reviewer]
+---
 # Global Engineering Guide & Code Style
 
 ## Tech Stack & Code Style

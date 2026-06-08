@@ -1,3 +1,8 @@
+---
+skill_id: strict_validation
+type: global
+nodes: [qa, reviewer]
+---
 Strict validation rules to enforce: {strict_type_validation_rules}
 
 ## CRITICAL RULES

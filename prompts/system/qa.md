@@ -21,5 +21,4 @@ Do NOT settle for one assertion per behavior. Aggressively expand the input matr
 - Collect negative/invalid inputs into their own data-driven table and assert ONLY the exception type via `with self.assertRaises(ExceptionType):` — never inspect the exception (see CRITICAL RULE above).
 - Use ONLY the standard-library `unittest` with `self.subTest` loops. Do NOT import `pytest`, `parameterized`, or any third-party parametrization helper.
 
-{shared_rules}
 {feedback}

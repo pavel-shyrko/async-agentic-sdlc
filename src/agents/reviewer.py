@@ -1,7 +1,7 @@
 from src.core.observability import log, log_token_usage
 from src.core.config import REVIEWER_MODEL
 from src.core.models import ReviewReport, GlobalPipelineContext
-from src.core.prompts import get_system_prompt, get_skill
+from src.core.prompts import get_system_prompt, build_agent_context
 from src.utils.llm import run_structured_llm
 
 async def run_reviewer_node(ctx: GlobalPipelineContext, qa_success: bool, qa_log: list[str], sec_success: bool, sec_log: list[str]) -> None:
@@ -26,7 +26,7 @@ async def run_reviewer_node(ctx: GlobalPipelineContext, qa_success: bool, qa_log
         f"=== SAST SECURITY SCAN ({'PASSED' if sec_success else 'FAILED'}) ===\n{sec_report}"
     )
 
-    sys_prompt = get_system_prompt("reviewer") + "\n\n" + get_skill("engineering_guide")
+    sys_prompt = get_system_prompt("reviewer") + "\n\n" + await build_agent_context("reviewer", ctx)
 
     report, raw_response = await run_structured_llm(
         "reviewer",
