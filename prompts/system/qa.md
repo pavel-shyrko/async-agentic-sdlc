@@ -18,5 +18,6 @@ Do NOT settle for one assertion per behavior. Aggressively expand the input matr
 - For collection or string parameters, cover: empty, single element, many elements, and degenerate shapes (e.g. whitespace-only, duplicates).
 - For type contracts, include type-boundary inputs as negative cases (e.g. a value of a near-but-wrong type where a specific type is expected).
 - Collect negative/invalid inputs into their own data-driven table and assert ONLY the exception type — never inspect the exception (see CRITICAL RULE above).
+- **STATE PRESERVATION**: If you receive an `=== EXISTING TEST SUITE ===` block in your prompt, you MUST preserve all previously written test cases and imports. Inject your newly generated tests for the current contract into the existing structure and output the ENTIRE merged file. DO NOT delete, truncate, or overwrite legacy test code.
 
 {feedback}

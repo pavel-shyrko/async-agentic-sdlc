@@ -43,12 +43,19 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
         slug = module_file.removesuffix(".py").replace("/", "_").replace("\\", "_")
         module_dot = module_file.removesuffix(".py").replace("/", ".").replace("\\", ".")
         test_path = tests_dir / f"test_{slug}.py"
+        # Read-Modify-Write: surface the current on-disk suite so the agent merges
+        # instead of regenerating from scratch (appended post-format; test code
+        # contains literal braces that would break str.format).
+        user_prompt = _build_prompt(module_dot)
+        if test_path.exists():
+            existing_test_code = test_path.read_text(encoding="utf-8")
+            user_prompt += f"\n\n=== EXISTING TEST SUITE ===\n{existing_test_code}"
         suite, raw_response = await run_structured_llm(
             "qa",
             QATestSuite,
             [
                 {"role": "system", "content": qa_system_prompt},
-                {"role": "user", "content": _build_prompt(module_dot)},
+                {"role": "user", "content": user_prompt},
             ],
         )
         return str(test_path), suite.test_code, raw_response
