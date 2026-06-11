@@ -3,7 +3,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
-from src.core.prompts import get_system_prompt, get_system_prompt_sections, get_skill
+from src.core.prompts import (
+    get_system_prompt,
+    get_system_prompt_sections,
+    get_skill,
+    generate_repo_map,
+)
 
 
 class GetSystemPromptTests(unittest.TestCase):
@@ -81,6 +86,50 @@ class GetSkillTests(unittest.TestCase):
         first = get_skill("strict_validation")
         second = get_skill("strict_validation")
         self.assertIs(first, second)
+
+
+class GenerateRepoMapTests(unittest.TestCase):
+    """Recursive tree walker prunes noise and gracefully handles a missing root."""
+
+    def test_missing_dir_returns_empty(self) -> None:
+        with TemporaryDirectory() as td:
+            self.assertEqual(generate_repo_map(Path(td) / "nope"), "")
+
+    def test_tree_includes_source_and_tests_prunes_noise(self) -> None:
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "src" / "pkg").mkdir(parents=True)
+            (root / "src" / "pkg" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+            (root / "tests").mkdir()
+            (root / "tests" / "test_mod.py").write_text("y = 2\n", encoding="utf-8")
+            (root / ".git").mkdir()
+            (root / ".git" / "HEAD").write_text("ref\n", encoding="utf-8")
+            (root / "src" / "pkg" / "__pycache__").mkdir()
+            (root / "src" / "pkg" / "__pycache__" / "mod.cpython.pyc").write_text(
+                "junk", encoding="utf-8"
+            )
+
+            tree = generate_repo_map(root)
+
+            self.assertIn("src/", tree)
+            self.assertIn("pkg/", tree)
+            self.assertIn("mod.py", tree)
+            self.assertIn("tests/", tree)
+            self.assertIn("test_mod.py", tree)
+            self.assertNotIn(".git", tree)
+            self.assertNotIn("__pycache__", tree)
+            self.assertNotIn(".pyc", tree)
+
+    def test_directories_sort_before_files(self) -> None:
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "zdir").mkdir()
+            (root / "zdir" / "deep.py").write_text("z = 0\n", encoding="utf-8")
+            (root / "afile.py").write_text("a = 0\n", encoding="utf-8")
+
+            tree = generate_repo_map(root)
+
+            self.assertLess(tree.index("zdir/"), tree.index("afile.py"))
 
 
 class PathResolutionTests(unittest.TestCase):

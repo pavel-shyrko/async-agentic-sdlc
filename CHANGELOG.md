@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each release maps to a completed SDLC iteration; the corresponding Architecture
 Decision Record (ADR) is linked from the version heading.
 
+## [v0.10.0] - 2026-06-11 — Fast-Fail Documentation Guardrail & Repo Topology Routing
+
+ADR: [0010-fast-fail-documentation-guardrail](./docs/adr/0010-fast-fail-documentation-guardrail.md)
+
+### Added
+- Fast-Fail Documentation Guardrail (`enforce_documentation_guardrail` in `orchestrator.py`): a deterministic, zero-LLM-cost middleware after the Developer phase that scans the first 15 lines of every newly-created uncontracted file for a language-agnostic comment lead-in (`#`, `//`, `/*`, `*`, `"""`, `'''`). A miss triggers a "free reroute" straight back to the Developer — bypassing the Reviewer/QA nodes and consuming none of the functional circuit-breaker budget. Binary/empty/unreadable files are ignored safely.
+- Hard Halt protection: guardrail reroutes are capped at `GUARDRAIL_MAX_REROUTES = 2`; exceeding the cap dumps the full FSM context to `runs/run_<uuid>/reports/incident_report.json` and exits non-zero (`_abort_with_incident`), making infinite guardrail loops impossible.
+- Repository topology mapping: `generate_repo_map` builds a tree of the cloned repo and injects it as an `EXISTING REPOSITORY TOPOLOGY` block into the Architect and QA contexts, enabling brownfield-aware file placement.
+- Language-stack skill routing: the Architect now declares the target language as the first `domain_tags` entry (inferred deterministically from the repo map's file extensions), which routes the new `python_core.md` / `python_qa.md` domain skills to the execution agents.
+- New guardrail skills: `architect_dry_guardrail` (mandate a single shared utility module for duplicated helper logic), `architect_topology_guardrail` / `qa_topology_guardrail` (forbid redundant root-level directories; mirror existing test layout), and `qa_float_guardrail` (language-agnostic IEEE 754 boundary-testing rules: no reverse-arithmetic boundary inputs, explicit infinity forcing, tolerance-based comparison).
+- `get_pipeline_snapshot_files` accepts a `diff_filter` argument (e.g. `"A"` for added-only), letting the guardrail distinguish genuinely new files from edits to pre-existing ones.
+- Reviewer scope anchoring: the production `git diff` is captured into `production_code_diff` and injected as a `GIT DIFF (SCOPE OF CHANGES)` section, binding the review to the actual delta.
+- Framework test coverage for the new surface: guardrail/orchestrator suites in `tests/framework/test_orchestrator.py`, repo-map tests in `test_prompts.py`, and `diff_filter` tests in `test_git_helpers.py`.
+
+### Changed
+- `prompts/system/developer.md`: added an IMPLEMENTATION AUTONOMY rule (the Developer may create necessary uncontracted infrastructure files such as package-initialization modules) paired with a strict ARCHITECTURAL JUSTIFICATION FOR NEW FILES mandate (every uncontracted new file must open with a comment block explaining why it exists), plus tool-execution mandates (write via filesystem tools, no raw code blocks in chat, verify state before responding).
+- `prompts/system/reviewer.md`: the blunt Eradication Directive is replaced by a 3-bucket Smart Triage — JUSTIFIED ADDITIONS (approve necessary new modules), HALLUCINATED GARBAGE (eradicate true Ghost Files), LEGACY VICTIMS (never eradicate broken pre-existing code; order a revert and safe integration). Added a DEFENSIVE PROGRAMMING ALLOWANCE so sound input validation is not rejected for being absent from the contract, and the review is now diff-scoped (full file contents serve only as architectural context).
+- QA test generation is now Read-Modify-Write: an existing `test_<module>.py` on disk is surfaced to the agent as an `EXISTING TEST SUITE` block with a STATE PRESERVATION mandate to merge new cases into the existing suite instead of regenerating it from scratch.
+- Core prompts and shared skills (`engineering_guide`, `strict_validation`, `deterministic_mutation`, `qa.md`, `qa_integrity`, `qa_retry_fix`) rewritten language-agnostically; Python-specific runtime, framework, and type-guard rules relocated to the routed `python_core` / `python_qa` domain skills.
+
+### Removed
+- `prompts/skills/qa_math_guardrail.md` — superseded by the global `qa_float_guardrail` and the stack-routed `python_qa` skill.
+- Hardcoded Python assumptions (unittest mandates, `src/` path literals, `bool`/`int` examples) from the shared cross-agent prompts.
+
+### Fixed
+- State Cascade Destruction: the Developer overwriting glue files (`__init__.py`) combined with the Reviewer's Eradication Directive deleting mangled legacy files and justified new modules as "Ghost Files," trapping the FSM in token-draining rejection loops — resolved by the guardrail middleware, the justification mandate, and Smart Triage.
+- QA regeneration wiping previously generated test cases on retry cycles — resolved by the Read-Modify-Write existing-suite injection.
+
 ## [v0.9.0] - 2026-06-08 — Hybrid Skill Routing
 
 ADR: [0009-hybrid-skill-routing](./docs/adr/0009-hybrid-skill-routing.md)
@@ -165,6 +193,7 @@ ADR: [0000-cloud-infra-fsm-research](./docs/adr/0000-cloud-infra-fsm-research.md
 ### Added
 - System topology blueprint: custom Python/Pydantic FSM (over LangGraph), localized Docker sandboxing (over Cloud Run), hybrid Gemini/Claude model routing with context + prompt caching, GitHub App RS256 auth, and a 10-cycle FinOps cost model (~$5.83).
 
+[v0.10.0]: ./docs/adr/0010-fast-fail-documentation-guardrail.md
 [v0.9.0]: ./docs/adr/0009-hybrid-skill-routing.md
 [v0.8.0]: ./docs/adr/0008-git-anchored-sessions-atomic-commit.md
 [v0.7.0]: ./docs/adr/0007-prompt-schema-layer-separation.md

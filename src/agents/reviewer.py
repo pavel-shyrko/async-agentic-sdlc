@@ -20,6 +20,7 @@ async def run_reviewer_node(ctx: GlobalPipelineContext, qa_success: bool, qa_log
     user_content = (
         f"=== ORIGINAL USER REQUIREMENT ===\n{ctx.pr_description}\n\n"
         f"=== ARCHITECT CONTRACT ===\n{ctx.contract.model_dump_json(indent=2)}\n\n"
+        f"=== GIT DIFF (SCOPE OF CHANGES) ===\n{ctx.production_code_diff}\n\n"
         f"=== GENERATED PRODUCTION CODE ===\n{production_code}\n\n"
         f"=== GENERATED TEST SUITE ===\n{ctx.test_code_snapshot}\n\n"
         f"=== FUNCTIONAL TESTS RUN ({'PASSED' if qa_success else 'FAILED'}) ===\n{qa_report}\n\n"

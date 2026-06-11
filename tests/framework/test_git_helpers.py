@@ -88,6 +88,37 @@ class GetPipelineSnapshotFilesTests(unittest.IsolatedAsyncioTestCase):
         commands = _git_subcommands(mock_exec)
         self.assertEqual(commands[1], ("diff", "--cached", "main", "--name-only", "--", "src"))
 
+    @mock.patch("src.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    async def test_diff_filter_maps_to_diff_filter_flag(self, mock_exec: AsyncMock) -> None:
+        # Arrange — diff_filter="A" restricts the diff to added (newly-created) files.
+        mock_exec.side_effect = [_fake_proc(0), _fake_proc(0, b"src/new.py\n")]
+        # Act
+        files = await get_pipeline_snapshot_files("/repo", "main", diff_filter="A")
+        # Assert — the flag is appended; it sits before any pathspec separator.
+        self.assertEqual(files, ["src/new.py"])
+        commands = _git_subcommands(mock_exec)
+        self.assertEqual(commands[1], ("diff", "--cached", "main", "--name-only", "--diff-filter=A"))
+
+    @mock.patch("src.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    async def test_diff_filter_precedes_subdir_pathspec(self, mock_exec: AsyncMock) -> None:
+        # Arrange — both filter and pathspec; --diff-filter must come before the `--` separator.
+        mock_exec.side_effect = [_fake_proc(0), _fake_proc(0, b"")]
+        # Act
+        await get_pipeline_snapshot_files("/repo", "main", subdir="src", diff_filter="A")
+        # Assert
+        commands = _git_subcommands(mock_exec)
+        self.assertEqual(commands[1], ("diff", "--cached", "main", "--name-only", "--diff-filter=A", "--", "src"))
+
+    @mock.patch("src.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    async def test_diff_filter_absent_by_default(self, mock_exec: AsyncMock) -> None:
+        # Arrange — omitting diff_filter preserves the original argv (backward compatibility).
+        mock_exec.side_effect = [_fake_proc(0), _fake_proc(0, b"")]
+        # Act
+        await get_pipeline_snapshot_files("/repo", "main")
+        # Assert
+        diff_argv = _git_subcommands(mock_exec)[1]
+        self.assertFalse(any(str(a).startswith("--diff-filter") for a in diff_argv))
+
 
 class GetGitRootTests(unittest.IsolatedAsyncioTestCase):
     """Root resolution must use git, not path guessing."""

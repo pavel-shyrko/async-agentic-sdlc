@@ -37,6 +37,38 @@ def get_system_prompt_sections(agent_name: str, separator: str = PROMPT_SECTION_
     return head, tail
 
 
+def generate_repo_map(repo_dir: Path) -> str:
+    """Render a recursive, depth-unlimited tree of ``repo_dir`` for topology-aware prompting.
+
+    Prunes hidden dirs (``.git``, ``.venv``, ``.pytest_cache``, …) and ``__pycache__`` so the map
+    reflects meaningful source/test topology. Returns "" when the dir is absent, so callers can
+    inject it unconditionally.
+    """
+    root = Path(repo_dir)
+    if not root.is_dir():
+        return ""
+
+    def _ignored(name: str) -> bool:
+        return name.startswith(".") or name == "__pycache__"
+
+    lines: list[str] = [f"{root.name}/"]
+
+    def _walk(directory: Path, prefix: str) -> None:
+        entries = sorted(
+            (e for e in directory.iterdir() if not _ignored(e.name)),
+            key=lambda e: (e.is_file(), e.name.lower()),  # dirs first, then files, alpha
+        )
+        for i, entry in enumerate(entries):
+            last = i == len(entries) - 1
+            connector = "└── " if last else "├── "
+            lines.append(f"{prefix}{connector}{entry.name}{'/' if entry.is_dir() else ''}")
+            if entry.is_dir():
+                _walk(entry, prefix + ("    " if last else "│   "))
+
+    _walk(root, "")
+    return "\n".join(lines)
+
+
 @lru_cache(maxsize=16)
 def get_skill(skill_name: str) -> str:
     path = _SKILLS_DIR / f"{skill_name}.md"
@@ -100,6 +132,7 @@ async def build_agent_context(
     ctx: GlobalPipelineContext,
     is_retry: bool = False,
     topology_kwargs: dict | None = None,
+    inferred_tags: list[str] | None = None,
 ) -> str:
     """Declaratively assemble the skill context for an agent node.
 
@@ -108,8 +141,10 @@ async def build_agent_context(
       - ``global``   → always
       - ``topology`` → always (body is ``.format(**topology_kwargs)``-ed)
       - ``stateful`` → only on retry
-      - ``domain``   → tag intersection with the contract's ``domain_tags``; on a
-        miss, an LLM relevance fallback decides inclusion.
+      - ``domain``   → tag intersection with ``inferred_tags`` unioned with the
+        contract's ``domain_tags``; on a miss, an LLM relevance fallback decides
+        inclusion. ``inferred_tags`` lets a caller route deterministically before a
+        contract exists (e.g. the architect, whose contract is produced downstream).
 
     Only ``topology`` bodies are ``.format()``-ed; the strict-type placeholder is
     filled via a brace-safe ``.replace()`` so skill bodies may freely contain
@@ -130,7 +165,7 @@ async def build_agent_context(
         elif skill_type == "stateful":
             include = is_retry
         elif skill_type == "domain":
-            tags = set(ctx.contract.domain_tags) if ctx.contract else set()
+            tags = set(inferred_tags or []) | (set(ctx.contract.domain_tags) if ctx.contract else set())
             include = bool(set(meta.get("triggers", [])) & tags)
             if not include:
                 include = await fallback_semantic_search(ctx.pr_description, body)

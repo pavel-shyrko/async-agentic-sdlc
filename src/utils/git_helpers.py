@@ -24,13 +24,16 @@ async def get_git_root(path: str) -> str:
     return output
 
 
-async def get_pipeline_snapshot_files(repo_path: str, base_branch: str, subdir: str | None = None) -> list[str]:
+async def get_pipeline_snapshot_files(
+    repo_path: str, base_branch: str, subdir: str | None = None, diff_filter: str | None = None
+) -> list[str]:
     """Returns the paths changed against ``base_branch``, scoped to ``subdir`` when given.
 
     Stages with ``git add -A`` first so brand-new (untracked) files are included, then takes the
     INDEX diff (``git diff --cached``) — a plain ``git diff`` would silently omit untracked files and
     starve the Reviewer of context. Paths are repo-root-relative; the ``subdir`` pathspec isolates an
-    agent to its own subtree within the shared index. Agents never commit — changes remain staged.
+    agent to its own subtree within the shared index. ``diff_filter`` maps to ``--diff-filter`` (e.g.
+    ``"A"`` → added/newly-created files only). Agents never commit — changes remain staged.
 
     Any non-zero git exit (e.g. an orphaned ``.git/index.lock``) raises ``RuntimeError`` so the FSM
     fails fast instead of silently feeding the Reviewer an empty snapshot.
@@ -40,6 +43,8 @@ async def get_pipeline_snapshot_files(repo_path: str, base_branch: str, subdir: 
         raise RuntimeError(f"Git snapshot failed (exit {add_rc}): {add_out}")
 
     diff_args = ["diff", "--cached", base_branch, "--name-only"]
+    if diff_filter:
+        diff_args.append(f"--diff-filter={diff_filter}")
     if subdir:
         diff_args += ["--", subdir]
 

@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
 
 import orchestrator
-from src.core.models import GlobalPipelineContext, ReviewReport, WorkspacePaths
+from src.core.models import ArchitectureContract, GlobalPipelineContext, ReviewReport, WorkspacePaths
 
 
 class ParseArgsResumeTests(unittest.TestCase):
@@ -802,6 +802,239 @@ class FinalizeTransactionTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("user.name=AI Agent (DEMO-1)", commit_cmd)
             self.assertIn("user.email=agent-demo-1@sdlc-factory.local", commit_cmd)
             self.assertIn("push", exec_mock.call_args_list[1].args)
+
+
+class TopBlockCommentScannerTests(unittest.TestCase):
+    """_top_block_has_comment: lexical top-of-file scan with safe-skip (None) semantics."""
+
+    @staticmethod
+    def _write(td: str, name: str, content: str) -> Path:
+        p = Path(td) / name
+        p.write_text(content, encoding="utf-8")
+        return p
+
+    def test_hash_comment_on_first_line_is_detected(self) -> None:
+        with TemporaryDirectory() as td:
+            p = self._write(td, "a.py", "# justification\ndef f():\n    return 1\n")
+            self.assertIs(orchestrator._top_block_has_comment(p), True)
+
+    def test_comment_within_window_is_detected(self) -> None:
+        with TemporaryDirectory() as td:
+            body = "\n".join(["x = 1"] * 9 + ["# late but within 15"])
+            p = self._write(td, "a.py", body + "\n")
+            self.assertIs(orchestrator._top_block_has_comment(p), True)
+
+    def test_code_only_returns_false(self) -> None:
+        with TemporaryDirectory() as td:
+            p = self._write(td, "a.py", "def f():\n    return 1\n")
+            self.assertIs(orchestrator._top_block_has_comment(p), False)
+
+    def test_comment_beyond_window_is_not_detected(self) -> None:
+        # A comment on line 16 is outside the 15-line top block → not credited.
+        with TemporaryDirectory() as td:
+            body = "\n".join(["x = 1"] * 15 + ["# too late"])
+            p = self._write(td, "a.py", body + "\n")
+            self.assertIs(orchestrator._top_block_has_comment(p), False)
+
+    def test_empty_file_is_ignored(self) -> None:
+        with TemporaryDirectory() as td:
+            self.assertIsNone(orchestrator._top_block_has_comment(self._write(td, "a.py", "")))
+
+    def test_whitespace_only_file_is_ignored(self) -> None:
+        with TemporaryDirectory() as td:
+            self.assertIsNone(orchestrator._top_block_has_comment(self._write(td, "a.py", "   \n\n\t\n")))
+
+    def test_binary_file_is_ignored(self) -> None:
+        with TemporaryDirectory() as td:
+            p = Path(td) / "blob.bin"
+            p.write_bytes(b"\x00\x01\x02\xff\xfe# not really text\x00")
+            self.assertIsNone(orchestrator._top_block_has_comment(p))
+
+    def test_missing_file_is_ignored(self) -> None:
+        with TemporaryDirectory() as td:
+            self.assertIsNone(orchestrator._top_block_has_comment(Path(td) / "nope.py"))
+
+    def test_language_agnostic_prefixes_are_detected(self) -> None:
+        for lead in ("// c-style", "/* block", "* continuation", '"""docstring', "'''docstring"):
+            with TemporaryDirectory() as td:
+                p = self._write(td, "a.txt", lead + "\nbody\n")
+                self.assertIs(orchestrator._top_block_has_comment(p), True, lead)
+
+
+class EnforceDocumentationGuardrailTests(unittest.IsolatedAsyncioTestCase):
+    """The fast-fail middleware flags only undocumented, newly-created, uncontracted files."""
+
+    @staticmethod
+    def _ctx(repo: Path, files_to_modify: list[str], snapshot_keys: list[str]) -> GlobalPipelineContext:
+        paths = WorkspacePaths(
+            code_dir=repo / "src", tests_dir=repo / "tests",
+            logs_dir=repo / "logs", reports_dir=repo / "reports", repo_dir=repo,
+        )
+        ctx = GlobalPipelineContext(pr_description="t", base_branch="main", workspace_paths=paths)
+        ctx.contract = ArchitectureContract(
+            files_to_modify=files_to_modify, instruction="i", function_signatures="s",
+            strict_type_validation_rules="r", architecture_reasoning="why",
+        )
+        ctx.production_code_snapshot = {k: "" for k in snapshot_keys}
+        return ctx
+
+    async def test_empty_snapshot_is_noop_without_git(self) -> None:
+        with TemporaryDirectory() as td:
+            ctx = self._ctx(Path(td), ["src/main.py"], [])
+            with mock.patch.object(orchestrator, "get_pipeline_snapshot_files", new_callable=AsyncMock) as git:
+                self.assertIsNone(await orchestrator.enforce_documentation_guardrail(ctx))
+            git.assert_not_awaited()
+
+    async def test_all_contracted_is_noop_without_git(self) -> None:
+        with TemporaryDirectory() as td:
+            ctx = self._ctx(Path(td), ["src/main.py"], ["src/main.py"])
+            with mock.patch.object(orchestrator, "get_pipeline_snapshot_files", new_callable=AsyncMock) as git:
+                self.assertIsNone(await orchestrator.enforce_documentation_guardrail(ctx))
+            git.assert_not_awaited()
+
+    async def test_uncontracted_new_file_without_comment_is_flagged(self) -> None:
+        with TemporaryDirectory() as td:
+            repo = Path(td)
+            ctx = self._ctx(repo, ["src/main.py"], ["src/helper.py"])
+            (repo / "src" / "helper.py").write_text("def x():\n    return 1\n", encoding="utf-8")
+            with mock.patch.object(orchestrator, "get_pipeline_snapshot_files",
+                                   new=AsyncMock(return_value=["src/helper.py"])):
+                msg = await orchestrator.enforce_documentation_guardrail(ctx)
+            self.assertIsNotNone(msg)
+            self.assertIn("src/helper.py", msg)
+            self.assertIn("SYSTEM GUARDRAIL", msg)
+
+    async def test_uncontracted_new_file_with_comment_passes(self) -> None:
+        with TemporaryDirectory() as td:
+            repo = Path(td)
+            ctx = self._ctx(repo, ["src/main.py"], ["src/helper.py"])
+            (repo / "src" / "helper.py").write_text("# shared math util\ndef x():\n    return 1\n", encoding="utf-8")
+            with mock.patch.object(orchestrator, "get_pipeline_snapshot_files",
+                                   new=AsyncMock(return_value=["src/helper.py"])):
+                self.assertIsNone(await orchestrator.enforce_documentation_guardrail(ctx))
+
+    async def test_modified_preexisting_file_is_not_flagged(self) -> None:
+        # Uncontracted but NOT in the git-added set → an edit, not a creation → out of scope (new-only).
+        with TemporaryDirectory() as td:
+            repo = Path(td)
+            ctx = self._ctx(repo, ["src/main.py"], ["src/legacy.py"])
+            (repo / "src" / "legacy.py").write_text("def x():\n    return 1\n", encoding="utf-8")
+            with mock.patch.object(orchestrator, "get_pipeline_snapshot_files",
+                                   new=AsyncMock(return_value=[])):  # nothing newly added
+                self.assertIsNone(await orchestrator.enforce_documentation_guardrail(ctx))
+
+    async def test_multiple_offenders_are_all_named(self) -> None:
+        with TemporaryDirectory() as td:
+            repo = Path(td)
+            ctx = self._ctx(repo, ["src/main.py"], ["src/a.py", "src/b.py"])
+            (repo / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+            (repo / "src" / "b.py").write_text("y = 2\n", encoding="utf-8")
+            with mock.patch.object(orchestrator, "get_pipeline_snapshot_files",
+                                   new=AsyncMock(return_value=["src/a.py", "src/b.py"])):
+                msg = await orchestrator.enforce_documentation_guardrail(ctx)
+            self.assertIn("src/a.py", msg)
+            self.assertIn("src/b.py", msg)
+
+    async def test_contract_file_without_comment_is_exempt(self) -> None:
+        with TemporaryDirectory() as td:
+            repo = Path(td)
+            ctx = self._ctx(repo, ["src/main.py"], ["src/main.py"])
+            (repo / "src" / "main.py").write_text("def x():\n    return 1\n", encoding="utf-8")
+            with mock.patch.object(orchestrator, "get_pipeline_snapshot_files", new_callable=AsyncMock) as git:
+                self.assertIsNone(await orchestrator.enforce_documentation_guardrail(ctx))
+            git.assert_not_awaited()  # contracted-only candidates short-circuit before any git call
+
+
+class DocumentationGuardrailLoopTests(unittest.IsolatedAsyncioTestCase):
+    """Loop integration: a free reroute spends no functional budget; the cap triggers a Hard Halt."""
+
+    @staticmethod
+    def _resume_ctx(base: Path) -> GlobalPipelineContext:
+        paths = WorkspacePaths(
+            code_dir=base / "code", tests_dir=base / "tests",
+            logs_dir=base / "logs", reports_dir=base / "reports",
+        )
+        ctx = GlobalPipelineContext(
+            pr_description="resume run", workspace_paths=paths, test_code_snapshot="existing tests",
+        )
+        ctx.contract = ArchitectureContract(
+            files_to_modify=["src/core/models.py"], instruction="noop", function_signatures="noop",
+            strict_type_validation_rules="noop", architecture_reasoning="noop",
+        )
+        return ctx
+
+    async def test_free_reroute_keeps_budget_and_bypasses_reviewer_until_documented(self) -> None:
+        # Arrange — guardrail misses once then passes; the miss must reroute the Developer for free.
+        with TemporaryDirectory() as td:
+            ctx = self._resume_ctx(Path(td))
+
+            async def _approve(*_a, **_k) -> None:
+                ctx.review_report = ReviewReport(
+                    code_quality_analysis="ok", test_integrity_analysis="ok", log_verification_analysis="ok",
+                    code_quality_approved=True, test_integrity_approved=True, diagnostic_payload="",
+                )
+
+            with (
+                mock.patch.object(orchestrator, "check_environment"),
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "build_production_snapshot"),
+                mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
+                    description=None, base_branch="main", resume=Path("cp.json"), reset_attempts=False)),
+                mock.patch.object(GlobalPipelineContext, "load_checkpoint", return_value=ctx),
+                mock.patch.object(orchestrator, "run_architect_node", new_callable=AsyncMock),
+                mock.patch.object(orchestrator, "run_qa_agent_node", new_callable=AsyncMock) as qa,
+                mock.patch.object(orchestrator, "run_developer_node", new_callable=AsyncMock) as developer,
+                mock.patch.object(orchestrator, "enforce_documentation_guardrail",
+                                  new=AsyncMock(side_effect=["SYSTEM GUARDRAIL: add comment", None])),
+                mock.patch.object(orchestrator, "run_reviewer_node", new=AsyncMock(side_effect=_approve)) as reviewer,
+                mock.patch.object(orchestrator, "run_qa_unit_tests", new=AsyncMock(return_value=(True, []))),
+                mock.patch.object(orchestrator, "run_security_scan", new=AsyncMock(return_value=(True, []))),
+                mock.patch.object(orchestrator, "finalize_transaction", new_callable=AsyncMock),
+                mock.patch.object(GlobalPipelineContext, "save_checkpoint", autospec=True) as save_checkpoint,
+            ):
+                # Act
+                await orchestrator.main()
+
+            # Assert
+            self.assertEqual(developer.await_count, 2)   # initial call + one free reroute
+            reviewer.assert_awaited_once()               # Reviewer reached only after the guardrail passed
+            qa.assert_not_called()                       # comment fix never regenerates tests
+            self.assertEqual(ctx.current_attempt, 2)     # exactly ONE functional cycle consumed (1 → 2)
+            save_checkpoint.assert_called_once()         # only the end-of-cycle save; the free reroute saves nothing
+            # The reroute fed the guardrail diagnostic to the Developer as its error context.
+            self.assertEqual(developer.await_args_list[1].args[1], "SYSTEM GUARDRAIL: add comment")
+
+    async def test_cap_exhausted_triggers_hard_halt(self) -> None:
+        # Arrange — guardrail keeps missing; after 2 free reroutes the run must hard-halt.
+        with TemporaryDirectory() as td:
+            ctx = self._resume_ctx(Path(td))
+
+            with (
+                mock.patch.object(orchestrator, "check_environment"),
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "build_production_snapshot"),
+                mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
+                    description=None, base_branch="main", resume=Path("cp.json"), reset_attempts=False)),
+                mock.patch.object(GlobalPipelineContext, "load_checkpoint", return_value=ctx),
+                mock.patch.object(orchestrator, "run_architect_node", new_callable=AsyncMock),
+                mock.patch.object(orchestrator, "run_qa_agent_node", new_callable=AsyncMock),
+                mock.patch.object(orchestrator, "run_developer_node", new_callable=AsyncMock) as developer,
+                mock.patch.object(orchestrator, "enforce_documentation_guardrail",
+                                  new=AsyncMock(side_effect=["miss", "miss", "miss"])),
+                mock.patch.object(orchestrator, "run_reviewer_node", new_callable=AsyncMock) as reviewer,
+                mock.patch.object(orchestrator, "run_qa_unit_tests", new=AsyncMock(return_value=(True, []))),
+                mock.patch.object(orchestrator, "run_security_scan", new=AsyncMock(return_value=(True, []))),
+                mock.patch.object(orchestrator, "finalize_transaction", new_callable=AsyncMock),
+            ):
+                # Act / Assert
+                with self.assertRaises(SystemExit) as exit_ctx:
+                    await orchestrator.main()
+
+            self.assertEqual(exit_ctx.exception.code, 1)
+            self.assertEqual(developer.await_count, 3)   # initial + 2 fast-fail reroutes (cap=2)
+            reviewer.assert_not_called()                 # Reviewer never reached
+            self.assertEqual(ctx.current_attempt, 1)     # no functional-budget retry consumed
+            self.assertTrue((ctx.workspace_paths.reports_dir / "incident_report.json").exists())
 
 
 if __name__ == "__main__":
