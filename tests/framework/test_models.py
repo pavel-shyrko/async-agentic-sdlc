@@ -1,7 +1,7 @@
 """Unit tests for the SDLC contract models and workspace bootstrap.
 
-Filesystem is fully isolated: every WorkspacePaths construction patches
-``Path.mkdir`` so the suite never touches the real artifact tree.
+Filesystem is fully isolated: every WorkspacePaths construction either patches
+``Path.mkdir`` or targets a TemporaryDirectory, so the suite never writes to the repo.
 """
 import unittest
 from decimal import Decimal
@@ -11,10 +11,6 @@ from unittest import mock
 from pydantic import ValidationError
 
 from src.core.models import (
-    CODE_DIR,
-    LOGS_DIR,
-    REPORTS_DIR,
-    TESTS_DIR,
     PipelineTelemetry,
     TechLeadContract,
     TopologyNode,
@@ -86,36 +82,43 @@ class QATestSuiteFenceCleaningTests(unittest.TestCase):
 
 
 class WorkspacePathsTests(unittest.TestCase):
-    """Workspace bootstrap creates the canonical tree without leaking to disk."""
+    """Workspace bootstrap requires explicit paths and creates the work tree on disk."""
 
-    def test_defaults_match_canonical_artifact_dirs(self) -> None:
-        # Arrange / Act
-        with mock.patch.object(Path, "mkdir") as mkdir:
-            paths = WorkspacePaths()
-        # Assert
-        self.assertEqual(paths.code_dir, CODE_DIR)
-        self.assertEqual(paths.tests_dir, TESTS_DIR)
-        self.assertEqual(paths.logs_dir, LOGS_DIR)
-        self.assertEqual(paths.reports_dir, REPORTS_DIR)
-        self.assertEqual(mkdir.call_count, 4)
+    @staticmethod
+    def _explicit(base: Path) -> dict[str, Path]:
+        return {
+            "code_dir": base / "code",
+            "tests_dir": base / "tests",
+            "logs_dir": base / "logs",
+            "reports_dir": base / "reports",
+            "repo_dir": base,
+        }
+
+    def test_bare_construction_is_rejected(self) -> None:
+        # No implicit fallback tree — every path must be supplied (via `for_run` in production).
+        with self.assertRaises(ValidationError):
+            WorkspacePaths()
 
     def test_post_init_creates_each_dir_recursively_and_idempotently(self) -> None:
         # Arrange / Act
         with mock.patch.object(Path, "mkdir") as mkdir:
-            WorkspacePaths()
+            WorkspacePaths(**self._explicit(Path("/tmp/sandbox")))
         # Assert — every directory is created with parents + exist_ok.
         self.assertTrue(mkdir.call_args_list)
         for call in mkdir.call_args_list:
             self.assertEqual(call, mock.call(parents=True, exist_ok=True))
 
-    def test_custom_paths_are_honoured(self) -> None:
+    def test_explicit_paths_are_honoured(self) -> None:
         # Arrange
-        custom = Path("/tmp/sandbox/code")
-        # Act
-        with mock.patch.object(Path, "mkdir"):
-            paths = WorkspacePaths(code_dir=custom)
-        # Assert
-        self.assertEqual(paths.code_dir, custom)
+        with TemporaryDirectory() as td:
+            fields = self._explicit(Path(td))
+            # Act
+            paths = WorkspacePaths(**fields)
+            # Assert — paths are stored verbatim and the work dirs materialise on disk.
+            self.assertEqual(paths.code_dir, fields["code_dir"])
+            self.assertEqual(paths.repo_dir, fields["repo_dir"])
+            for d in (paths.code_dir, paths.tests_dir, paths.logs_dir, paths.reports_dir):
+                self.assertTrue(d.is_dir())
 
 
 class WorkspacePathsForRunTests(unittest.TestCase):
@@ -216,16 +219,16 @@ class ContractModelTests(unittest.TestCase):
         self.assertFalse(report.test_integrity_approved)
 
     def test_global_context_applies_defaults(self) -> None:
-        # Arrange / Act — default_factory builds WorkspacePaths, so isolate mkdir.
-        with mock.patch.object(Path, "mkdir"):
-            ctx = GlobalPipelineContext(pr_description="add prime util")
+        # Arrange / Act
+        ctx = GlobalPipelineContext(pr_description="add prime util")
         # Assert
         self.assertEqual(ctx.base_branch, "main")
         self.assertIsNone(ctx.contract)
         self.assertIsNone(ctx.review_report)
         self.assertEqual(ctx.production_code_snapshot, {})
         self.assertEqual(ctx.current_attempt, 1)
-        self.assertIsInstance(ctx.workspace_paths, WorkspacePaths)
+        # Unbound until the orchestrator maps a git-anchored session via `for_run`.
+        self.assertIsNone(ctx.workspace_paths)
         self.assertIsInstance(ctx.telemetry, PipelineTelemetry)
         self.assertEqual(ctx.telemetry.total_tokens, 0)
 
@@ -273,8 +276,7 @@ class PipelineTelemetryTests(unittest.TestCase):
 
     def test_telemetry_survives_checkpoint_round_trip(self) -> None:
         # Arrange
-        with mock.patch.object(Path, "mkdir"):
-            ctx = GlobalPipelineContext(pr_description="x")
+        ctx = GlobalPipelineContext(pr_description="x")
         ctx.telemetry.record("Developer Agent", 1000, 200, 0.05)
         # Act — serialize and reload (the resume path uses model_validate_json).
         restored = GlobalPipelineContext.model_validate_json(ctx.model_dump_json())
@@ -285,8 +287,7 @@ class PipelineTelemetryTests(unittest.TestCase):
 
     def test_old_checkpoint_without_telemetry_loads_with_default(self) -> None:
         # Arrange — a checkpoint payload predating the telemetry field.
-        with mock.patch.object(Path, "mkdir"):
-            ctx = GlobalPipelineContext(pr_description="x")
+        ctx = GlobalPipelineContext(pr_description="x")
         payload = ctx.model_dump()
         payload.pop("telemetry", None)
         # Act — load it back (backward-compatibility: default_factory fills the gap).
@@ -300,8 +301,7 @@ class NeedsTestRegenerationTests(unittest.TestCase):
     """Initial recovery decision: regenerate tests on rejection or when no snapshot exists."""
 
     def _context(self, **kwargs) -> GlobalPipelineContext:
-        with mock.patch.object(Path, "mkdir"):
-            return GlobalPipelineContext(pr_description="x", **kwargs)
+        return GlobalPipelineContext(pr_description="x", **kwargs)
 
     def _report(self, *, test_integrity_approved: bool) -> ReviewReport:
         return ReviewReport(
@@ -348,6 +348,7 @@ class GlobalContextCheckpointTests(unittest.TestCase):
                 tests_dir=base / "tests",
                 logs_dir=base / "logs",
                 reports_dir=base / "reports",
+                repo_dir=base,
             )
             ctx = GlobalPipelineContext(
                 pr_description="ship checkpoint support",
@@ -378,6 +379,7 @@ class GlobalContextCheckpointTests(unittest.TestCase):
                 tests_dir=base / "tests",
                 logs_dir=base / "logs",
                 reports_dir=base / "reports",
+                repo_dir=base,
             )
             checkpoint = base / "checkpoint.json"
             GlobalPipelineContext(pr_description="p", workspace_paths=paths).save_checkpoint(checkpoint)

@@ -5,25 +5,20 @@ from pathlib import Path
 from pydantic import BaseModel, Field, field_validator
 
 # ==========================================
-# ARTIFACT DIRECTORY STRUCTURE (canonical defaults)
+# SESSION DIRECTORY STRUCTURE
 # ==========================================
-# Base is env-overridable so parallel pipelines can target separate trees.
-ARTIFACTS_DIR = Path(os.environ.get("PIPELINE_ARTIFACTS_BASE", "artifacts"))
-CODE_DIR = ARTIFACTS_DIR / "code"
-TESTS_DIR = ARTIFACTS_DIR / "tests"
-LOGS_DIR = ARTIFACTS_DIR / "logs"
-REPORTS_DIR = ARTIFACTS_DIR / "reports"
-
 # Root for per-run, git-anchored sessions (runs/run_<uuid>/...). Env-overridable so
 # tests and parallel orchestrators can relocate the session tree off the engine repo.
 RUNS_BASE = Path(os.environ.get("PIPELINE_RUNS_BASE", "runs"))
 
 class WorkspacePaths(BaseModel):
-    code_dir: Path = CODE_DIR
-    tests_dir: Path = TESTS_DIR
-    logs_dir: Path = LOGS_DIR
-    reports_dir: Path = REPORTS_DIR
-    repo_dir: Path = ARTIFACTS_DIR  # git working-tree root; the snapshot builder runs `git ls-files` here
+    # All paths are required — production resolves them via `for_run` (git-anchored under
+    # RUNS_BASE); there is no implicit fallback tree.
+    code_dir: Path
+    tests_dir: Path
+    logs_dir: Path
+    reports_dir: Path
+    repo_dir: Path  # git working-tree root; the snapshot builder runs `git ls-files` here
 
     def model_post_init(self, __context) -> None:
         for d in (self.code_dir, self.tests_dir, self.logs_dir, self.reports_dir):
@@ -160,7 +155,9 @@ class GlobalPipelineContext(BaseModel):
     pr_description: str
     base_branch: str = "main"
     ticket: str = ""
-    workspace_paths: WorkspacePaths = Field(default_factory=WorkspacePaths)
+    # Bound by the orchestrator via `WorkspacePaths.for_run` once the git-anchored session
+    # exists; None until then. Every node accesses it only within a live run.
+    workspace_paths: WorkspacePaths | None = None
     contract: TechLeadContract | None = None
     production_code_snapshot: dict[str, str] = Field(default_factory=dict)
     production_code_diff: str = ""

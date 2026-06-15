@@ -7,7 +7,6 @@ from google import genai
 from google.genai.errors import ClientError
 
 from src.core.observability import log
-from src.core.models import ARTIFACTS_DIR, CODE_DIR, TESTS_DIR, LOGS_DIR, REPORTS_DIR  # noqa: F401  (central directory map)
 
 # ==========================================
 # MODEL ROUTING (single source of truth)

@@ -80,15 +80,14 @@ async-agentic-sdlc/
 ├── CHANGELOG.md                # Release history (Keep a Changelog), linked to ADRs
 ├── PRACTICUM.md                # Project manifest & Key Engineering Takeaways
 ├── requirements.txt            # Explicit dependency manifest
-├── .gitignore                  # Ignores artifacts/ and runs/ — runtime state stays out of git
+├── .gitignore                  # Ignores runs/ — runtime session state stays out of git
 └── README.md                   # System mission briefing & specifications
 ```
 
 **Separation of concerns:** `src/` holds the committed engine source code, while each
 `runs/run_<uuid>/` holds one volatile, git-anchored session — the cloned target repo plus its
-own logs/reports. The engine repo root stays clean because `.gitignore` excludes both
-`artifacts/` (legacy) and `runs/`, so you keep local session history without polluting
-`git status`.
+own logs/reports. The engine repo root stays clean because `.gitignore` excludes `runs/`, so you
+keep local session history without polluting `git status`.
 
 ---
 

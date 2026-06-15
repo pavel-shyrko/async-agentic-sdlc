@@ -5,17 +5,31 @@ temp-dir handler and restores a working global handler in ``finally`` — both t
 suites unaffected and to release the Windows file lock before the temp dir is removed.
 """
 import logging
+import shutil
 import unittest
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, mkdtemp
 from logging.handlers import RotatingFileHandler
 
-from src.core.models import LOGS_DIR
 from src.core.observability import reconfigure_logging
 
 
 class ReconfigureLoggingTests(unittest.TestCase):
     """reconfigure_logging re-points the audit file handler per session, keeping the console."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        # A stable scratch dir to re-anchor the global handler onto in each test's `finally`,
+        # releasing the Windows lock on the per-test temp dir before it is cleaned up.
+        cls._restore_dir = Path(mkdtemp(prefix="sdlc-audit-restore-"))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        logger = logging.getLogger("SDLC")
+        for handler in [h for h in logger.handlers if isinstance(h, RotatingFileHandler)]:
+            handler.close()
+            logger.removeHandler(handler)
+        shutil.rmtree(cls._restore_dir, ignore_errors=True)
 
     def test_swaps_file_handler_and_preserves_console(self) -> None:
         # Arrange
@@ -42,7 +56,7 @@ class ReconfigureLoggingTests(unittest.TestCase):
             self.assertTrue(new_dir.is_dir())
         finally:
             # Close the temp-dir handler and restore a global audit handler before cleanup.
-            reconfigure_logging(LOGS_DIR)
+            reconfigure_logging(self._restore_dir)
             td.cleanup()
 
 

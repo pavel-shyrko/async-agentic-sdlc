@@ -21,14 +21,14 @@ class ParseArgsResumeTests(unittest.TestCase):
 
     def test_resume_does_not_require_repo_or_description(self) -> None:
         # Arrange
-        argv = ["orchestrator.py", "--resume", "artifacts/reports/checkpoint.json"]
+        argv = ["orchestrator.py", "--resume", "runs/run_abc/reports/checkpoint.json"]
         # Act
         with mock.patch.object(sys, "argv", argv):
             cfg = orchestrator.parse_args()
         # Assert
         self.assertIsNone(cfg.description)
         self.assertEqual(cfg.base_branch, "main")
-        self.assertEqual(cfg.resume, Path("artifacts/reports/checkpoint.json"))
+        self.assertEqual(cfg.resume, Path("runs/run_abc/reports/checkpoint.json"))
         self.assertFalse(cfg.reset_attempts)
 
     def test_reset_attempts_flag_is_propagated(self) -> None:
@@ -107,6 +107,7 @@ class MainResumeSkipFlowTests(unittest.IsolatedAsyncioTestCase):
                 tests_dir=base / "tests",
                 logs_dir=base / "logs",
                 reports_dir=base / "reports",
+                repo_dir=base,
             )
             ctx = GlobalPipelineContext(
                 pr_description="resume run",
@@ -182,6 +183,7 @@ class MainCheckpointWritePointsTests(unittest.IsolatedAsyncioTestCase):
                 tests_dir=base / "tests",
                 logs_dir=base / "logs",
                 reports_dir=base / "reports",
+                repo_dir=base,
             )
 
             async def _set_approved_review(ctx: GlobalPipelineContext, *_args, **_kwargs) -> None:
@@ -243,6 +245,7 @@ class MainCheckpointWritePointsTests(unittest.IsolatedAsyncioTestCase):
                 tests_dir=base / "tests",
                 logs_dir=base / "logs",
                 reports_dir=base / "reports",
+                repo_dir=base,
             )
             ctx = GlobalPipelineContext(pr_description="resume run", workspace_paths=paths)
             ctx.contract = {
@@ -301,6 +304,7 @@ class MainCheckpointWritePointsTests(unittest.IsolatedAsyncioTestCase):
                 tests_dir=base / "tests",
                 logs_dir=base / "logs",
                 reports_dir=base / "reports",
+                repo_dir=base,
             )
 
             review_calls = {"count": 0}
@@ -382,6 +386,7 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 tests_dir=base / "tests",
                 logs_dir=base / "logs",
                 reports_dir=base / "reports",
+                repo_dir=base,
             )
             ctx = GlobalPipelineContext(
                 pr_description="resume after rejection",
@@ -448,6 +453,7 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 tests_dir=base / "tests",
                 logs_dir=base / "logs",
                 reports_dir=base / "reports",
+                repo_dir=base,
             )
             ctx = GlobalPipelineContext(
                 pr_description="resume late",
@@ -514,6 +520,7 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 tests_dir=base / "tests",
                 logs_dir=base / "logs",
                 reports_dir=base / "reports",
+                repo_dir=base,
             )
             ctx = GlobalPipelineContext(
                 pr_description="resume exhausted",
@@ -564,6 +571,7 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 tests_dir=base / "tests",
                 logs_dir=base / "logs",
                 reports_dir=base / "reports",
+                repo_dir=base,
             )
             ctx = GlobalPipelineContext(
                 pr_description="resume with reset",
@@ -739,7 +747,7 @@ class FinalizeTransactionTests(unittest.IsolatedAsyncioTestCase):
     def _ctx(self, base: Path) -> GlobalPipelineContext:
         paths = WorkspacePaths(
             code_dir=base / "code", tests_dir=base / "tests",
-            logs_dir=base / "logs", reports_dir=base / "reports",
+            logs_dir=base / "logs", reports_dir=base / "reports", repo_dir=base,
         )
         return GlobalPipelineContext(
             pr_description="add two ints", base_branch="main",
@@ -954,7 +962,7 @@ class DocumentationGuardrailLoopTests(unittest.IsolatedAsyncioTestCase):
     def _resume_ctx(base: Path) -> GlobalPipelineContext:
         paths = WorkspacePaths(
             code_dir=base / "code", tests_dir=base / "tests",
-            logs_dir=base / "logs", reports_dir=base / "reports",
+            logs_dir=base / "logs", reports_dir=base / "reports", repo_dir=base,
         )
         ctx = GlobalPipelineContext(
             pr_description="resume run", workspace_paths=paths, test_code_snapshot="existing tests",
@@ -1046,7 +1054,7 @@ class FinancialCircuitBreakerTests(unittest.TestCase):
     def _ctx(self, base: Path) -> GlobalPipelineContext:
         paths = WorkspacePaths(
             code_dir=base / "code", tests_dir=base / "tests",
-            logs_dir=base / "logs", reports_dir=base / "reports",
+            logs_dir=base / "logs", reports_dir=base / "reports", repo_dir=base,
         )
         return GlobalPipelineContext(pr_description="finops run", workspace_paths=paths)
 
@@ -1120,7 +1128,7 @@ class TestCollectionTriageRoutingTests(unittest.IsolatedAsyncioTestCase):
     def _ctx(self, base: Path) -> GlobalPipelineContext:
         paths = WorkspacePaths(
             code_dir=base / "code", tests_dir=base / "tests",
-            logs_dir=base / "logs", reports_dir=base / "reports",
+            logs_dir=base / "logs", reports_dir=base / "reports", repo_dir=base,
         )
         ctx = GlobalPipelineContext(
             pr_description="triage run", workspace_paths=paths, test_code_snapshot="existing tests",
@@ -1180,7 +1188,7 @@ class FinOpsReportTests(unittest.TestCase):
     def _ctx(self, base: Path) -> GlobalPipelineContext:
         paths = WorkspacePaths(
             code_dir=base / "code", tests_dir=base / "tests",
-            logs_dir=base / "logs", reports_dir=base / "reports",
+            logs_dir=base / "logs", reports_dir=base / "reports", repo_dir=base,
         )
         ctx = GlobalPipelineContext(pr_description="finops", workspace_paths=paths)
         ctx.telemetry.record("TechLead", 100, 20, 0.0003, provider="gemini")

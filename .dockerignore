@@ -1,5 +1,5 @@
 venv/
-artifacts/
+runs/
 .git/
 docs/archive/
 __pycache__/

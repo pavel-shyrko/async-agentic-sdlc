@@ -18,8 +18,8 @@ COPY src/ ./src/
 COPY orchestrator.py .
 
 RUN useradd -m appuser \
-    && mkdir -p artifacts \
-    && chown -R appuser:appuser artifacts
+    && mkdir -p runs \
+    && chown -R appuser:appuser runs
 
 ENV RUNTIME_ENV=docker
 USER appuser
