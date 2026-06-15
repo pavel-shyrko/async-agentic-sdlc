@@ -1,20 +1,19 @@
 """Unit tests for the SDLC contract models and workspace bootstrap.
 
-Filesystem is fully isolated: every WorkspacePaths construction patches
-``Path.mkdir`` so the suite never touches the real artifact tree.
+Filesystem is fully isolated: every WorkspacePaths construction either patches
+``Path.mkdir`` or targets a TemporaryDirectory, so the suite never writes to the repo.
 """
 import unittest
+from decimal import Decimal
 from tempfile import TemporaryDirectory
 from pathlib import Path
 from unittest import mock
 from pydantic import ValidationError
 
 from src.core.models import (
-    CODE_DIR,
-    LOGS_DIR,
-    REPORTS_DIR,
-    TESTS_DIR,
-    ArchitectureContract,
+    PipelineTelemetry,
+    TechLeadContract,
+    TopologyNode,
     GlobalPipelineContext,
     QATestSuite,
     ReviewReport,
@@ -83,36 +82,43 @@ class QATestSuiteFenceCleaningTests(unittest.TestCase):
 
 
 class WorkspacePathsTests(unittest.TestCase):
-    """Workspace bootstrap creates the canonical tree without leaking to disk."""
+    """Workspace bootstrap requires explicit paths and creates the work tree on disk."""
 
-    def test_defaults_match_canonical_artifact_dirs(self) -> None:
-        # Arrange / Act
-        with mock.patch.object(Path, "mkdir") as mkdir:
-            paths = WorkspacePaths()
-        # Assert
-        self.assertEqual(paths.code_dir, CODE_DIR)
-        self.assertEqual(paths.tests_dir, TESTS_DIR)
-        self.assertEqual(paths.logs_dir, LOGS_DIR)
-        self.assertEqual(paths.reports_dir, REPORTS_DIR)
-        self.assertEqual(mkdir.call_count, 4)
+    @staticmethod
+    def _explicit(base: Path) -> dict[str, Path]:
+        return {
+            "code_dir": base / "code",
+            "tests_dir": base / "tests",
+            "logs_dir": base / "logs",
+            "reports_dir": base / "reports",
+            "repo_dir": base,
+        }
+
+    def test_bare_construction_is_rejected(self) -> None:
+        # No implicit fallback tree — every path must be supplied (via `for_run` in production).
+        with self.assertRaises(ValidationError):
+            WorkspacePaths()
 
     def test_post_init_creates_each_dir_recursively_and_idempotently(self) -> None:
         # Arrange / Act
         with mock.patch.object(Path, "mkdir") as mkdir:
-            WorkspacePaths()
+            WorkspacePaths(**self._explicit(Path("/tmp/sandbox")))
         # Assert — every directory is created with parents + exist_ok.
         self.assertTrue(mkdir.call_args_list)
         for call in mkdir.call_args_list:
             self.assertEqual(call, mock.call(parents=True, exist_ok=True))
 
-    def test_custom_paths_are_honoured(self) -> None:
+    def test_explicit_paths_are_honoured(self) -> None:
         # Arrange
-        custom = Path("/tmp/sandbox/code")
-        # Act
-        with mock.patch.object(Path, "mkdir"):
-            paths = WorkspacePaths(code_dir=custom)
-        # Assert
-        self.assertEqual(paths.code_dir, custom)
+        with TemporaryDirectory() as td:
+            fields = self._explicit(Path(td))
+            # Act
+            paths = WorkspacePaths(**fields)
+            # Assert — paths are stored verbatim and the work dirs materialise on disk.
+            self.assertEqual(paths.code_dir, fields["code_dir"])
+            self.assertEqual(paths.repo_dir, fields["repo_dir"])
+            for d in (paths.code_dir, paths.tests_dir, paths.logs_dir, paths.reports_dir):
+                self.assertTrue(d.is_dir())
 
 
 class WorkspacePathsForRunTests(unittest.TestCase):
@@ -158,20 +164,45 @@ class WorkspacePathsForRunTests(unittest.TestCase):
 class ContractModelTests(unittest.TestCase):
     """Pydantic contracts parse expected payloads and defaults."""
 
-    def test_architecture_contract_round_trips_fields(self) -> None:
+    def test_techlead_contract_round_trips_fields(self) -> None:
         # Arrange
         payload = {
             "files_to_modify": ["src/core/calc.py"],
+            "topology_contract": [
+                {"file_path": "src/core/calc.py", "exports": ["is_prime"], "depends_on": []}
+            ],
             "instruction": "Implement prime sieve.",
             "function_signatures": "def is_prime(n: int) -> bool",
             "strict_type_validation_rules": "bool must raise TypeError",
-            "architecture_reasoning": "Guard against bool subtype of int.",
+            "techlead_reasoning": "Guard against bool subtype of int.",
         }
         # Act
-        contract = ArchitectureContract(**payload)
+        contract = TechLeadContract(**payload)
         # Assert
         self.assertEqual(contract.files_to_modify, ["src/core/calc.py"])
         self.assertIn("TypeError", contract.strict_type_validation_rules)
+
+    def test_topology_contract_is_required(self) -> None:
+        # Omitting the language-neutral dependency graph must fail validation (strict SSOT).
+        payload = {
+            "files_to_modify": ["src/core/calc.py"],
+            "instruction": "noop",
+            "function_signatures": "def is_prime(n: int) -> bool",
+            "strict_type_validation_rules": "noop",
+            "techlead_reasoning": "noop",
+        }
+        with self.assertRaises(ValidationError):
+            TechLeadContract(**payload)
+
+    def test_topology_node_round_trips_fields(self) -> None:
+        node = TopologyNode(
+            file_path="src/geometry/shapes.py",
+            exports=["Circle"],
+            depends_on=["src/math_utils/validation.py:validate_positive"],
+        )
+        self.assertEqual(node.file_path, "src/geometry/shapes.py")
+        self.assertEqual(node.exports, ["Circle"])
+        self.assertEqual(node.depends_on, ["src/math_utils/validation.py:validate_positive"])
 
     def test_review_report_requires_explicit_approval_flags(self) -> None:
         # Arrange / Act
@@ -188,24 +219,89 @@ class ContractModelTests(unittest.TestCase):
         self.assertFalse(report.test_integrity_approved)
 
     def test_global_context_applies_defaults(self) -> None:
-        # Arrange / Act — default_factory builds WorkspacePaths, so isolate mkdir.
-        with mock.patch.object(Path, "mkdir"):
-            ctx = GlobalPipelineContext(pr_description="add prime util")
+        # Arrange / Act
+        ctx = GlobalPipelineContext(pr_description="add prime util")
         # Assert
         self.assertEqual(ctx.base_branch, "main")
         self.assertIsNone(ctx.contract)
         self.assertIsNone(ctx.review_report)
         self.assertEqual(ctx.production_code_snapshot, {})
         self.assertEqual(ctx.current_attempt, 1)
-        self.assertIsInstance(ctx.workspace_paths, WorkspacePaths)
+        # Unbound until the orchestrator maps a git-anchored session via `for_run`.
+        self.assertIsNone(ctx.workspace_paths)
+        self.assertIsInstance(ctx.telemetry, PipelineTelemetry)
+        self.assertEqual(ctx.telemetry.total_tokens, 0)
+
+
+class PipelineTelemetryTests(unittest.TestCase):
+    """Cumulative token/cost accounting feeding the Financial Circuit Breaker."""
+
+    def test_record_accumulates_per_agent_and_global_totals(self) -> None:
+        # Arrange
+        tel = PipelineTelemetry()
+        # Act — two TechLead calls and one Developer call.
+        tel.record("TechLead", 100, 20, 0.0)
+        tel.record("TechLead", 50, 10, 0.0)
+        tel.record("Developer Agent", 1000, 200, 0.05)
+        # Assert — global totals.
+        self.assertEqual(tel.total_tokens, 100 + 20 + 50 + 10 + 1000 + 200)
+        self.assertEqual(tel.total_cost_usd, Decimal("0.05"))  # exact — no float drift
+        # Assert — per-agent breakdown.
+        tl = tel.by_agent["TechLead"]
+        self.assertEqual((tl.input_tokens, tl.output_tokens, tl.total_tokens, tl.calls), (150, 30, 180, 2))
+        dev = tel.by_agent["Developer Agent"]
+        self.assertEqual((dev.total_tokens, dev.calls), (1200, 1))
+        self.assertEqual(dev.cost_usd, Decimal("0.05"))
+
+    def test_by_provider_and_finops_report(self) -> None:
+        # Arrange — two providers with distinct token/cost footprints.
+        tel = PipelineTelemetry()
+        tel.record("TechLead", 100, 20, 0.0003, provider="gemini")
+        tel.record("QA Agent", 50, 10, 0.0002, provider="gemini")
+        tel.record("Developer Agent", 1000, 200, 0.1328, provider="claude")
+        # Act
+        bp = tel.by_provider()
+        report = tel.finops_report(budget_tokens=10_000)
+        # Assert — per-provider aggregation.
+        self.assertEqual(bp["gemini"]["tokens"], 180)
+        self.assertEqual(bp["gemini"]["cost_usd"], Decimal("0.0005"))
+        self.assertEqual(bp["claude"]["tokens"], 1200)
+        self.assertEqual(bp["claude"]["cost_usd"], Decimal("0.1328"))
+        # Assert — report shape + budget math (1380 / 10000 = 13.8%).
+        self.assertEqual(report["total_tokens"], 1380)
+        self.assertEqual(report["budget_tokens"], 10_000)
+        self.assertAlmostEqual(report["budget_used_pct"], 13.8)
+        self.assertIn("gemini", report["by_provider"])
+        self.assertEqual(report["by_agent"]["Developer Agent"]["provider"], "claude")
+
+    def test_telemetry_survives_checkpoint_round_trip(self) -> None:
+        # Arrange
+        ctx = GlobalPipelineContext(pr_description="x")
+        ctx.telemetry.record("Developer Agent", 1000, 200, 0.05)
+        # Act — serialize and reload (the resume path uses model_validate_json).
+        restored = GlobalPipelineContext.model_validate_json(ctx.model_dump_json())
+        # Assert — the budget signal is preserved across persistence.
+        self.assertEqual(restored.telemetry.total_tokens, 1200)
+        self.assertEqual(restored.telemetry.total_cost_usd, Decimal("0.05"))
+        self.assertEqual(restored.telemetry.by_agent["Developer Agent"].calls, 1)
+
+    def test_old_checkpoint_without_telemetry_loads_with_default(self) -> None:
+        # Arrange — a checkpoint payload predating the telemetry field.
+        ctx = GlobalPipelineContext(pr_description="x")
+        payload = ctx.model_dump()
+        payload.pop("telemetry", None)
+        # Act — load it back (backward-compatibility: default_factory fills the gap).
+        restored = GlobalPipelineContext.model_validate(payload)
+        # Assert
+        self.assertIsInstance(restored.telemetry, PipelineTelemetry)
+        self.assertEqual(restored.telemetry.total_tokens, 0)
 
 
 class NeedsTestRegenerationTests(unittest.TestCase):
     """Initial recovery decision: regenerate tests on rejection or when no snapshot exists."""
 
     def _context(self, **kwargs) -> GlobalPipelineContext:
-        with mock.patch.object(Path, "mkdir"):
-            return GlobalPipelineContext(pr_description="x", **kwargs)
+        return GlobalPipelineContext(pr_description="x", **kwargs)
 
     def _report(self, *, test_integrity_approved: bool) -> ReviewReport:
         return ReviewReport(
@@ -252,6 +348,7 @@ class GlobalContextCheckpointTests(unittest.TestCase):
                 tests_dir=base / "tests",
                 logs_dir=base / "logs",
                 reports_dir=base / "reports",
+                repo_dir=base,
             )
             ctx = GlobalPipelineContext(
                 pr_description="ship checkpoint support",
@@ -282,6 +379,7 @@ class GlobalContextCheckpointTests(unittest.TestCase):
                 tests_dir=base / "tests",
                 logs_dir=base / "logs",
                 reports_dir=base / "reports",
+                repo_dir=base,
             )
             checkpoint = base / "checkpoint.json"
             GlobalPipelineContext(pr_description="p", workspace_paths=paths).save_checkpoint(checkpoint)

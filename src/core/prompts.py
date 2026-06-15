@@ -144,7 +144,7 @@ async def build_agent_context(
       - ``domain``   → tag intersection with ``inferred_tags`` unioned with the
         contract's ``domain_tags``; on a miss, an LLM relevance fallback decides
         inclusion. ``inferred_tags`` lets a caller route deterministically before a
-        contract exists (e.g. the architect, whose contract is produced downstream).
+        contract exists (e.g. the techlead, whose contract is produced downstream).
 
     Only ``topology`` bodies are ``.format()``-ed; the strict-type placeholder is
     filled via a brace-safe ``.replace()`` so skill bodies may freely contain

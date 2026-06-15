@@ -10,26 +10,69 @@ This configuration replaces **Docker Desktop** for several reasons:
 ### Architecture
 * **Docker Engine (Server):** Runs inside **WSL2 (Ubuntu)**.
 * **Docker CLI (Client):** Runs on **Windows**.
-* **Connection:** Communication via **TCP port 2375**.
+* **Connection:** Communication via **TCP port 2375, bound to loopback (`127.0.0.1`) only**.
+
+> **CRITICAL SECURITY PROTOCOL:** The Docker daemon MUST only listen on loopback
+> (`tcp://127.0.0.1:2375`). Binding to `0.0.0.0` is strictly prohibited as it opens
+> unauthenticated host root access to the entire subnet.
+>
+> Port 2375 is the plaintext, unauthenticated Docker API; this guide binds it strictly to
+> `127.0.0.1`, so it is reachable only from the same machine (the Windows CLI reaches the
+> WSL2 engine over loopback).
 
 
 ---
 
 ## 2. WSL2 Configuration (The Server)
 
-### Step A: Configure the Docker Daemon
-1.  Open your WSL terminal and edit the config file:
+### Step A: Install the Docker Engine (`docker-ce`)
+This setup uses the upstream Docker Engine, **not** Docker Desktop and **not** the
+`docker.io` apt package. Install `docker-ce` inside your WSL2 Ubuntu distribution:
+
+```bash
+# Remove any conflicting distro packages first
+sudo apt remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
+
+# Add Docker's official apt repository
+sudo apt update
+sudo apt install -y ca-certificates curl gnupg
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+  sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+  https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Install the engine + CLI + buildx/compose plugins
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+```
+
+Add your user to the `docker` group so you do not need `sudo` for every command
+(log out / restart WSL afterwards for it to take effect):
+
+```bash
+sudo usermod -aG docker $USER
+```
+
+### Step B: Configure the Docker Daemon
+1.  Edit the config file:
     ```bash
     sudo nano /etc/docker/daemon.json
     ```
-2.  Paste this configuration to allow network connections:
+2.  Paste this configuration to expose the API on **loopback only**:
     ```json
     {
-      "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2375"]
+      "hosts": ["unix:///var/run/docker.sock", "tcp://127.0.0.1:2375"]
     }
     ```
+    > **CRITICAL SECURITY PROTOCOL:** The Docker daemon MUST only listen on loopback
+    > (`tcp://127.0.0.1:2375`). Binding to `0.0.0.0` is strictly prohibited as it opens
+    > unauthenticated host root access to the entire subnet.
 
-### Step B: Fix Systemd Conflict
+### Step C: Fix Systemd Conflict
 1.  Create an override folder:
     ```bash
     sudo mkdir -p /etc/systemd/system/docker.service.d
@@ -42,7 +85,7 @@ This configuration replaces **Docker Desktop** for several reasons:
     ExecStart=/usr/bin/dockerd
     ```
 
-### Step C: Enable Systemd
+### Step D: Enable Systemd
 1.  Edit `/etc/wsl.conf`:
     ```bash
     sudo nano /etc/wsl.conf
@@ -67,7 +110,7 @@ scoop install docker
 ### Step B: Set Global Variable
 Run this once in PowerShell (as Administrator) so all apps can find Docker:
 ```powershell
-[System.Environment]::SetEnvironmentVariable("DOCKER_HOST", "tcp://localhost:2375", "User")
+[System.Environment]::SetEnvironmentVariable("DOCKER_HOST", "tcp://127.0.0.1:2375", "User")
 ```
 
 ### Step C: Setup the "Lazy Loader" Profile

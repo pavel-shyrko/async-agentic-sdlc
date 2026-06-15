@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import uuid
 import argparse
 import asyncio
@@ -9,10 +10,10 @@ from typing import NoReturn
 from dataclasses import dataclass
 
 from src.core.observability import log, reconfigure_logging
-from src.core.config import check_environment
+from src.core.config import check_environment, PIPELINE_BUDGET_TOKENS
 from src.core.models import GlobalPipelineContext, WorkspacePaths, RUNS_BASE
 from src.utils.git_helpers import get_git_root, get_pipeline_snapshot_files
-from src.agents.architect import run_architect_node
+from src.agents.techlead import run_techlead_node
 from src.agents.qa import run_qa_agent_node
 from src.agents.developer import run_developer_node
 from src.agents.reviewer import run_reviewer_node
@@ -311,6 +312,45 @@ def build_production_snapshot(ctx: GlobalPipelineContext) -> None:
 # ==========================================
 GUARDRAIL_TOP_LINES = 15        # top-of-file window scanned for a justification
 GUARDRAIL_MAX_REROUTES = 2      # local guardrail_retries cap: free reroutes before a Hard Halt
+
+# ==========================================
+# TEST-COLLECTION-FAILURE TRIAGE (QA loop break)
+# ==========================================
+TEST_TRIAGE_MAX_REROUTES = 2    # free QA regenerations on import/collection failure before a Hard Halt
+FEEDBACK_TAIL_LINES = 50        # only the last N runner lines are fed forward (context pruning)
+FEEDBACK_MAX_CHARS = 8000       # hard cap on any failure text injected into an agent prompt
+# Markers that mean the suite failed to IMPORT (broken QA artifact), not a production-logic failure.
+_COLLECTION_FAILURE_MARKERS = (
+    "ImportError",
+    "ModuleNotFoundError",
+    "cannot import name",
+    "unittest.loader._FailedTest",
+)
+
+
+def _is_test_collection_failure(qa_log: list[str]) -> bool:
+    """True when the test runner failed at collection/import time (a broken test suite)."""
+    joined = "\n".join(qa_log)
+    return any(marker in joined for marker in _COLLECTION_FAILURE_MARKERS)
+
+
+def _truncate_tail(lines: list[str], max_lines: int = FEEDBACK_TAIL_LINES) -> str:
+    """Keep only the last ``max_lines`` runner lines — failures are always at the tail."""
+    return "\n".join(lines[-max_lines:])
+
+
+def _cap_text(text: str, max_chars: int = FEEDBACK_MAX_CHARS) -> str:
+    """Hard-cap any failure text injected into an agent prompt (head + tail kept)."""
+    if len(text) <= max_chars:
+        return text
+    half = max_chars // 2
+    return f"{text[:half]}\n…[truncated]…\n{text[-half:]}"
+
+
+def _clear_test_files(tests_dir) -> None:
+    """Delete stale ``test_*.py`` so QA regenerates from a clean slate (no snapshot bloat)."""
+    for p in Path(tests_dir).glob("test_*.py"):
+        p.unlink()
 # Language-agnostic comment lead-ins. ''' is added beyond the spec list so a Python single-quote module
 # docstring (a valid justification) isn't flagged as undocumented.
 _COMMENT_PREFIXES = ("#", "//", "/*", "*", '"""', "'''")
@@ -374,6 +414,63 @@ async def enforce_documentation_guardrail(ctx: GlobalPipelineContext) -> str | N
     return "\n".join(_GUARDRAIL_MESSAGE.format(file_name=v) for v in violations)
 
 
+def enforce_financial_circuit_breaker(ctx: GlobalPipelineContext) -> None:
+    """Financial Circuit Breaker: hard-halt the FSM once cumulative token spend breaches budget.
+
+    Checked after every cost-accruing node so a pathological retry loop cannot drain the API
+    budget. Reuses the incident machinery — ``incident_report.json`` now carries the full
+    per-agent telemetry breakdown for audit. Token totals are persisted in the checkpoint, so
+    the budget is enforced consistently across ``--resume``.
+    """
+    if ctx.telemetry.total_tokens >= PIPELINE_BUDGET_TOKENS:
+        _abort_with_incident(
+            ctx,
+            f"\n🚨 FINANCIAL CIRCUIT BREAKER OPEN: cumulative {ctx.telemetry.total_tokens} tokens "
+            f"≥ budget {PIPELINE_BUDGET_TOKENS}. Halting before further spend.",
+        )
+
+
+def _finops_subtotals(ctx: GlobalPipelineContext) -> str:
+    """Per-provider cost split, e.g. 'Gemini est. $0.0010 | Claude $0.1328 | Σ $0.1338'.
+
+    Gemini cost is estimated from the price table (flagged ``est.``); Claude cost is authoritative.
+    """
+    bp = ctx.telemetry.by_provider()
+    parts: list[str] = []
+    for prov in ("gemini", "claude"):
+        if prov in bp:
+            label = "Gemini est." if prov == "gemini" else "Claude"
+            parts.append(f"{label} ${bp[prov]['cost_usd']:.4f}")
+    parts.append(f"Σ ${ctx.telemetry.total_cost_usd:.4f}")
+    return " | ".join(parts)
+
+
+def write_finops_report(ctx: GlobalPipelineContext) -> None:
+    """Persist the cumulative FinOps breakdown to ``reports/finops_report.json``."""
+    report_file = ctx.workspace_paths.reports_dir / "finops_report.json"
+    report_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(report_file, "w", encoding="utf-8") as f:
+        # default=str serialises Decimal money as exact strings (json can't encode Decimal natively).
+        json.dump(ctx.telemetry.finops_report(PIPELINE_BUDGET_TOKENS), f, indent=2, default=str)
+    log.debug(f"FinOps report written to {report_file}")
+
+
+def log_finops_summary(ctx: GlobalPipelineContext) -> None:
+    """Print the end-of-run GRAND TOTAL block: per-agent, per-provider, and budget utilisation."""
+    tel = ctx.telemetry
+    log.info("📊 [FINOPS] GRAND TOTAL")
+    for name, u in tel.by_agent.items():
+        log.info(f"   ├─ {name} ({u.provider}) | {u.total_tokens}t | ${u.cost_usd:.4f} | calls: {u.calls}")
+    for prov, agg in tel.by_provider().items():
+        label = "Gemini (est.)" if prov == "gemini" else "Claude (actual)"
+        log.info(f"   ├─ Σ {label} | {int(agg['tokens'])}t | ${agg['cost_usd']:.4f}")
+    used_pct = (100.0 * tel.total_tokens / PIPELINE_BUDGET_TOKENS) if PIPELINE_BUDGET_TOKENS else 0.0
+    log.info(
+        f"   └─ TOTAL | {tel.total_tokens}t | ${tel.total_cost_usd:.4f} "
+        f"| {used_pct:.1f}% of {PIPELINE_BUDGET_TOKENS}t budget"
+    )
+
+
 def _abort_with_incident(ctx: GlobalPipelineContext, header: str) -> NoReturn:
     """Logs a terminal header, persists the full context as an incident report, and exits non-zero."""
     log.error(header)
@@ -382,6 +479,9 @@ def _abort_with_incident(ctx: GlobalPipelineContext, header: str) -> NoReturn:
         f.write(ctx.model_dump_json(indent=2))
     log.error(f"  └── Incident report written to {incident_file}")
     log.debug(f"Final Incident Context Dump: {ctx.model_dump_json(indent=2)}")
+    # Always persist + surface the FinOps breakdown, even on a halt, so spend is auditable.
+    write_finops_report(ctx)
+    log_finops_summary(ctx)
     sys.exit(1)
 
 
@@ -431,11 +531,12 @@ async def main():
 
     # 1. Architecture Phase (executed once per session)
     if ctx.contract:
-        log.info("Skipping Architect node: contract already present in context.")
+        log.info("Skipping TechLead node: contract already present in context.")
     else:
-        await run_architect_node(ctx)
+        await run_techlead_node(ctx)
+        enforce_financial_circuit_breaker(ctx)
         ctx.save_checkpoint(checkpoint_file)
-        log.debug(f"Checkpoint saved after Architect node: {checkpoint_file}")
+        log.debug(f"Checkpoint saved after TechLead node: {checkpoint_file}")
 
     max_retries = 3
 
@@ -445,6 +546,10 @@ async def main():
         ctx.current_attempt = attempt
         log.info(f"🔷 Orchestration cycle {attempt}/{max_retries}")
         log.debug(f"Starting orchestration cycle {attempt}")
+
+        # Financial Circuit Breaker: halt immediately if a prior cycle (or a resumed run) is
+        # already over budget, before spending any more tokens this cycle.
+        enforce_financial_circuit_breaker(ctx)
 
         # Reset accumulated errors before starting a new cycle. Developer/QA will see only clean feedback.
         current_error_trace = ctx.error_trace
@@ -489,20 +594,51 @@ async def main():
                 f"\n🚨 HARD HALT: Developer failed the documentation guardrail after {GUARDRAIL_MAX_REROUTES} fast-fail reroutes.",
             )
 
-        # 4. Automated Validation Phase (Runtime gates)
-        log.debug("Triggering parallel validation gates (QA & Security)")
-        qa_result, sec_result = await asyncio.gather(
-            run_qa_unit_tests(
-                code_dir=str(ctx.workspace_paths.code_dir),
-                tests_dir=str(ctx.workspace_paths.tests_dir),
-            ),
-            run_security_scan([str(ctx.workspace_paths.code_dir)]),
-        )
-        qa_success, qa_lines = qa_result
-        sec_success, sec_lines = sec_result
+        # Developer is the dominant token drain — enforce the budget before spending on gates.
+        enforce_financial_circuit_breaker(ctx)
 
-        # 5. Comprehensive Audit Phase (Reviewer Agent)
-        await run_reviewer_node(ctx, qa_success, qa_lines, sec_success, sec_lines)
+        # 4. Automated Validation Phase (Runtime gates) — with deterministic test-collection triage.
+        #    A suite that fails to IMPORT is a broken QA artifact, not a production-code defect, so we
+        #    regenerate the tests against the real production snapshot (Developer & Reviewer bypassed,
+        #    no functional retry consumed) and re-run the gates. Bounded so it can never loop forever.
+        for triage_try in range(TEST_TRIAGE_MAX_REROUTES + 1):
+            log.debug("Triggering parallel validation gates (QA & Security)")
+            qa_result, sec_result = await asyncio.gather(
+                run_qa_unit_tests(
+                    code_dir=str(ctx.workspace_paths.code_dir),
+                    tests_dir=str(ctx.workspace_paths.tests_dir),
+                ),
+                run_security_scan([str(ctx.workspace_paths.code_dir)]),
+            )
+            qa_success, qa_lines = qa_result
+            sec_success, sec_lines = sec_result
+
+            if qa_success or not _is_test_collection_failure(qa_lines):
+                break
+            if triage_try == TEST_TRIAGE_MAX_REROUTES:
+                ctx.error_trace = _cap_text(_truncate_tail(qa_lines))
+                _abort_with_incident(
+                    ctx,
+                    f"\n🚨 HARD HALT: test suite still fails to import after "
+                    f"{TEST_TRIAGE_MAX_REROUTES} QA regenerations.",
+                )
+            log.warning(
+                f"🔶 Test-collection failure — free QA regen "
+                f"{triage_try + 1}/{TEST_TRIAGE_MAX_REROUTES} (Developer & Reviewer bypassed, stale tests cleared)."
+            )
+            _clear_test_files(ctx.workspace_paths.tests_dir)
+            ctx.error_trace = _cap_text(
+                "Test suite failed to import (collection error). Regenerate the tests against the real "
+                "production code: import every symbol from the module the contract assigns it to, and "
+                "never invent or cross-import modules. Failure tail:\n" + _truncate_tail(qa_lines)
+            )
+            await run_qa_agent_node(ctx, ctx.error_trace)
+            enforce_financial_circuit_breaker(ctx)
+            ctx.save_checkpoint(checkpoint_file)
+
+        # 5. Comprehensive Audit Phase (Reviewer Agent) — failure log pruned to the tail.
+        await run_reviewer_node(ctx, qa_success, qa_lines[-FEEDBACK_TAIL_LINES:], sec_success, sec_lines)
+        enforce_financial_circuit_breaker(ctx)
 
         # Print execution logs of utilities ONLY in case of an actual failure to CLI, but log everything to file
         if not qa_success:
@@ -530,7 +666,7 @@ async def main():
             regenerate_tests = True
 
         if not all_gates_passed:
-            ctx.error_trace = ctx.review_report.diagnostic_payload
+            ctx.error_trace = _cap_text(ctx.review_report.diagnostic_payload)
             log.warning(f"🔶 Cycle {attempt} failed. Routing reviewer diagnostic to target agent.")
 
         # Advance the persisted attempt counter so a resumed run cannot exceed the
@@ -539,10 +675,16 @@ async def main():
         ctx.current_attempt = attempt + 1
         ctx.save_checkpoint(checkpoint_file)
         log.debug(f"Checkpoint saved at end of cycle {attempt}: {checkpoint_file}")
+        log.info(
+            f"   [FINOPS] {_finops_subtotals(ctx)} "
+            f"| {ctx.telemetry.total_tokens}t / budget {PIPELINE_BUDGET_TOKENS}t"
+        )
 
         if all_gates_passed:
             log.info("🟩 PIPELINE SUCCESS: All validation gates passed.")
             await finalize_transaction(ctx, push=cfg.push)
+            write_finops_report(ctx)
+            log_finops_summary(ctx)
             return
 
     # Escalation on Circuit Breaker open

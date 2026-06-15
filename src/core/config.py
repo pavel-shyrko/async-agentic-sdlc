@@ -2,26 +2,157 @@ import os
 import sys
 import shutil
 import instructor
+from decimal import Decimal
 from google import genai
 from google.genai.errors import ClientError
 
 from src.core.observability import log
-from src.core.models import ARTIFACTS_DIR, CODE_DIR, TESTS_DIR, LOGS_DIR, REPORTS_DIR  # noqa: F401  (central directory map)
 
 # ==========================================
 # MODEL ROUTING (single source of truth)
 # ==========================================
-ARCHITECT_MODEL = "gemini-2.5-flash"
-QA_MODEL = "gemini-2.5-flash"
-REVIEWER_MODEL = "gemini-2.5-flash"
-DEVELOPER_MODEL_LABEL = "Claude CLI Wrapper"  # real model is managed by the Claude CLI config
+# Available Gemini models (priced in MODEL_PRICING_MATRIX below) — assign any of these to the
+# role constants. Ordered most → least capable / expensive:
+GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"   # tiered: doubles past 200k context
+GEMINI_2_5_PRO         = "gemini-2.5-pro"
+GEMINI_3_5_FLASH       = "gemini-3.5-flash"
+GEMINI_2_5_FLASH       = "gemini-2.5-flash"
+GEMINI_3_1_FLASH_LITE  = "gemini-3.1-flash-lite"
+GEMINI_2_5_FLASH_LITE  = "gemini-2.5-flash-lite"    # cheapest
+
+AVAILABLE_GEMINI_MODELS = (
+    GEMINI_3_1_PRO_PREVIEW,
+    GEMINI_2_5_PRO,
+    GEMINI_3_5_FLASH,
+    GEMINI_2_5_FLASH,
+    GEMINI_3_1_FLASH_LITE,
+    GEMINI_2_5_FLASH_LITE,
+)
+
+# Per-role model — set to any value from AVAILABLE_GEMINI_MODELS.
+TECHLEAD_MODEL = GEMINI_3_1_FLASH_LITE
+QA_MODEL = GEMINI_3_1_FLASH_LITE
+REVIEWER_MODEL = GEMINI_3_1_FLASH_LITE
+# Available Claude models for the Developer agent (Claude CLI). The CLI --model accepts a tier
+# ALIAS (always resolves to the latest of that tier) or a pinned full id for reproducibility.
+# Ordered most → least capable / expensive:
+CLAUDE_OPUS   = "opus"      # latest Opus   (pin: "claude-opus-4-8")   — most capable
+CLAUDE_SONNET = "sonnet"    # latest Sonnet (pin: "claude-sonnet-4-6") — balanced (default)
+CLAUDE_HAIKU  = "haiku"     # latest Haiku  (pin: "claude-haiku-4-5")  — cheapest / fastest
+
+AVAILABLE_CLAUDE_MODELS = (CLAUDE_OPUS, CLAUDE_SONNET, CLAUDE_HAIKU)
+
+# Available reasoning-effort levels for the Claude CLI (--effort). Ordered shallow → deep
+# (more effort = more thinking tokens = higher cost/latency):
+EFFORT_LOW    = "low"
+EFFORT_MEDIUM = "medium"
+EFFORT_HIGH   = "high"
+EFFORT_XHIGH  = "xhigh"
+EFFORT_MAX    = "max"
+
+AVAILABLE_EFFORT_LEVELS = (EFFORT_LOW, EFFORT_MEDIUM, EFFORT_HIGH, EFFORT_XHIGH, EFFORT_MAX)
+
+# Developer agent (Claude CLI) — set each to any value from the catalogs above.
+DEVELOPER_MODEL = CLAUDE_SONNET           # any of AVAILABLE_CLAUDE_MODELS (or a pinned full id)
+DEVELOPER_EFFORT = EFFORT_MEDIUM          # any of AVAILABLE_EFFORT_LEVELS
+
+# ==========================================
+# FINOPS — Financial Circuit Breaker budget
+# ==========================================
+# Cumulative token budget (input+output across every agent) for a single pipeline run.
+# Env-overridable; persisted telemetry is checked against this after each cost-accruing node,
+# and a breach triggers a deterministic Hard Halt. Generous default so normal runs never trip.
+PIPELINE_BUDGET_TOKENS = int(os.environ.get("PIPELINE_BUDGET_TOKENS", "1000000"))
 
 # Role -> (model, human-readable agent name) for structured (instructor) LLM calls.
 ROLE_MODELS = {
-    "architect": (ARCHITECT_MODEL, "Architect Agent"),
+    "techlead": (TECHLEAD_MODEL, "TechLead Agent"),
     "qa":        (QA_MODEL,        "QA Agent"),
     "reviewer":  (REVIEWER_MODEL,  "Reviewer Agent"),
 }
+
+# ==========================================
+# FINOPS — Gemini cost estimation (cache-aware + tiered)
+# ==========================================
+# Gemini's API does not return a cost figure (unlike the Claude CLI, which reports
+# total_cost_usd authoritatively), so Gemini spend is ESTIMATED from token counts.
+# All rates are USD per 1,000,000 tokens — ESTIMATES; tune them to your billing tier.
+# Accuracy notes baked into the model:
+#   * Cached input (context caching) bills far cheaper than fresh input — priced separately.
+#   * Heavy models apply a long-context surcharge (≈2x) once the prompt exceeds a threshold.
+#   * Multimodal (image/audio) tokens bill differently; treated as a text-rate approximation.
+# Exact-precision pricing matrix. Monetary values are Decimal initialised from STRINGS to avoid
+# IEEE-754 binary approximation. Each tier is (input, output, cached_read) USD per 1M tokens:
+#   "short" → context <= 200k tokens, "long" → context > 200k tokens.
+LONG_CONTEXT_THRESHOLD = 200_000
+DEFAULT_PRICING_MODEL = "gemini-2.5-flash-lite"   # fallback rates for an unknown model
+
+MODEL_PRICING_MATRIX: dict[str, dict[str, tuple[Decimal, Decimal, Decimal]]] = {
+    "gemini-3.1-pro-preview": {
+        "short": (Decimal("2.00"), Decimal("12.00"), Decimal("0.20")),
+        "long":  (Decimal("4.00"), Decimal("18.00"), Decimal("0.40")),
+    },
+    "gemini-2.5-pro": {
+        "short": (Decimal("1.25"), Decimal("10.00"), Decimal("0.125")),
+        "long":  (Decimal("1.25"), Decimal("10.00"), Decimal("0.125")),
+    },
+    "gemini-3.5-flash": {
+        "short": (Decimal("1.50"), Decimal("9.00"), Decimal("0.15")),
+        "long":  (Decimal("1.50"), Decimal("9.00"), Decimal("0.15")),
+    },
+    "gemini-2.5-flash": {
+        "short": (Decimal("0.30"), Decimal("2.50"), Decimal("0.075")),
+        "long":  (Decimal("0.30"), Decimal("2.50"), Decimal("0.075")),
+    },
+    "gemini-3.1-flash-lite": {
+        "short": (Decimal("0.125"), Decimal("0.75"), Decimal("0.0125")),
+        "long":  (Decimal("0.125"), Decimal("0.75"), Decimal("0.0125")),
+    },
+    "gemini-2.5-flash-lite": {
+        "short": (Decimal("0.10"), Decimal("0.40"), Decimal("0.025")),
+        "long":  (Decimal("0.10"), Decimal("0.40"), Decimal("0.025")),
+    },
+}
+
+# Catalog and pricing matrix must stay in lockstep — fail fast on drift.
+assert set(AVAILABLE_GEMINI_MODELS) == set(MODEL_PRICING_MATRIX), (
+    "AVAILABLE_GEMINI_MODELS and MODEL_PRICING_MATRIX are out of sync: "
+    f"{set(AVAILABLE_GEMINI_MODELS) ^ set(MODEL_PRICING_MATRIX)}"
+)
+
+_PER_MILLION = Decimal(1_000_000)
+
+
+def estimate_gemini_cost_usd(model_name: str, usage_metadata) -> Decimal:
+    """Exact-precision USD cost for one Gemini call from its ``usage_metadata`` object.
+
+    All arithmetic is ``Decimal``. Accounts for context-cache discounts (cached tokens priced at
+    the cheaper ``cached_read`` rate) and tiered context pricing (the ``long`` tier applies once the
+    prompt exceeds ``LONG_CONTEXT_THRESHOLD``). Multimodal prompts are priced at the text rate with
+    a debug warning. Reads every field defensively — never raises (returns ``Decimal("0")``).
+    """
+    try:
+        tiers = MODEL_PRICING_MATRIX.get(model_name)
+        if tiers is None:
+            log.debug(f"No pricing for model '{model_name}'; using default '{DEFAULT_PRICING_MODEL}' rates.")
+            tiers = MODEL_PRICING_MATRIX[DEFAULT_PRICING_MODEL]
+
+        prompt = int(getattr(usage_metadata, "prompt_token_count", 0) or 0)
+        cached = int(getattr(usage_metadata, "cached_content_token_count", 0) or 0)
+        output = int(getattr(usage_metadata, "candidates_token_count", 0) or 0)
+        uncached = max(prompt - cached, 0)
+
+        in_rate, out_rate, cached_rate = tiers["long" if prompt > LONG_CONTEXT_THRESHOLD else "short"]
+
+        details = getattr(usage_metadata, "prompt_tokens_details", None) or []
+        if any(str(getattr(d, "modality", "TEXT")).upper().endswith("TEXT") is False for d in details):
+            log.debug("Non-text modality detected; Gemini cost is a text-rate approximation.")
+
+        return (Decimal(uncached) * in_rate + Decimal(cached) * cached_rate
+                + Decimal(output) * out_rate) / _PER_MILLION
+    except Exception as e:  # pragma: no cover - pricing must never break the pipeline
+        log.debug(f"Failed to estimate Gemini cost for '{model_name}': {e}")
+        return Decimal("0")
 
 # ==========================================
 # ENVIRONMENT CHECKER

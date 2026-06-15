@@ -14,7 +14,7 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
     log.info(f"🔶 [ROLE] QA Agent | [MODEL] {model_name}")
 
     if not ctx.contract or not ctx.contract.files_to_modify:
-        log.error("🚨 CRITICAL: Cannot generate tests without a locked Architecture Contract.")
+        log.error("🚨 CRITICAL: Cannot generate tests without a locked TechLead Contract.")
         sys.exit(1)
 
     # The clone is already a git repo on feat/ticket-<id>; QA only writes test files (no init/commit).
@@ -26,6 +26,30 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
     if not ctx.repository_map:
         ctx.repository_map = generate_repo_map(ctx.workspace_paths.repo_dir)
     qa_system_prompt += f"\n\n=== EXISTING REPOSITORY TOPOLOGY ===\n{ctx.repository_map}\n"
+
+    # Authoritative module map: every imported symbol must come from one of these contract paths.
+    qa_system_prompt += (
+        "\n\n=== CONTRACT FILES (authoritative module map) ===\n"
+        + "\n".join(ctx.contract.files_to_modify)
+    )
+
+    # Language-neutral dependency graph (SSOT). QA translates depends_on links into real imports.
+    if ctx.contract.topology_contract:
+        topo = "\n".join(
+            f"{n.file_path} | exports: {', '.join(n.exports)} | depends_on: {', '.join(n.depends_on)}"
+            for n in ctx.contract.topology_contract
+        )
+        qa_system_prompt += "\n\n=== TOPOLOGY CONTRACT (language-neutral dependency graph) ===\n" + topo
+
+    # When production code already exists (any regeneration after the Developer has run) it is the
+    # source of truth for symbol locations — this is what stops the import guessing that breaks
+    # test collection and triggers the QA↔Developer loop.
+    if ctx.production_code_snapshot:
+        snapshot = "\n\n".join(
+            f"=== FILE: {path} ===\n{content}"
+            for path, content in ctx.production_code_snapshot.items()
+        )
+        qa_system_prompt += f"\n\n=== PRODUCTION CODE SNAPSHOT (source of truth for imports) ===\n{snapshot}"
 
     if error_trace and ctx.test_code_snapshot:
         qa_system_prompt += f"\n\n=== PREVIOUS TEST SUITE STATE ===\n{ctx.test_code_snapshot}"
@@ -67,7 +91,7 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
         results.append(await _generate(m))
 
     for test_path, code, raw_response in results:
-        log_token_usage("QA Agent", raw_response)
+        log_token_usage(ctx, "QA Agent", raw_response, QA_MODEL)
         with open(test_path, "w", encoding="utf-8") as f:
             f.write(code)
 

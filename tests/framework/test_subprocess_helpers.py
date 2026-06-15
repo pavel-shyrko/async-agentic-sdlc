@@ -6,12 +6,14 @@ process is spawned. ``asyncio.create_subprocess_exec`` is always mocked.
 """
 import os
 import unittest
+from decimal import Decimal
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
 from src.utils import subprocess_helpers
 from src.utils.subprocess_helpers import (
     _assert_within_root,
+    parse_claude_usage,
     run_claude_cli,
     stream_subprocess_output,
 )
@@ -97,14 +99,65 @@ class RunClaudeCliTests(_MutedLogMixin, unittest.IsolatedAsyncioTestCase):
         proc.returncode = 0
         mock_exec.return_value = proc
         # Act
-        rc = await run_claude_cli("do the thing", [target], _ROOT)
+        rc, usage = await run_claude_cli("do the thing", [target], _ROOT)
         # Assert
+        self.assertEqual(rc, 0)
+        self.assertIsNone(usage)  # empty stdout → no usage envelope to parse
+        spawned = mock_exec.call_args.args
+        self.assertEqual(
+            spawned,
+            ("claude", "-p", "do the thing", "--output-format", "json",
+             "--dangerously-skip-permissions", target),
+        )
+
+    @mock.patch("src.utils.subprocess_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    async def test_forwards_model_and_effort_flags(self, mock_exec: AsyncMock) -> None:
+        # Arrange
+        target = os.path.join(_ROOT, "feature.py")
+        proc = MagicMock()
+        proc.stdout = _empty_stream()
+        proc.stderr = _empty_stream()
+        proc.wait = AsyncMock(return_value=0)
+        proc.returncode = 0
+        mock_exec.return_value = proc
+        # Act
+        rc, _ = await run_claude_cli("do it", [target], _ROOT, model="sonnet", effort="medium")
+        # Assert — model/effort are forwarded to the CLI before the permissions flag and files.
         self.assertEqual(rc, 0)
         spawned = mock_exec.call_args.args
         self.assertEqual(
             spawned,
-            ("claude", "-p", "do the thing", "--dangerously-skip-permissions", target),
+            ("claude", "-p", "do it", "--output-format", "json",
+             "--model", "sonnet", "--effort", "medium",
+             "--dangerously-skip-permissions", target),
         )
+
+
+class ParseClaudeUsageTests(_MutedLogMixin, unittest.TestCase):
+    """The usage parser is total and defensive: valid envelope → dict, anything else → None."""
+
+    def test_parses_valid_envelope_and_folds_cache_into_input(self) -> None:
+        # Arrange — mirrors the real `claude --output-format json` result shape.
+        envelope = (
+            '{"type":"result","total_cost_usd":0.1234,'
+            '"usage":{"input_tokens":6,"cache_creation_input_tokens":30000,'
+            '"cache_read_input_tokens":100,"output_tokens":12}}'
+        )
+        # Act
+        usage = parse_claude_usage(envelope)
+        # Assert — input side = 6 + 30000 + 100; cost is exact Decimal from total_cost_usd.
+        self.assertEqual(usage, {"input_tokens": 30106, "output_tokens": 12, "cost_usd": Decimal("0.1234")})
+
+    def test_legacy_cost_key_is_honoured(self) -> None:
+        usage = parse_claude_usage('{"cost_usd":0.5,"usage":{"input_tokens":1,"output_tokens":2}}')
+        self.assertEqual(usage["cost_usd"], Decimal("0.5"))
+
+    def test_malformed_json_returns_none(self) -> None:
+        self.assertIsNone(parse_claude_usage("not json at all"))
+
+    def test_missing_usage_block_defaults_to_zero(self) -> None:
+        usage = parse_claude_usage('{"type":"result","total_cost_usd":0.0}')
+        self.assertEqual(usage, {"input_tokens": 0, "output_tokens": 0, "cost_usd": Decimal("0.0")})
 
 
 class StreamSubprocessOutputTests(unittest.IsolatedAsyncioTestCase):

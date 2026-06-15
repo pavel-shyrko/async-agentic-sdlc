@@ -2,7 +2,7 @@
 skill_id: python_core
 type: domain
 triggers: [python]
-nodes: [architect, developer, reviewer]
+nodes: [techlead, developer, reviewer]
 ---
 LANGUAGE TARGET: Python — production-code rules for the Python tech stack.
 
