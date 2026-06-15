@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+from decimal import Decimal
 # subprocess: only PIPE/DEVNULL constants with fixed-argument exec, never shell=True.
 import subprocess  # nosec B404
 
@@ -52,7 +53,8 @@ def parse_claude_usage(stdout: str) -> dict | None:
             + int(usage.get("cache_read_input_tokens", 0))
         )
         output_tokens = int(usage.get("output_tokens", 0))
-        cost_usd = float(envelope.get("total_cost_usd", envelope.get("cost_usd", 0.0)) or 0.0)
+        # Authoritative cost from the CLI; via str() so the exact reported value enters Decimal.
+        cost_usd = Decimal(str(envelope.get("total_cost_usd", envelope.get("cost_usd", 0)) or 0))
         return {"input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": cost_usd}
     except (ValueError, TypeError, AttributeError) as e:
         log.debug(f"Failed to parse Claude usage envelope: {e}")

@@ -6,6 +6,7 @@ process is spawned. ``asyncio.create_subprocess_exec`` is always mocked.
 """
 import os
 import unittest
+from decimal import Decimal
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
@@ -144,19 +145,19 @@ class ParseClaudeUsageTests(_MutedLogMixin, unittest.TestCase):
         )
         # Act
         usage = parse_claude_usage(envelope)
-        # Assert — input side = 6 + 30000 + 100; cost from total_cost_usd.
-        self.assertEqual(usage, {"input_tokens": 30106, "output_tokens": 12, "cost_usd": 0.1234})
+        # Assert — input side = 6 + 30000 + 100; cost is exact Decimal from total_cost_usd.
+        self.assertEqual(usage, {"input_tokens": 30106, "output_tokens": 12, "cost_usd": Decimal("0.1234")})
 
     def test_legacy_cost_key_is_honoured(self) -> None:
         usage = parse_claude_usage('{"cost_usd":0.5,"usage":{"input_tokens":1,"output_tokens":2}}')
-        self.assertEqual(usage["cost_usd"], 0.5)
+        self.assertEqual(usage["cost_usd"], Decimal("0.5"))
 
     def test_malformed_json_returns_none(self) -> None:
         self.assertIsNone(parse_claude_usage("not json at all"))
 
     def test_missing_usage_block_defaults_to_zero(self) -> None:
         usage = parse_claude_usage('{"type":"result","total_cost_usd":0.0}')
-        self.assertEqual(usage, {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0})
+        self.assertEqual(usage, {"input_tokens": 0, "output_tokens": 0, "cost_usd": Decimal("0.0")})
 
 
 class StreamSubprocessOutputTests(unittest.IsolatedAsyncioTestCase):

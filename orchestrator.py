@@ -411,7 +411,8 @@ def write_finops_report(ctx: GlobalPipelineContext) -> None:
     report_file = ctx.workspace_paths.reports_dir / "finops_report.json"
     report_file.parent.mkdir(parents=True, exist_ok=True)
     with open(report_file, "w", encoding="utf-8") as f:
-        json.dump(ctx.telemetry.finops_report(PIPELINE_BUDGET_TOKENS), f, indent=2)
+        # default=str serialises Decimal money as exact strings (json can't encode Decimal natively).
+        json.dump(ctx.telemetry.finops_report(PIPELINE_BUDGET_TOKENS), f, indent=2, default=str)
     log.debug(f"FinOps report written to {report_file}")
 
 

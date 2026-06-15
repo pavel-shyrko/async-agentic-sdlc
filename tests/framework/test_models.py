@@ -4,6 +4,7 @@ Filesystem is fully isolated: every WorkspacePaths construction patches
 ``Path.mkdir`` so the suite never touches the real artifact tree.
 """
 import unittest
+from decimal import Decimal
 from tempfile import TemporaryDirectory
 from pathlib import Path
 from unittest import mock
@@ -215,13 +216,13 @@ class PipelineTelemetryTests(unittest.TestCase):
         tel.record("Developer Agent", 1000, 200, 0.05)
         # Assert — global totals.
         self.assertEqual(tel.total_tokens, 100 + 20 + 50 + 10 + 1000 + 200)
-        self.assertAlmostEqual(tel.total_cost_usd, 0.05)
+        self.assertEqual(tel.total_cost_usd, Decimal("0.05"))  # exact — no float drift
         # Assert — per-agent breakdown.
         tl = tel.by_agent["TechLead"]
         self.assertEqual((tl.input_tokens, tl.output_tokens, tl.total_tokens, tl.calls), (150, 30, 180, 2))
         dev = tel.by_agent["Developer Agent"]
         self.assertEqual((dev.total_tokens, dev.calls), (1200, 1))
-        self.assertAlmostEqual(dev.cost_usd, 0.05)
+        self.assertEqual(dev.cost_usd, Decimal("0.05"))
 
     def test_by_provider_and_finops_report(self) -> None:
         # Arrange — two providers with distinct token/cost footprints.
@@ -234,9 +235,9 @@ class PipelineTelemetryTests(unittest.TestCase):
         report = tel.finops_report(budget_tokens=10_000)
         # Assert — per-provider aggregation.
         self.assertEqual(bp["gemini"]["tokens"], 180)
-        self.assertAlmostEqual(bp["gemini"]["cost_usd"], 0.0005)
+        self.assertEqual(bp["gemini"]["cost_usd"], Decimal("0.0005"))
         self.assertEqual(bp["claude"]["tokens"], 1200)
-        self.assertAlmostEqual(bp["claude"]["cost_usd"], 0.1328)
+        self.assertEqual(bp["claude"]["cost_usd"], Decimal("0.1328"))
         # Assert — report shape + budget math (1380 / 10000 = 13.8%).
         self.assertEqual(report["total_tokens"], 1380)
         self.assertEqual(report["budget_tokens"], 10_000)
@@ -253,7 +254,7 @@ class PipelineTelemetryTests(unittest.TestCase):
         restored = GlobalPipelineContext.model_validate_json(ctx.model_dump_json())
         # Assert — the budget signal is preserved across persistence.
         self.assertEqual(restored.telemetry.total_tokens, 1200)
-        self.assertAlmostEqual(restored.telemetry.total_cost_usd, 0.05)
+        self.assertEqual(restored.telemetry.total_cost_usd, Decimal("0.05"))
         self.assertEqual(restored.telemetry.by_agent["Developer Agent"].calls, 1)
 
     def test_old_checkpoint_without_telemetry_loads_with_default(self) -> None:

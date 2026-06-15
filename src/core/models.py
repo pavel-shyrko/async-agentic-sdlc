@@ -1,5 +1,6 @@
 import os
 import re
+from decimal import Decimal
 from pathlib import Path
 from pydantic import BaseModel, Field, field_validator
 
@@ -70,7 +71,7 @@ class AgentUsage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
-    cost_usd: float = 0.0
+    cost_usd: Decimal = Decimal("0")
     calls: int = 0
 
 class PipelineTelemetry(BaseModel):
@@ -81,27 +82,29 @@ class PipelineTelemetry(BaseModel):
     budget survives ``--resume`` exactly like the functional Circuit Breaker's ``current_attempt``.
     """
     total_tokens: int = 0
-    total_cost_usd: float = 0.0
+    total_cost_usd: Decimal = Decimal("0")
     by_agent: dict[str, AgentUsage] = Field(default_factory=dict)
 
     def record(self, agent: str, input_tokens: int, output_tokens: int,
-               cost_usd: float = 0.0, provider: str = "gemini") -> None:
+               cost_usd: Decimal | float = Decimal("0"), provider: str = "gemini") -> None:
+        # Coerce at the boundary so float callers stay safe while precision is preserved exactly.
+        cost = cost_usd if isinstance(cost_usd, Decimal) else Decimal(str(cost_usd))
         slot = self.by_agent.setdefault(agent, AgentUsage(provider=provider))
         slot.provider = provider
         added = input_tokens + output_tokens
         slot.input_tokens += input_tokens
         slot.output_tokens += output_tokens
         slot.total_tokens += added
-        slot.cost_usd += cost_usd
+        slot.cost_usd += cost
         slot.calls += 1
         self.total_tokens += added
-        self.total_cost_usd += cost_usd
+        self.total_cost_usd += cost
 
-    def by_provider(self) -> dict[str, dict[str, float]]:
+    def by_provider(self) -> dict[str, dict]:
         """Aggregate tokens + cost per provider (e.g. ``{"gemini": {...}, "claude": {...}}``)."""
-        agg: dict[str, dict[str, float]] = {}
+        agg: dict[str, dict] = {}
         for usage in self.by_agent.values():
-            slot = agg.setdefault(usage.provider, {"tokens": 0, "cost_usd": 0.0})
+            slot = agg.setdefault(usage.provider, {"tokens": 0, "cost_usd": Decimal("0")})
             slot["tokens"] += usage.total_tokens
             slot["cost_usd"] += usage.cost_usd
         return agg
