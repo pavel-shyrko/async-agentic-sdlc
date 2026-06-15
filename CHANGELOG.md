@@ -9,8 +9,14 @@ Decision Record (ADR) is linked from the version heading.
 
 ## [Unreleased]
 
+ADR: [0011-secure-sandbox-and-finops-telemetry](./docs/adr/0011-secure-sandbox-and-finops-telemetry.md)
+
+### Added
+- Language-neutral topology contract: `TechLeadContract` gains `topology_contract: list[TopologyNode]` (`src/core/models.py`), where each node declares `file_path`, `exports`, and language-neutral `depends_on` links (`path/to/file.ext:symbol`) — not import statements. The TechLead is the Single Source of Truth for structure (`prompts/system/techlead.md` TOPOLOGY RULE); the Developer and QA agents translate the neutral links into the target language's import syntax, with QA consuming the graph for test import resolution (`prompts/system/qa.md`, `src/agents/qa.py`). This decouples the dependency graph from any one language, making new-language support Open-Closed.
+
 ### Changed
-- Refactor: Renamed Architect role to TechLead across prompts and orchestration layer for better semantic mapping.
+- Refactor: Renamed Architect role to TechLead across prompts and orchestration layer for better semantic mapping — the node authors a binding `TechLeadContract` (signatures + topology graph) consumed deterministically downstream.
+- Pricing model migrated to `Decimal` for exact, rounding-controlled cost math feeding the Financial Circuit Breaker threshold and FinOps reporting; binary floats accumulated representation error on fractional-cent rates, which could trip the budget gate early or late by a drifting margin.
 
 ## [v0.11.0] - 2026-06-15 — Secure Sandbox Binding & Real-Time FinOps Circuit Breaker
 
@@ -212,6 +218,8 @@ ADR: [0000-cloud-infra-fsm-research](./docs/adr/0000-cloud-infra-fsm-research.md
 ### Added
 - System topology blueprint: custom Python/Pydantic FSM (over LangGraph), localized Docker sandboxing (over Cloud Run), hybrid Gemini/Claude model routing with context + prompt caching, GitHub App RS256 auth, and a 10-cycle FinOps cost model (~$5.83).
 
+[Unreleased]: ./docs/adr/0011-secure-sandbox-and-finops-telemetry.md
+[v0.11.0]: ./docs/adr/0011-secure-sandbox-and-finops-telemetry.md
 [v0.10.0]: ./docs/adr/0010-fast-fail-documentation-guardrail.md
 [v0.9.0]: ./docs/adr/0009-hybrid-skill-routing.md
 [v0.8.0]: ./docs/adr/0008-git-anchored-sessions-atomic-commit.md
