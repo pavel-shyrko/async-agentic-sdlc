@@ -28,57 +28,57 @@ class QATestSuiteFenceCleaningTests(unittest.TestCase):
         # Arrange
         raw = "```python\nprint('hi')\n```"
         # Act
-        suite = QATestSuite(test_code=raw)
+        suite = QATestSuite(new_test_code=raw)
         # Assert
-        self.assertEqual(suite.test_code, "print('hi')")
+        self.assertEqual(suite.new_test_code, "print('hi')")
 
     def test_language_fence_is_case_insensitive(self) -> None:
         # Arrange
         raw = "```PYTHON\nimport os\n```"
         # Act
-        suite = QATestSuite(test_code=raw)
+        suite = QATestSuite(new_test_code=raw)
         # Assert
-        self.assertEqual(suite.test_code, "import os")
+        self.assertEqual(suite.new_test_code, "import os")
 
     def test_strips_bare_fence_without_language(self) -> None:
         # Arrange
         raw = "```\nx = 1\n```"
         # Act
-        suite = QATestSuite(test_code=raw)
+        suite = QATestSuite(new_test_code=raw)
         # Assert
-        self.assertEqual(suite.test_code, "x = 1")
+        self.assertEqual(suite.new_test_code, "x = 1")
 
     def test_tolerates_trailing_whitespace_after_language_tag(self) -> None:
         # Arrange
         raw = "```python   \ndef f():\n    return 1\n```"
         # Act
-        suite = QATestSuite(test_code=raw)
+        suite = QATestSuite(new_test_code=raw)
         # Assert
-        self.assertEqual(suite.test_code, "def f():\n    return 1")
+        self.assertEqual(suite.new_test_code, "def f():\n    return 1")
 
     def test_trims_blank_edges_when_no_fence_present(self) -> None:
         # Arrange
         raw = "\n\n   value = 42   \n\n"
         # Act
-        suite = QATestSuite(test_code=raw)
+        suite = QATestSuite(new_test_code=raw)
         # Assert
-        self.assertEqual(suite.test_code, "value = 42")
+        self.assertEqual(suite.new_test_code, "value = 42")
 
     def test_clean_code_passes_through_unchanged(self) -> None:
         # Arrange
         raw = "def add(a: int, b: int) -> int:\n    return a + b"
         # Act
-        suite = QATestSuite(test_code=raw)
+        suite = QATestSuite(new_test_code=raw)
         # Assert
-        self.assertEqual(suite.test_code, raw)
+        self.assertEqual(suite.new_test_code, raw)
 
     def test_internal_fence_like_text_is_preserved(self) -> None:
         # Arrange — only edge fences are stripped, not interior content.
         raw = "s = '```not a fence```'"
         # Act
-        suite = QATestSuite(test_code=raw)
+        suite = QATestSuite(new_test_code=raw)
         # Assert
-        self.assertEqual(suite.test_code, "s = '```not a fence```'")
+        self.assertEqual(suite.new_test_code, "s = '```not a fence```'")
 
 
 class WorkspacePathsTests(unittest.TestCase):

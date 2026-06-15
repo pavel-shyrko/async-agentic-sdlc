@@ -156,9 +156,14 @@ class SkillRelevance(BaseModel):
     score: float = Field(description="Semantic relevance score between 0.0 and 1.0")
 
 class QATestSuite(BaseModel):
-    test_code: str = Field(description="Raw Python code only.")
+    new_imports: str = Field(default="", description="New import statements to add, if any. Code only.")
+    new_test_code: str = Field(description="Only the NEW test classes/functions. Code only.")
+    obsolete_test_names: list[str] = Field(
+        default_factory=list,
+        description="Exact names of existing test classes or test_* functions that are now invalid and must be removed.",
+    )
 
-    @field_validator("test_code")
+    @field_validator("new_imports", "new_test_code")
     @classmethod
     def clean_markdown_fences(cls, v: str) -> str:
         """Ensures generated code is cleaned from accidental markdown fences."""

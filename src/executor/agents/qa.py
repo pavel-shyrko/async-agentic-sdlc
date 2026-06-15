@@ -1,5 +1,6 @@
 import os
 import re
+import ast
 import sys
 from pathlib import Path
 
@@ -10,50 +11,78 @@ from src.shared.core.prompts import get_system_prompt_sections, build_agent_cont
 from src.shared.utils.llm import run_structured_llm
 from src.shared.utils.git_helpers import get_git_root, get_pipeline_snapshot_files
 
-# Names of the test cases an existing suite already contributes — a `class Foo` or a `def test_*`.
-# Used as a deterministic backstop against destructive LLM merges (see _safe_write_target).
-_TEST_IDENT_RE = re.compile(r"^\s*(?:class\s+(\w+)|(?:async\s+)?def\s+(test\w*))", re.MULTILINE)
+# Edge markdown fences the model occasionally wraps a code field in (belt-and-braces; the
+# QATestSuite validator already strips these at construction).
+_FENCE_RE = (
+    (re.compile(r"^```python\s*", re.IGNORECASE), ""),
+    (re.compile(r"^```\s*"), ""),
+    (re.compile(r"\s*```$"), ""),
+)
 
 
-def _test_identifiers(source: str) -> set[str]:
-    """Return the set of test-case identifiers (class names + ``test_*`` methods) declared in *source*."""
-    return {m.group(1) or m.group(2) for m in _TEST_IDENT_RE.finditer(source)}
+def _strip_fences(code: str) -> str:
+    for pattern, repl in _FENCE_RE:
+        code = pattern.sub(repl, code)
+    return code.strip()
 
 
-def _collision_free_path(path: Path) -> Path:
-    """Return *path* if free, else ``test_<slug>_v2.py``, ``_v3.py``, … — never an existing file."""
-    if not path.exists():
-        return path
-    i = 2
-    while True:
-        candidate = path.with_name(f"{path.stem}_v{i}{path.suffix}")
-        if not candidate.exists():
-            return candidate
-        i += 1
-
-
-def _safe_write_target(test_path: Path, new_code: str) -> Path:
-    """Pick a non-destructive destination for *new_code*.
-
-    The model is asked to merge the existing suite in; this is the deterministic guarantee that it
-    cannot silently drop cases. If the regenerated code preserves every test identifier already on
-    disk (editing a body keeps its name, so that still overwrites in place), write in place. If any
-    existing case would vanish, preserve the original untouched and redirect to a unique filename —
-    the redirected file is the model's COMPLETE ``test_code`` (its own imports included), so it runs
-    standalone.
-    """
-    if not test_path.exists():
-        return test_path
-    dropped = _test_identifiers(test_path.read_text(encoding="utf-8")) - _test_identifiers(new_code)
-    if not dropped:
-        return test_path
-    target = _collision_free_path(test_path)
-    log.warning(
-        f"🛡️ NON-DESTRUCTIVE GUARD: regenerated suite for {test_path.name} dropped existing "
-        f"test case(s) {sorted(dropped)}; preserving the original and writing new tests to "
-        f"{target.name} instead."
+def _is_main_guard(node: ast.stmt) -> bool:
+    """True for an ``if __name__ == "__main__":`` block."""
+    if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
+        return False
+    cmp = node.test
+    left_is_name = isinstance(cmp.left, ast.Name) and cmp.left.id == "__name__"
+    right_is_main = (
+        len(cmp.comparators) == 1
+        and isinstance(cmp.comparators[0], ast.Constant)
+        and cmp.comparators[0].value == "__main__"
     )
-    return target
+    return left_is_name and right_is_main
+
+
+def _assemble_suite(existing_source: str, suite: QATestSuite) -> str:
+    """Deterministically prune obsolete cases from *existing_source* and append the model's deltas.
+
+    Structured maintenance: the model returns only ``new_imports`` / ``new_test_code`` and the
+    ``obsolete_test_names`` to drop. We parse the existing file, remove the named top-level defs,
+    dedupe imports, relocate any ``__main__`` guard to the very end, and join with blank-line
+    separators so nothing fuses into a SyntaxError. Always rewritten in place by the caller.
+    """
+    new_imports = _strip_fences(suite.new_imports)
+    new_test_code = _strip_fences(suite.new_test_code)
+    obsolete = set(suite.obsolete_test_names)
+
+    pruned, main_guard = "", ""
+    if existing_source.strip():
+        try:
+            tree = ast.parse(existing_source)
+        except SyntaxError:
+            # On-disk file is malformed — don't crash or silently drop prior tests. Append, no prune.
+            log.warning("🛡️ QA: existing test file is not parseable; appending new tests without AST pruning.")
+            segments = [existing_source.strip(), new_imports, new_test_code]
+            return "\n\n\n".join(s for s in segments if s.strip()) + "\n"
+
+        # Relocate the runner guard so newly appended classes are defined BEFORE unittest.main().
+        guard_nodes = [n for n in tree.body if _is_main_guard(n)]
+        if guard_nodes:
+            main_guard = "\n\n\n".join(ast.unparse(n) for n in guard_nodes)
+        # Drop obsolete top-level test defs and the guard (re-appended last).
+        tree.body = [
+            n for n in tree.body
+            if not _is_main_guard(n)
+            and not (isinstance(n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in obsolete)
+        ]
+        pruned = ast.unparse(tree)
+
+    # Strict import dedup: only keep new_imports lines absent from the pruned body.
+    existing_lines = {ln.strip() for ln in pruned.splitlines() if ln.strip()}
+    deduped_imports = "\n".join(
+        ln for ln in new_imports.splitlines() if ln.strip() and ln.strip() not in existing_lines
+    )
+
+    # Guard LAST so it sits below every test definition; blank-line separators prevent fusion.
+    segments = [deduped_imports, pruned, new_test_code, main_guard]
+    return "\n\n\n".join(s for s in segments if s.strip()) + "\n"
 
 
 async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -> None:
@@ -110,17 +139,16 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
             feedback=feedback,
         )
 
-    async def _generate(module_file: str) -> tuple[str, str, object]:
+    async def _generate(module_file: str) -> tuple[Path, str, object, object]:
         slug = module_file.removesuffix(".py").replace("/", "_").replace("\\", "_")
         module_dot = module_file.removesuffix(".py").replace("/", ".").replace("\\", ".")
         test_path = tests_dir / f"test_{slug}.py"
-        # Read-Modify-Write: surface the current on-disk suite so the agent merges
-        # instead of regenerating from scratch (appended post-format; test code
-        # contains literal braces that would break str.format).
+        # Surface the current on-disk suite so the agent returns DELTAS (new code + obsolete names)
+        # instead of re-emitting the whole file. Read once; reused for prompt and AST assembly.
         user_prompt = _build_prompt(module_dot)
-        if test_path.exists():
-            existing_test_code = test_path.read_text(encoding="utf-8")
-            user_prompt += f"\n\n=== EXISTING TEST SUITE ===\n{existing_test_code}"
+        existing_source = test_path.read_text(encoding="utf-8") if test_path.exists() else ""
+        if existing_source:
+            user_prompt += f"\n\n=== EXISTING TEST SUITE ===\n{existing_source}"
         suite, raw_response = await run_structured_llm(
             "qa",
             QATestSuite,
@@ -129,7 +157,7 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
                 {"role": "user", "content": user_prompt},
             ],
         )
-        return str(test_path), suite.test_code, raw_response
+        return test_path, existing_source, suite, raw_response
 
     target_modules = [m for m in ctx.contract.files_to_modify if not m.endswith("__init__.py")]
 
@@ -138,13 +166,15 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
         results.append(await _generate(m))
 
     written_paths = []
-    for test_path, code, raw_response in results:
+    assembled = []
+    for test_path, existing_source, suite, raw_response in results:
         log_token_usage(ctx, "QA Agent", raw_response, QA_MODEL)
-        # Deterministic backstop: never silently overwrite a file whose test cases the merge dropped.
-        target = _safe_write_target(Path(test_path), code)
-        with open(target, "w", encoding="utf-8") as f:
-            f.write(code)
-        written_paths.append(str(target))
+        # Structured maintenance: prune obsolete cases from disk + append the model's new deltas.
+        final_code = _assemble_suite(existing_source, suite)
+        with open(test_path, "w", encoding="utf-8") as f:
+            f.write(final_code)
+        written_paths.append(str(test_path))
+        assembled.append(final_code)
 
     # Snapshot the test delta from the real git root, scoped to the tests subtree.
     repo_root = Path(await get_git_root(str(tests_dir)))
@@ -159,7 +189,7 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
         else:
             parts.append(f"=== FILE: {rel_path} (DELETED) ===")
 
-    fallback = "\n\n".join(code for _, code, _ in results)
+    fallback = "\n\n".join(assembled)
     ctx.test_code_snapshot = "\n\n".join(parts) if parts else fallback
 
     generated = written_paths

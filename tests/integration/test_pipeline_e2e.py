@@ -38,8 +38,8 @@ from src.shared.core.models import (
 # Deterministic production code the (mocked) Claude developer "writes", and a trivial but
 # valid unittest the (mocked) Gemini QA agent "generates". Both are written to disk for real.
 _PROD_CODE = "def add(a: int, b: int) -> int:\n    return a + b\n"
+_TEST_IMPORTS = "import unittest"
 _TEST_CODE = (
-    "import unittest\n\n"
     "class CalculatorTests(unittest.TestCase):\n"
     "    def test_add(self) -> None:\n"
     "        self.assertEqual(2, 2)\n"
@@ -64,7 +64,7 @@ def _fake_structured_llm(*, model, response_model, messages):
             raw,
         )
     if response_model is QATestSuite:
-        return QATestSuite(test_code=_TEST_CODE), raw
+        return QATestSuite(new_imports=_TEST_IMPORTS, new_test_code=_TEST_CODE), raw
     if response_model is ReviewReport:
         return (
             ReviewReport(
