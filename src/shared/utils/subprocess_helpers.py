@@ -5,6 +5,7 @@ from decimal import Decimal
 # subprocess: only PIPE/DEVNULL constants with fixed-argument exec, never shell=True.
 import subprocess  # nosec B404
 
+from src.shared.core.config import CLAUDE_CLI_BIN
 from src.shared.core.observability import log
 
 # ==========================================
@@ -71,17 +72,24 @@ def parse_claude_usage(stdout: str) -> dict | None:
 async def run_claude_cli(
     prompt: str, files: list[str], allowed_root: str,
     model: str | None = None, effort: str | None = None,
+    timeout: float | None = None,
 ) -> tuple[int, dict | None]:
     """Launches the Claude CLI against sandbox-contained files and captures its output.
 
-    ``model`` (``--model``) and ``effort`` (``--effort``, reasoning level) are forwarded to the
-    CLI when provided. Returns ``(returncode, usage)`` where ``usage`` is the parsed token/cost
-    dict from the ``--output-format json`` result envelope, or ``None`` if it could not be parsed.
-    stdout is a single JSON blob (not human-readable), so it is captured for parsing rather than
-    streamed to the console; stderr is still surfaced live for diagnostics.
+    The executable is ``CLAUDE_CLI_BIN`` (env-overridable) so a WSL run can target the Linux binary
+    rather than resolving to a Windows ``claude.exe`` across the interop boundary. ``model``
+    (``--model``) and ``effort`` (``--effort``, reasoning level) are forwarded to the CLI when
+    provided. Returns ``(returncode, usage)`` where ``usage`` is the parsed token/cost dict from the
+    ``--output-format json`` result envelope, or ``None`` if it could not be parsed. stdout is a
+    single JSON blob (not human-readable), so it is captured for parsing rather than streamed to the
+    console; stderr is still surfaced live for diagnostics.
+
+    ``timeout`` (seconds) bounds the whole agentic session: on expiry the child is killed AND reaped
+    (no ``<defunct>`` zombie, mirroring the git launcher) and ``(124, None)`` is returned so a
+    stalled ``claude`` can never hang the orchestrator. ``None`` means no timeout.
     """
     _assert_within_root(files, allowed_root)
-    cmd = ["claude", "-p", prompt, "--output-format", "json"]
+    cmd = [CLAUDE_CLI_BIN, "-p", prompt, "--output-format", "json"]
     if model:
         cmd += ["--model", model]
     if effort:
@@ -92,10 +100,20 @@ async def run_claude_cli(
         *cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
     stdout_buffer, stderr_buffer = [], []
-    await asyncio.gather(
-        stream_subprocess_output("   [Developer Agent][STDOUT]", proc.stdout, stdout_buffer, verbose_to_console=False),
-        stream_subprocess_output("   [Developer Agent][STDERR]", proc.stderr, stderr_buffer, verbose_to_console=True),
-    )
+    try:
+        # Stream readers only return on pipe EOF (child exit); bound the wait so a hung child is killed.
+        await asyncio.wait_for(
+            asyncio.gather(
+                stream_subprocess_output("   [Developer Agent][STDOUT]", proc.stdout, stdout_buffer, verbose_to_console=False),
+                stream_subprocess_output("   [Developer Agent][STDERR]", proc.stderr, stderr_buffer, verbose_to_console=True),
+            ),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()              # reap immediately after kill — no <defunct> zombie
+        log.error(f"🚨 Developer CLI timed out after {timeout}s (possible interop/stdout hang) — killed.")
+        return 124, None
     await proc.wait()
     usage = parse_claude_usage("".join(stdout_buffer))
     return proc.returncode, usage

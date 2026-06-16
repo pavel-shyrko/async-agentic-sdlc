@@ -63,6 +63,16 @@ AVAILABLE_EFFORT_LEVELS = (EFFORT_LOW, EFFORT_MEDIUM, EFFORT_HIGH, EFFORT_XHIGH,
 DEVELOPER_MODEL = CLAUDE_SONNET           # any of AVAILABLE_CLAUDE_MODELS (or a pinned full id)
 DEVELOPER_EFFORT = EFFORT_MEDIUM          # any of AVAILABLE_EFFORT_LEVELS
 
+# Wall-clock ceiling (seconds) for ONE agentic Developer CLI session. The launcher kills+reaps the
+# child on expiry so a stalled `claude` can never hang the orchestrator. Generous default (15 min);
+# env-overridable.
+DEVELOPER_CLI_TIMEOUT = int(os.environ.get("DEVELOPER_CLI_TIMEOUT", "900"))
+
+# The Claude CLI executable. Default "claude" resolves on PATH; under WSL point this at the Linux
+# binary (e.g. "/usr/local/bin/claude") so the run never accidentally resolves to a Windows
+# `claude.exe` across the WSL↔Win32 interop boundary. Env-overridable.
+CLAUDE_CLI_BIN = os.environ.get("CLAUDE_CLI_BIN", "claude")
+
 # ==========================================
 # FINOPS — Financial Circuit Breaker budget
 # ==========================================

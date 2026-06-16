@@ -4,6 +4,7 @@ Security focus: ``_assert_within_root`` is the sandbox boundary guard, so
 path-traversal and prefix-forgery attacks are asserted to raise before any
 process is spawned. ``asyncio.create_subprocess_exec`` is always mocked.
 """
+import asyncio
 import os
 import unittest
 from decimal import Decimal
@@ -133,6 +134,24 @@ class RunClaudeCliTests(_MutedLogMixin, unittest.IsolatedAsyncioTestCase):
         )
 
 
+    @mock.patch("src.shared.utils.subprocess_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    async def test_timeout_kills_and_reaps_child(self, mock_exec: AsyncMock) -> None:
+        # Arrange — streams never EOF, so the real asyncio.wait_for must fire and cancel the readers.
+        target = os.path.join(_ROOT, "feature.py")
+        proc = MagicMock()
+        proc.stdout = _hanging_stream()
+        proc.stderr = _hanging_stream()
+        proc.kill = MagicMock()
+        proc.wait = AsyncMock(return_value=-9)
+        mock_exec.return_value = proc
+        # Act — tiny real timeout so the test is fast; the launcher must not hang.
+        rc, usage = await run_claude_cli("do it", [target], _ROOT, timeout=0.05)
+        # Assert — child is killed AND reaped (no zombie), and the timeout sentinel is returned.
+        proc.kill.assert_called_once()
+        proc.wait.assert_awaited_once()
+        self.assertEqual((rc, usage), (124, None))
+
+
 class ParseClaudeUsageTests(_MutedLogMixin, unittest.TestCase):
     """The usage parser is total and defensive: valid envelope → dict, anything else → None."""
 
@@ -190,6 +209,15 @@ def _empty_stream() -> MagicMock:
     """A StreamReader stand-in that immediately reports EOF."""
     reader = MagicMock()
     reader.readline = AsyncMock(return_value=b"")
+    return reader
+
+
+def _hanging_stream() -> MagicMock:
+    """A StreamReader stand-in whose readline never resolves — parks the reader forever."""
+    async def _never(*_a, **_k):
+        await asyncio.Event().wait()   # never set -> coroutine parks until cancelled
+    reader = MagicMock()
+    reader.readline = _never
     return reader
 
 

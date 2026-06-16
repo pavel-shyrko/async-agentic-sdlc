@@ -1,5 +1,5 @@
 from src.shared.core.observability import log
-from src.shared.core.config import DEVELOPER_MODEL, DEVELOPER_EFFORT
+from src.shared.core.config import DEVELOPER_MODEL, DEVELOPER_EFFORT, DEVELOPER_CLI_TIMEOUT
 from src.shared.core.models import GlobalPipelineContext
 from src.shared.core.prompts import get_system_prompt, build_agent_context
 from src.shared.utils.subprocess_helpers import run_claude_cli
@@ -28,7 +28,8 @@ async def run_developer_node(ctx: GlobalPipelineContext, error_trace: str = "") 
     # The clone is already a git repo on feat/ticket-<id>; agents only mutate the working tree.
     code_files = [str(repo_dir_path / f) for f in ctx.contract.files_to_modify]
     returncode, usage = await run_claude_cli(
-        prompt, code_files, allowed_root=repo_dir, model=DEVELOPER_MODEL, effort=DEVELOPER_EFFORT
+        prompt, code_files, allowed_root=repo_dir, model=DEVELOPER_MODEL, effort=DEVELOPER_EFFORT,
+        timeout=DEVELOPER_CLI_TIMEOUT,
     )
 
     if usage:
