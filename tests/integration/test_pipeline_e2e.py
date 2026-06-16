@@ -66,6 +66,7 @@ def _fake_structured_llm(*, model, response_model, messages):
                 function_signatures="def add(a: int, b: int) -> int",
                 strict_type_validation_rules="Operands must be int.",
                 techlead_reasoning="Trivial pure function.",
+                environment_id="python-3.11-core",
             ),
             raw,
         )
@@ -165,8 +166,14 @@ class PipelineEndToEndTests(unittest.IsolatedAsyncioTestCase):
                     "run_qa_unit_tests",
                     new=AsyncMock(return_value=(True, [])),
                 ),
+                mock.patch.object(
+                    orchestrator,
+                    "run_security_scan",
+                    new=AsyncMock(return_value=(True, [])),
+                ),
             ):
-                # Act — real bootstrap (shallow clone + feature branch) + real agents + real bandit.
+                # Act — real bootstrap (shallow clone + feature branch) + real agents. The sandboxed
+                # QA/SAST Docker gates are stubbed (no docker dependency in the hermetic test).
                 await orchestrator.main()
 
             # Assert — exactly one session was bootstrapped with a real clone.

@@ -114,13 +114,15 @@ class MainResumeSkipFlowTests(unittest.IsolatedAsyncioTestCase):
                 workspace_paths=paths,
                 test_code_snapshot="existing tests",
             )
-            ctx.contract = {
-                "files_to_modify": ["src/core/models.py"],
-                "instruction": "noop",
-                "function_signatures": "noop",
-                "strict_type_validation_rules": "noop",
-                "techlead_reasoning": "noop",
-            }
+            ctx.contract = TechLeadContract(
+                files_to_modify=["src/core/models.py"],
+                instruction="noop",
+                function_signatures="noop",
+                strict_type_validation_rules="noop",
+                techlead_reasoning="noop",
+                topology_contract=[],
+                environment_id="python-3.11-core",
+            )
 
             async def _set_approved_review(*_args, **_kwargs) -> None:
                 ctx.review_report = ReviewReport(
@@ -206,13 +208,15 @@ class MainCheckpointWritePointsTests(unittest.IsolatedAsyncioTestCase):
                     repo="dummy-repo", ticket="DEMO-1")),
                 mock.patch.object(orchestrator, "bootstrap_session", new=AsyncMock(return_value=paths)),
                 mock.patch.object(GlobalPipelineContext, "save_checkpoint", autospec=True) as save_checkpoint,
-                mock.patch.object(orchestrator, "run_techlead_node", new=AsyncMock(side_effect=lambda c: setattr(c, "contract", {
-                    "files_to_modify": ["src/core/models.py"],
-                    "instruction": "noop",
-                    "function_signatures": "noop",
-                    "strict_type_validation_rules": "noop",
-                    "techlead_reasoning": "noop",
-                }))),
+                mock.patch.object(orchestrator, "run_techlead_node", new=AsyncMock(side_effect=lambda c: setattr(c, "contract", TechLeadContract(
+                    files_to_modify=["src/core/models.py"],
+                    instruction="noop",
+                    function_signatures="noop",
+                    strict_type_validation_rules="noop",
+                    techlead_reasoning="noop",
+                    topology_contract=[],
+                    environment_id="python-3.11-core",
+                )))),
                 mock.patch.object(orchestrator, "run_qa_agent_node", new=AsyncMock(side_effect=lambda c, _e: setattr(c, "test_code_snapshot", "tests"))),
                 mock.patch.object(orchestrator, "run_developer_node", new_callable=AsyncMock),
                 mock.patch.object(orchestrator, "run_reviewer_node", new=AsyncMock(side_effect=_set_approved_review)),
@@ -250,13 +254,15 @@ class MainCheckpointWritePointsTests(unittest.IsolatedAsyncioTestCase):
                 repo_dir=base,
             )
             ctx = GlobalPipelineContext(pr_description="resume run", workspace_paths=paths)
-            ctx.contract = {
-                "files_to_modify": ["src/core/models.py"],
-                "instruction": "noop",
-                "function_signatures": "noop",
-                "strict_type_validation_rules": "noop",
-                "techlead_reasoning": "noop",
-            }
+            ctx.contract = TechLeadContract(
+                files_to_modify=["src/core/models.py"],
+                instruction="noop",
+                function_signatures="noop",
+                strict_type_validation_rules="noop",
+                techlead_reasoning="noop",
+                topology_contract=[],
+                environment_id="python-3.11-core",
+            )
 
             async def _set_approved_review(*_args, **_kwargs) -> None:
                 ctx.review_report = ReviewReport(
@@ -342,13 +348,15 @@ class MainCheckpointWritePointsTests(unittest.IsolatedAsyncioTestCase):
                     repo="dummy-repo", ticket="DEMO-1")),
                 mock.patch.object(orchestrator, "bootstrap_session", new=AsyncMock(return_value=paths)),
                 mock.patch.object(GlobalPipelineContext, "save_checkpoint", autospec=True) as save_checkpoint,
-                mock.patch.object(orchestrator, "run_techlead_node", new=AsyncMock(side_effect=lambda c: setattr(c, "contract", {
-                    "files_to_modify": ["src/core/models.py"],
-                    "instruction": "noop",
-                    "function_signatures": "noop",
-                    "strict_type_validation_rules": "noop",
-                    "techlead_reasoning": "noop",
-                }))),
+                mock.patch.object(orchestrator, "run_techlead_node", new=AsyncMock(side_effect=lambda c: setattr(c, "contract", TechLeadContract(
+                    files_to_modify=["src/core/models.py"],
+                    instruction="noop",
+                    function_signatures="noop",
+                    strict_type_validation_rules="noop",
+                    techlead_reasoning="noop",
+                    topology_contract=[],
+                    environment_id="python-3.11-core",
+                )))),
                 mock.patch.object(orchestrator, "run_qa_agent_node", new=AsyncMock(side_effect=lambda c, _e: setattr(c, "test_code_snapshot", "tests"))) as qa,
                 mock.patch.object(orchestrator, "run_developer_node", new_callable=AsyncMock) as developer,
                 mock.patch.object(orchestrator, "run_reviewer_node", new=AsyncMock(side_effect=_review_reject_then_approve)),
@@ -398,13 +406,15 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 test_code_snapshot="stale test suite",
                 current_attempt=2,
             )
-            ctx.contract = {
-                "files_to_modify": ["src/core/models.py"],
-                "instruction": "noop",
-                "function_signatures": "noop",
-                "strict_type_validation_rules": "noop",
-                "techlead_reasoning": "noop",
-            }
+            ctx.contract = TechLeadContract(
+                files_to_modify=["src/core/models.py"],
+                instruction="noop",
+                function_signatures="noop",
+                strict_type_validation_rules="noop",
+                techlead_reasoning="noop",
+                topology_contract=[],
+                environment_id="python-3.11-core",
+            )
             ctx.review_report = ReviewReport(
                 code_quality_analysis="ok",
                 test_integrity_analysis="loophole detected",
@@ -466,13 +476,15 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 test_code_snapshot="approved tests",
                 current_attempt=3,
             )
-            ctx.contract = {
-                "files_to_modify": ["src/core/models.py"],
-                "instruction": "noop",
-                "function_signatures": "noop",
-                "strict_type_validation_rules": "noop",
-                "techlead_reasoning": "noop",
-            }
+            ctx.contract = TechLeadContract(
+                files_to_modify=["src/core/models.py"],
+                instruction="noop",
+                function_signatures="noop",
+                strict_type_validation_rules="noop",
+                techlead_reasoning="noop",
+                topology_contract=[],
+                environment_id="python-3.11-core",
+            )
             ctx.review_report = ReviewReport(
                 code_quality_analysis="needs fix",
                 test_integrity_analysis="ok",
@@ -534,13 +546,15 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 test_code_snapshot="tests",
                 current_attempt=4,
             )
-            ctx.contract = {
-                "files_to_modify": ["src/core/models.py"],
-                "instruction": "noop",
-                "function_signatures": "noop",
-                "strict_type_validation_rules": "noop",
-                "techlead_reasoning": "noop",
-            }
+            ctx.contract = TechLeadContract(
+                files_to_modify=["src/core/models.py"],
+                instruction="noop",
+                function_signatures="noop",
+                strict_type_validation_rules="noop",
+                techlead_reasoning="noop",
+                topology_contract=[],
+                environment_id="python-3.11-core",
+            )
 
             with (
                 mock.patch.object(orchestrator, "check_environment"),
@@ -586,13 +600,15 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 test_code_snapshot="stale tests",
                 current_attempt=4,
             )
-            ctx.contract = {
-                "files_to_modify": ["src/core/models.py"],
-                "instruction": "noop",
-                "function_signatures": "noop",
-                "strict_type_validation_rules": "noop",
-                "techlead_reasoning": "noop",
-            }
+            ctx.contract = TechLeadContract(
+                files_to_modify=["src/core/models.py"],
+                instruction="noop",
+                function_signatures="noop",
+                strict_type_validation_rules="noop",
+                techlead_reasoning="noop",
+                topology_contract=[],
+                environment_id="python-3.11-core",
+            )
             ctx.review_report = ReviewReport(
                 code_quality_analysis="ok",
                 test_integrity_analysis="brittle assertions",
@@ -893,6 +909,7 @@ class EnforceDocumentationGuardrailTests(unittest.IsolatedAsyncioTestCase):
         ctx.contract = TechLeadContract(
             files_to_modify=files_to_modify, instruction="i", function_signatures="s",
             strict_type_validation_rules="r", techlead_reasoning="why",
+            environment_id="python-3.11-core",
             topology_contract=[{"file_path": f, "exports": [], "depends_on": []} for f in files_to_modify],
         )
         ctx.production_code_snapshot = {k: "" for k in snapshot_keys}
@@ -980,6 +997,7 @@ class DocumentationGuardrailLoopTests(unittest.IsolatedAsyncioTestCase):
         ctx.contract = TechLeadContract(
             files_to_modify=["src/core/models.py"], instruction="noop", function_signatures="noop",
             strict_type_validation_rules="noop", techlead_reasoning="noop",
+            environment_id="python-3.11-core",
             topology_contract=[{"file_path": "src/core/models.py", "exports": [], "depends_on": []}],
         )
         return ctx
@@ -1143,6 +1161,7 @@ class TestCollectionTriageRoutingTests(unittest.IsolatedAsyncioTestCase):
         ctx.contract = TechLeadContract(
             files_to_modify=["src/calc.py"], instruction="noop", function_signatures="noop",
             strict_type_validation_rules="noop", techlead_reasoning="noop",
+            environment_id="python-3.11-core",
             topology_contract=[{"file_path": "src/calc.py", "exports": [], "depends_on": []}],
         )
         return ctx

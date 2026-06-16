@@ -4,6 +4,8 @@ from decimal import Decimal
 from pathlib import Path
 from pydantic import BaseModel, Field, field_validator
 
+from src.shared.core.environments import SUPPORTED_ENVIRONMENTS
+
 # ==========================================
 # SESSION DIRECTORY STRUCTURE
 # ==========================================
@@ -78,6 +80,17 @@ class TechLeadContract(BaseModel):
     strict_type_validation_rules: str = Field(description="Type validation rules for the implementation.")
     techlead_reasoning: str = Field(description="Justification for the chosen design.")
     domain_tags: list[str] = Field(description="Up to 5 lowercase tags for the target tech stack/language AND business domain — e.g. 'python', 'dotnet', 'typescript', 'math', 'database'. The language tag acts as the dynamic skill router and MUST be declared first.", default_factory=list)
+    environment_id: str = Field(..., description="The Paved-Road platform id (e.g. 'python-3.11-core') this ticket executes on, copied verbatim from the ticket/blueprint. MUST be one of the strictly supported environments.")
+
+    @field_validator("environment_id")
+    @classmethod
+    def _validate_environment_id(cls, v: str) -> str:
+        if v not in SUPPORTED_ENVIRONMENTS:
+            raise ValueError(
+                f"Unsupported environment_id '{v}'. "
+                f"Choose one of: {sorted(SUPPORTED_ENVIRONMENTS)}."
+            )
+        return v
 
 class AgentUsage(BaseModel):
     provider: str = "gemini"   # "gemini" (cost estimated) | "claude" (cost authoritative from CLI)

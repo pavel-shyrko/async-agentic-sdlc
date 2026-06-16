@@ -686,10 +686,13 @@ async def main():
         log.debug("Triggering parallel validation gates (QA & Security)")
         qa_result, sec_result = await asyncio.gather(
             run_qa_unit_tests(
-                code_dir=str(ctx.workspace_paths.code_dir),
-                tests_dir=str(ctx.workspace_paths.tests_dir),
+                environment_id=ctx.contract.environment_id,
+                repo_root=str(ctx.workspace_paths.repo_dir),
             ),
-            run_security_scan([str(ctx.workspace_paths.code_dir)]),
+            run_security_scan(
+                environment_id=ctx.contract.environment_id,
+                repo_root=str(ctx.workspace_paths.repo_dir),
+            ),
         )
         qa_success, qa_lines = qa_result
         sec_success, sec_lines = sec_result
