@@ -168,6 +168,11 @@ class QATestSuite(BaseModel):
         default_factory=list,
         description="Exact names of existing test classes or test_* functions that are now invalid and must be removed.",
     )
+    files_to_delete: list[str] = Field(
+        default_factory=list,
+        description="Test file paths (relative to the tests dir) to delete wholesale — their target "
+                    "production module was removed/renamed. Used for zombie-test disposal.",
+    )
 
     @field_validator("new_imports", "new_test_code")
     @classmethod

@@ -4,11 +4,12 @@ from src.shared.core.models import ReviewReport, GlobalPipelineContext
 from src.shared.core.prompts import get_system_prompt, build_agent_context
 from src.shared.utils.llm import run_structured_llm
 
-async def run_reviewer_node(ctx: GlobalPipelineContext, qa_success: bool, qa_log: list[str], sec_success: bool, sec_log: list[str]) -> None:
+async def run_reviewer_node(ctx: GlobalPipelineContext, qa_success: bool, qa_log: str, sec_success: bool, sec_log: list[str]) -> None:
     model_name = REVIEWER_MODEL
     log.info(f"🔍 [ROLE] Reviewer Agent | [MODEL] {model_name}")
 
-    qa_report = "\n".join(qa_log) if qa_log else "No logs produced."
+    # qa_log arrives pre-sliced (marker-aware) from the orchestrator; sec_log is still a raw line list.
+    qa_report = qa_log if qa_log else "No logs produced."
     sec_report = "\n".join(sec_log) if sec_log else "No logs produced."
 
     # production_code_snapshot is a {repo-relative path: full content} dict; render it as labelled

@@ -1089,43 +1089,38 @@ class FinancialCircuitBreakerTests(unittest.TestCase):
 
 
 class TestCollectionTriageHelperTests(unittest.TestCase):
-    """Deterministic helpers behind the QA-loop break."""
-
-    def test_detects_import_and_collection_failures(self) -> None:
-        for marker in ("ImportError: boom", "ModuleNotFoundError: no mod",
-                       "cannot import name 'X'", "unittest.loader._FailedTest"):
-            self.assertTrue(orchestrator._is_test_collection_failure([marker]))
-
-    def test_plain_assertion_failure_is_not_collection_failure(self) -> None:
-        log = ["FAIL: test_add", "AssertionError: 2 != 3", "Ran 1 test", "FAILED (failures=1)"]
-        self.assertFalse(orchestrator._is_test_collection_failure(log))
-
-    def test_truncate_tail_keeps_last_lines(self) -> None:
-        lines = [f"line {i}" for i in range(200)]
-        out = orchestrator._truncate_tail(lines, max_lines=50)
-        self.assertEqual(out.count("\n"), 49)
-        self.assertTrue(out.endswith("line 199"))
-        self.assertNotIn("line 149", out.splitlines()[0])
+    """Deterministic helpers behind the Reviewer log feed."""
 
     def test_cap_text_bounds_length(self) -> None:
         capped = orchestrator._cap_text("x" * 20000, max_chars=8000)
         self.assertLessEqual(len(capped), 8000 + len("\n…[truncated]…\n"))
         self.assertIn("[truncated]", capped)
 
-    def test_clear_test_files_removes_only_test_modules(self) -> None:
-        with TemporaryDirectory() as td:
-            base = Path(td)
-            (base / "test_a.py").write_text("x", encoding="utf-8")
-            (base / "test_b.py").write_text("x", encoding="utf-8")
-            (base / "conftest.py").write_text("x", encoding="utf-8")  # not a test_*.py
-            orchestrator._clear_test_files(base)
-            self.assertFalse((base / "test_a.py").exists())
-            self.assertFalse((base / "test_b.py").exists())
-            self.assertTrue((base / "conftest.py").exists())
+    def test_extract_failure_context_returns_whole_when_short(self) -> None:
+        lines = ["a", "b", "c"]
+        self.assertEqual(orchestrator._extract_failure_context(lines, max_lines=50), "a\nb\nc")
+
+    def test_extract_failure_context_preserves_buried_import_error(self) -> None:
+        # Root ImportError sits near the TOP, buried above a long tail of _FailedTest noise.
+        lines = ["ImportError: cannot import name 'JSONConverter'"]
+        lines += [f"noise {i}" for i in range(200)]
+        out = orchestrator._extract_failure_context(lines, max_lines=50)
+        # Marker-aware slice MUST keep the root error origin (a plain tail would have dropped it)…
+        self.assertIn("ImportError: cannot import name 'JSONConverter'", out)
+        # …and still keep the final summary tail.
+        self.assertIn("noise 199", out)
+        self.assertIn("…[snip]…", out)
+
+    def test_extract_failure_context_falls_back_to_tail_without_marker(self) -> None:
+        lines = [f"line {i}" for i in range(200)]
+        out = orchestrator._extract_failure_context(lines, max_lines=50)
+        self.assertTrue(out.endswith("line 199"))
+        self.assertNotIn("…[snip]…", out)
 
 
 class TestCollectionTriageRoutingTests(unittest.IsolatedAsyncioTestCase):
-    """A collection failure reroutes to QA (clearing stale tests) without re-running the Developer."""
+    """Dumb pipe: a collection failure flows straight to the Reviewer — the orchestrator never
+    purges tests, re-runs QA, or skips the Reviewer based on the test exit code."""
 
     def _ctx(self, base: Path) -> GlobalPipelineContext:
         paths = WorkspacePaths(
@@ -1142,18 +1137,28 @@ class TestCollectionTriageRoutingTests(unittest.IsolatedAsyncioTestCase):
         )
         return ctx
 
-    async def test_import_failure_reroutes_to_qa_and_clears_tests(self) -> None:
+    async def test_import_failure_routes_to_developer_not_qa_purge(self) -> None:
         with TemporaryDirectory() as td:
             base = Path(td)
             ctx = self._ctx(base)
             stale = ctx.workspace_paths.tests_dir / "test_stale.py"
+            stale.parent.mkdir(parents=True, exist_ok=True)
             stale.write_text("import does.not.exist", encoding="utf-8")
 
-            async def _approve(*_a, **_k) -> None:
-                ctx.review_report = ReviewReport(
-                    code_quality_analysis="ok", test_integrity_analysis="ok",
-                    log_verification_analysis="ok", code_quality_approved=True,
-                    test_integrity_approved=True, dev_diagnostic_payload="",
+            captured = {}
+
+            # Smart Reviewer: cycle 1 sees the ImportError and routes the fix to the Developer
+            # (case a — broken production dep), NOT a QA test purge. Cycle 2 (Developer fixed the
+            # imports → clean gate) approves and the pipeline completes.
+            async def _review(_ctx, _qa_success, qa_log, *_a, **_k) -> None:
+                first = "qa_log" not in captured
+                captured.setdefault("qa_log", qa_log)
+                _ctx.review_report = ReviewReport(
+                    code_quality_analysis="x", test_integrity_analysis="x",
+                    log_verification_analysis="x",
+                    code_quality_approved=not first,      # reject on the import-failure cycle only
+                    test_integrity_approved=True,         # tests are fine — never a QA regen
+                    dev_diagnostic_payload="" if not first else "Fix the broken import in cli.py.",
                 )
 
             with (
@@ -1168,20 +1173,22 @@ class TestCollectionTriageRoutingTests(unittest.IsolatedAsyncioTestCase):
                 mock.patch.object(orchestrator, "run_developer_node", new_callable=AsyncMock) as developer,
                 mock.patch.object(orchestrator, "enforce_documentation_guardrail", new=AsyncMock(return_value=None)),
                 mock.patch.object(orchestrator, "run_qa_agent_node", new_callable=AsyncMock) as qa,
-                mock.patch.object(orchestrator, "run_reviewer_node", new=AsyncMock(side_effect=_approve)) as reviewer,
-                # First gate run = import failure; second (after QA regen) = clean pass.
+                mock.patch.object(orchestrator, "run_reviewer_node", new=AsyncMock(side_effect=_review)) as reviewer,
+                # Cycle 1 = import (collection) failure; cycle 2 = clean pass after the Developer fix.
                 mock.patch.object(orchestrator, "run_qa_unit_tests", new=AsyncMock(side_effect=[
                     (False, ["unittest.loader._FailedTest", "ImportError: No module named 'src.base'"]),
                     (True, []),
-                ])),
+                ])) as gate,
                 mock.patch.object(orchestrator, "run_security_scan", new=AsyncMock(return_value=(True, []))),
             ):
                 await orchestrator.main()
 
-            developer.assert_awaited_once()       # NOT re-run during the test-only triage
-            qa.assert_awaited_once()              # regenerated tests against the real snapshot
-            reviewer.assert_awaited_once()        # reached only after the suite imported cleanly
-            self.assertFalse(stale.exists())      # stale broken test file was cleared
+            self.assertEqual(gate.await_count, 2)      # one gate run per cycle — no triage re-run loop
+            self.assertEqual(developer.await_count, 2) # cycle 1 + the Reviewer-routed dependency fix
+            qa.assert_not_awaited()                    # NOT routed to QA, and no exit-code-driven purge
+            self.assertEqual(reviewer.await_count, 2)  # Reviewer reached every cycle (never bypassed)
+            self.assertIn("ImportError", captured["qa_log"])  # failing log forwarded to the Reviewer
+            self.assertTrue(stale.exists())            # orchestrator did NOT purge the failing test file
 
 
 class FinOpsReportTests(unittest.TestCase):

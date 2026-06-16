@@ -34,3 +34,10 @@ The Developer and the QA Agent read PHYSICALLY ISOLATED feedback channels. Routi
 * If a test fails because the TEST ITSELF is badly written, uses wrong types, hallucinates parameters/imports, or is otherwise broken: set `test_integrity_approved` to `false` and put the fix instructions EXCLUSIVELY in `qa_diagnostic_payload`. DO NOT mention test fixes in `dev_diagnostic_payload`.
 * If production code has a genuine bug: set `code_quality_approved` to `false` and put the fix instructions EXCLUSIVELY in `dev_diagnostic_payload`. DO NOT mention production-code fixes in `qa_diagnostic_payload`.
 * Never duplicate the same instruction across both channels. Each payload addresses only its own agent's domain.
+
+## CRITICAL IMPORT/LINKAGE ERRORS — Broken Code vs. Zombie Test
+If the test-runner log shows an import, module-resolution, or symbol-linkage failure while collecting or compiling the suite (an unresolved import, a missing module, or an undefined/unknown symbol — in ANY language), you MUST differentiate the cause:
+* **a) FATAL PRODUCTION CODE BUG**: If the failure is because a **pre-existing production/consumer file** (e.g. an older entry-point or caller) references a symbol or module that was renamed or moved, this is a broken dependency in production code — NOT a test bug. Set `code_quality_approved` to false and route the fix EXCLUSIVELY to `dev_diagnostic_payload`, demanding the Developer update the broken references across the codebase. Do NOT route this to the QA agent.
+* **b) ZOMBIE TEST**: If the failure originates **inside a test file** because its target production module was intentionally removed or renamed in the current contract, this is an obsolete test. Set `test_integrity_approved` to false and route an instruction to DELETE that specific test file EXCLUSIVELY to `qa_diagnostic_payload`. Do NOT ask the Developer to resurrect a deleted module.
+
+Use the ARCHITECT CONTRACT (`files_to_modify`, topology) and the GIT DIFF as the authoritative scope when deciding whether a module is in-scope (case a) or intentionally gone (case b).

@@ -330,29 +330,42 @@ GUARDRAIL_TOP_LINES = 15        # top-of-file window scanned for a justification
 GUARDRAIL_MAX_REROUTES = 2      # local guardrail_retries cap: free reroutes before a Hard Halt
 
 # ==========================================
-# TEST-COLLECTION-FAILURE TRIAGE (QA loop break)
+# RUNNER-LOG FORWARDING (Reviewer feed, context pruning)
 # ==========================================
-TEST_TRIAGE_MAX_REROUTES = 2    # free QA regenerations on import/collection failure before a Hard Halt
-FEEDBACK_TAIL_LINES = 50        # only the last N runner lines are fed forward (context pruning)
+FEEDBACK_TAIL_LINES = 50        # budget for runner lines fed forward to the Reviewer (context pruning)
 FEEDBACK_MAX_CHARS = 8000       # hard cap on any failure text injected into an agent prompt
-# Markers that mean the suite failed to IMPORT (broken QA artifact), not a production-logic failure.
-_COLLECTION_FAILURE_MARKERS = (
+# Lead-ins that mark the ORIGIN of a failure. The root ImportError/Traceback can sit far above the
+# final summary, so a plain tail slice would drop it — the extractor keeps an error-origin head too.
+_TRACEBACK_MARKERS = (
+    "Traceback (most recent call",
     "ImportError",
     "ModuleNotFoundError",
     "cannot import name",
-    "unittest.loader._FailedTest",
+    "ERROR:",
+    "FAILED",
 )
 
 
-def _is_test_collection_failure(qa_log: list[str]) -> bool:
-    """True when the test runner failed at collection/import time (a broken test suite)."""
-    joined = "\n".join(qa_log)
-    return any(marker in joined for marker in _COLLECTION_FAILURE_MARKERS)
+def _extract_failure_context(lines: list[str], max_lines: int = FEEDBACK_TAIL_LINES) -> str:
+    """Marker-aware slice that guarantees the root error reaches the Reviewer.
 
-
-def _truncate_tail(lines: list[str], max_lines: int = FEEDBACK_TAIL_LINES) -> str:
-    """Keep only the last ``max_lines`` runner lines — failures are always at the tail."""
-    return "\n".join(lines[-max_lines:])
+    A bare tail slice can drop the root ``ImportError``/``Traceback`` when it sits above a long stack
+    or many ``_FailedTest`` entries. So when the log overflows the budget we keep BOTH an error-origin
+    head window (anchored at the first traceback/import marker) AND the final summary tail, separated
+    by a snip marker. With no marker present we fall back to a plain tail (failures live at the end).
+    """
+    if len(lines) <= max_lines:
+        return "\n".join(lines)
+    half = max_lines // 2
+    first = next(
+        (i for i, line in enumerate(lines) if any(m in line for m in _TRACEBACK_MARKERS)),
+        None,
+    )
+    if first is None:
+        return "\n".join(lines[-max_lines:])
+    head = lines[first:first + half]
+    tail = lines[-half:]
+    return "\n".join([*head, "…[snip]…", *tail])
 
 
 def _cap_text(text: str, max_chars: int = FEEDBACK_MAX_CHARS) -> str:
@@ -363,10 +376,6 @@ def _cap_text(text: str, max_chars: int = FEEDBACK_MAX_CHARS) -> str:
     return f"{text[:half]}\n…[truncated]…\n{text[-half:]}"
 
 
-def _clear_test_files(tests_dir) -> None:
-    """Delete stale ``test_*.py`` so QA regenerates from a clean slate (no snapshot bloat)."""
-    for p in Path(tests_dir).glob("test_*.py"):
-        p.unlink()
 # Language-agnostic comment lead-ins. ''' is added beyond the spec list so a Python single-quote module
 # docstring (a valid justification) isn't flagged as undocumented.
 _COMMENT_PREFIXES = ("#", "//", "/*", "*", '"""', "'''")
@@ -669,49 +678,24 @@ async def main():
         # Developer is the dominant token drain — enforce the budget before spending on gates.
         enforce_financial_circuit_breaker(ctx)
 
-        # 4. Automated Validation Phase (Runtime gates) — with deterministic test-collection triage.
-        #    A suite that fails to IMPORT is a broken QA artifact, not a production-code defect, so we
-        #    regenerate the tests against the real production snapshot (Developer & Reviewer bypassed,
-        #    no functional retry consumed) and re-run the gates. Bounded so it can never loop forever.
-        for triage_try in range(TEST_TRIAGE_MAX_REROUTES + 1):
-            log.debug("Triggering parallel validation gates (QA & Security)")
-            qa_result, sec_result = await asyncio.gather(
-                run_qa_unit_tests(
-                    code_dir=str(ctx.workspace_paths.code_dir),
-                    tests_dir=str(ctx.workspace_paths.tests_dir),
-                ),
-                run_security_scan([str(ctx.workspace_paths.code_dir)]),
-            )
-            qa_success, qa_lines = qa_result
-            sec_success, sec_lines = sec_result
+        # 4. Automated Validation Phase (Runtime gates).
+        #    DUMB PIPE: the orchestrator never inspects the test exit code to alter FSM state — no test
+        #    purging, no cycle skipping. All runner logs (stdout+stderr) flow to the Reviewer, the sole
+        #    node that semantically judges failures (incl. ImportError) and routes the fix.
+        log.debug("Triggering parallel validation gates (QA & Security)")
+        qa_result, sec_result = await asyncio.gather(
+            run_qa_unit_tests(
+                code_dir=str(ctx.workspace_paths.code_dir),
+                tests_dir=str(ctx.workspace_paths.tests_dir),
+            ),
+            run_security_scan([str(ctx.workspace_paths.code_dir)]),
+        )
+        qa_success, qa_lines = qa_result
+        sec_success, sec_lines = sec_result
 
-            if qa_success or not _is_test_collection_failure(qa_lines):
-                break
-            if triage_try == TEST_TRIAGE_MAX_REROUTES:
-                ctx.error_trace = _cap_text(_truncate_tail(qa_lines))
-                _abort_with_incident(
-                    ctx,
-                    f"\n🚨 HARD HALT: test suite still fails to import after "
-                    f"{TEST_TRIAGE_MAX_REROUTES} QA regenerations.",
-                )
-            log.warning(
-                f"🔶 Test-collection failure — free QA regen "
-                f"{triage_try + 1}/{TEST_TRIAGE_MAX_REROUTES} (Developer & Reviewer bypassed, stale tests cleared)."
-            )
-            _clear_test_files(ctx.workspace_paths.tests_dir)
-            # Collection failure is a broken TEST artifact → route to the QA channel only, keeping
-            # the Developer channel clean.
-            ctx.qa_error_trace = _cap_text(
-                "Test suite failed to import (collection error). Regenerate the tests against the real "
-                "production code: import every symbol from the module the contract assigns it to, and "
-                "never invent or cross-import modules. Failure tail:\n" + _truncate_tail(qa_lines)
-            )
-            await run_qa_agent_node(ctx, ctx.qa_error_trace)
-            enforce_financial_circuit_breaker(ctx)
-            ctx.save_checkpoint(checkpoint_file)
-
-        # 5. Comprehensive Audit Phase (Reviewer Agent) — failure log pruned to the tail.
-        await run_reviewer_node(ctx, qa_success, qa_lines[-FEEDBACK_TAIL_LINES:], sec_success, sec_lines)
+        # 5. Comprehensive Audit Phase (Reviewer Agent) — failure log sliced marker-aware so the root
+        #    ImportError/Traceback is preserved even when buried above a long stack.
+        await run_reviewer_node(ctx, qa_success, _extract_failure_context(qa_lines), sec_success, sec_lines)
         enforce_financial_circuit_breaker(ctx)
 
         # Print execution logs of utilities ONLY in case of an actual failure to CLI, but log everything to file

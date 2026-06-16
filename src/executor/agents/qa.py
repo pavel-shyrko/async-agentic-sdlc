@@ -26,6 +26,30 @@ def _strip_fences(code: str) -> str:
     return code.strip()
 
 
+def _dispose_zombie_tests(tests_dir: Path, names: set[str]) -> None:
+    """Mechanically delete Reviewer-flagged zombie test files, strictly contained within ``tests_dir``.
+
+    A zombie test targets a production module the TechLead intentionally removed/renamed, so it can
+    never collect. The Reviewer (not the orchestrator) decides disposal; this only executes it. Every
+    path is resolved and verified to live inside ``tests_dir`` and match ``test_*.py`` before unlink —
+    rejecting traversal (``..``, absolute escapes) so a hallucinated path can never delete outside the
+    suite.
+    """
+    root = tests_dir.resolve()
+    for name in names:
+        if not name or not name.strip():
+            continue
+        candidate = (tests_dir / name).resolve()
+        if not candidate.is_relative_to(root):
+            log.warning(f"🛑 Zombie-test disposal rejected (escapes tests dir): {name!r}")
+            continue
+        if not candidate.name.startswith("test_") or candidate.suffix != ".py":
+            log.warning(f"🛑 Zombie-test disposal rejected (not a test_*.py file): {name!r}")
+            continue
+        candidate.unlink(missing_ok=True)
+        log.info(f"🗑️  Zombie test disposed: {candidate.name}")
+
+
 def _is_main_guard(node: ast.stmt) -> bool:
     """True for an ``if __name__ == "__main__":`` block."""
     if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
@@ -175,6 +199,10 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
             f.write(final_code)
         written_paths.append(str(test_path))
         assembled.append(final_code)
+
+    # Reviewer-routed zombie disposal: delete whole test files whose target module was intentionally
+    # removed/renamed (they can never collect). Aggregated across per-module suites, deduped, guarded.
+    _dispose_zombie_tests(tests_dir, {f for _, _, suite, _ in results for f in suite.files_to_delete})
 
     # Snapshot the test delta from the real git root, scoped to the tests subtree.
     repo_root = Path(await get_git_root(str(tests_dir)))
