@@ -80,7 +80,7 @@ class TechLeadContract(BaseModel):
     strict_type_validation_rules: str = Field(description="Type validation rules for the implementation.")
     techlead_reasoning: str = Field(description="Justification for the chosen design.")
     domain_tags: list[str] = Field(description="Up to 5 lowercase tags for the target tech stack/language AND business domain — e.g. 'python', 'dotnet', 'typescript', 'math', 'database'. The language tag acts as the dynamic skill router and MUST be declared first.", default_factory=list)
-    environment_id: str = Field(..., description="The Paved-Road platform id (e.g. 'python-3.11-core') this ticket executes on, copied verbatim from the ticket/blueprint. MUST be one of the strictly supported environments.")
+    environment_id: str = Field(..., description="The Paved-Road platform id (e.g. 'python-3.12-core') this ticket executes on, copied verbatim from the ticket/blueprint. MUST be one of the strictly supported environments.")
 
     @field_validator("environment_id")
     @classmethod
@@ -199,9 +199,9 @@ class QATestSuite(BaseModel):
     @field_validator("new_imports", "new_test_code")
     @classmethod
     def clean_markdown_fences(cls, v: str) -> str:
-        """Ensures generated code is cleaned from accidental markdown fences."""
-        v = re.sub(r"^```python\s*", "", v, flags=re.IGNORECASE)
-        v = re.sub(r"^```\s*", "", v)
+        """Strip accidental markdown fences, language-neutral — the opening fence may carry ANY
+        language tag (```python, ```go, ```csharp, ```typescript) or none."""
+        v = re.sub(r"^```[A-Za-z0-9_+-]*\s*", "", v)
         v = re.sub(r"\s*```$", "", v)
         return v.strip()
 

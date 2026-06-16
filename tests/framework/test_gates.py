@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 from src.executor.nodes.gates import run_qa_unit_tests, run_security_scan
 from src.shared.core.environments import SUPPORTED_ENVIRONMENTS
 
-_ENV = "python-3.11-core"
+_ENV = "python-3.12-core"
 _REPO = "/abs/repo/root"
 
 

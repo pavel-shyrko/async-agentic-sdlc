@@ -1,8 +1,18 @@
+import re
+
 from src.shared.core.observability import log, log_token_usage
 from src.shared.core.config import TECHLEAD_MODEL
 from src.shared.core.models import TechLeadContract, GlobalPipelineContext
+from src.shared.core.environments import env_language
 from src.shared.core.prompts import get_system_prompt, build_agent_context, generate_repo_map
 from src.shared.utils.llm import run_structured_llm
+
+# Source-extension → language tag for deterministic early skill routing (precise: the negative
+# lookahead stops `.js` matching inside `.json`, `.ts` inside `.tsx`/`tsconfig`, `.cs` inside `.csproj`).
+_EXT_LANG = {
+    ".py": "python", ".go": "go", ".cs": "dotnet",
+    ".ts": "node", ".tsx": "node", ".js": "node", ".jsx": "node",
+}
 
 # ==========================================
 # AGENT NODES
@@ -16,9 +26,16 @@ async def run_techlead_node(ctx: GlobalPipelineContext) -> None:
     if not ctx.repository_map:
         ctx.repository_map = generate_repo_map(ctx.workspace_paths.repo_dir)
 
-    # Deterministic early language detection: the techlead produces domain_tags, so its own
-    # context cannot route on the (not-yet-built) contract. Infer the stack from the repo map.
-    early_tags = ["python"] if ".py" in ctx.repository_map else []
+    # Deterministic early language detection: the techlead produces domain_tags, so its own context
+    # cannot route on the (not-yet-built) contract. Prefer a known environment_id on retry; otherwise
+    # infer the stack from the repo map's file extensions (all supported languages, not just Python).
+    if ctx.contract is not None:
+        early_tags = [env_language(ctx.contract.environment_id)]
+    else:
+        early_tags = sorted({
+            lang for ext, lang in _EXT_LANG.items()
+            if re.search(re.escape(ext) + r"(?![A-Za-z0-9])", ctx.repository_map)
+        })
     sys_prompt = get_system_prompt("techlead") + "\n\n" + await build_agent_context(
         "techlead", ctx, topology_kwargs={"code_prefix": code_prefix}, inferred_tags=early_tags
     )

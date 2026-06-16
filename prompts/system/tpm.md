@@ -34,10 +34,10 @@ IDEMPOTENT UPDATE (HARD GATE): Any of these three files MAY already exist in the
 - `LICENSE`: if an MIT license already exists, update only the copyright year (`2026`) and holder; if a different license exists or none exists, write the full literal MIT text.
 
 1. `.gitignore` — the exact, comprehensive ignore patterns tailored STRICTLY to the selected `environment_id`. The pattern set MUST match the chosen platform (only the supported platforms exist — there is no Rust or other stack). Copy the matching block verbatim into the ticket `description`:
-   - `python-3.11-core` / `python-3.12-core`: `__pycache__/`, `*.py[cod]`, `.venv/`, `venv/`, `env/`, `.pytest_cache/`, `.mypy_cache/`, `*.egg-info/`, `dist/`, `build/`, `.coverage`
+   - `python-3.12-core`: `__pycache__/`, `*.py[cod]`, `.venv/`, `venv/`, `env/`, `.pytest_cache/`, `.mypy_cache/`, `*.egg-info/`, `dist/`, `build/`, `.coverage`
    - `node-20-web`: `node_modules/`, `dist/`, `build/`, `coverage/`, `.cache/`, `npm-debug.log*`, `.env`, `.DS_Store`
    - `dotnet-8-sdk`: `bin/`, `obj/`, `*.user`, `.vs/`, `[Dd]ebug/`, `[Rr]elease/`, `*.nupkg`, `TestResults/`
-   - `go-1.22-cli` / `go-1.23-cli`: compiled binaries (`*.exe`, `*.test`, `*.out`), the built binary path, `bin/`, coverage files (`*.cover`), and optionally `vendor/`
+   - `go-1.23-cli`: compiled binaries (`*.exe`, `*.test`, `*.out`), the built binary path, `bin/`, coverage files (`*.cover`), and optionally `vendor/`
 2. `README.md` — the required documentation structure, populated from the Blueprint. The ticket `description` MUST mandate these `##` sections with real content copied from the Blueprint:
    - **Project Goal:** what the project delivers (from the Epic/Blueprint).
    - **Tech Stack:** the version-pinned runtime and libraries, copied verbatim from the Blueprint.

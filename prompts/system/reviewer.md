@@ -28,7 +28,7 @@ Populate the `ReviewReport` JSON keys according to these rules:
 * `test_integrity_approved`: Set to `true` ONLY IF tests are written without loopholes or test-softening bypasses.
 * `dev_diagnostic_payload`: Fix instructions EXCLUSIVELY for the Developer to repair PRODUCTION CODE bugs. Leave empty (`""`) when `code_quality_approved` is `true`.
 * `qa_diagnostic_payload`: Fix instructions EXCLUSIVELY for the QA Agent to repair the TEST SUITE. Leave empty (`""`) when `test_integrity_approved` is `true`.
-* `zombie_tests_to_delete`: If a test file fails because it references or imports components that were intentionally removed or renamed in the current TechLead contract (e.g. legacy tests like `test_main.py` from previous iterations), you MUST flag it as a zombie. Put the exact filename (e.g. `test_main.py`) into the `zombie_tests_to_delete` array.
+* `zombie_tests_to_delete`: If a test file fails because it references or imports components that were intentionally removed or renamed in the current TechLead contract (e.g. legacy tests from previous iterations), you MUST flag it as a zombie. Put the exact test file path into the `zombie_tests_to_delete` array — relative to the repo root, using the stack's test-file convention (e.g. `test_main.py` for a Python test in the tests dir, or `src/internal/converter/engine_test.go` for a colocated Go test).
 
 ## STRICT RULE — Separation of Concerns (Feedback Channel Isolation)
 The Developer and the QA Agent read PHYSICALLY ISOLATED feedback channels. Routing a fix to the wrong channel causes a deadlock: the Developer is forbidden by its own guardrail from editing tests, and the QA Agent cannot touch production code.

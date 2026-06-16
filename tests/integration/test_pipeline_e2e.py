@@ -66,7 +66,7 @@ def _fake_structured_llm(*, model, response_model, messages):
                 function_signatures="def add(a: int, b: int) -> int",
                 strict_type_validation_rules="Operands must be int.",
                 techlead_reasoning="Trivial pure function.",
-                environment_id="python-3.11-core",
+                environment_id="python-3.12-core",
             ),
             raw,
         )

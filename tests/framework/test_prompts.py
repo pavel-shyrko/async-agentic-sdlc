@@ -59,7 +59,7 @@ class GetSystemPromptTests(unittest.TestCase):
     def test_qa_prompt_splits_into_system_and_user(self) -> None:
         system, user_template = get_system_prompt_sections("qa")
         self.assertIn("automated QA engineer", system)
-        self.assertIn("{module_dot}", user_template)
+        self.assertIn("{module_ref}", user_template)
 
     def test_sections_raises_on_missing_separator(self) -> None:
         with mock.patch(

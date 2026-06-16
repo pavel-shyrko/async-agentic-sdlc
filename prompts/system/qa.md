@@ -21,10 +21,10 @@ You must NEVER output the entire merged test file. Instead:
 5. FATAL IMPORT/STALE ERRORS OVERWRITE: If the existing test suite contains broken, stale imports (e.g., trying to import a removed/renamed class name like `JSONConverter` that no longer exists in production), or if the previous state is completely corrupted, you MUST set `overwrite_existing` to `true`. This instructs the engine to completely discard the old on-disk content, allowing your `new_imports` and `new_test_code` to form the entire fresh, clean test file without inheriting legacy import garbage.
 
 ---
-You are a QA Agent. Write a comprehensive, robust test suite that covers ONLY the module `{module_dot}`.
+You are a QA Agent. Write a comprehensive, robust test suite that covers ONLY the module `{module_ref}`.
 
 ## Contract References
-Relevant contract function signatures (test only what belongs to `{module_dot}`):
+Relevant contract function signatures (test only what belongs to `{module_ref}`):
 {function_signatures}
 
 ## Test Generation Strategy (MANDATORY)

@@ -121,7 +121,7 @@ class MainResumeSkipFlowTests(unittest.IsolatedAsyncioTestCase):
                 strict_type_validation_rules="noop",
                 techlead_reasoning="noop",
                 topology_contract=[],
-                environment_id="python-3.11-core",
+                environment_id="python-3.12-core",
             )
 
             async def _set_approved_review(*_args, **_kwargs) -> None:
@@ -215,7 +215,7 @@ class MainCheckpointWritePointsTests(unittest.IsolatedAsyncioTestCase):
                     strict_type_validation_rules="noop",
                     techlead_reasoning="noop",
                     topology_contract=[],
-                    environment_id="python-3.11-core",
+                    environment_id="python-3.12-core",
                 )))),
                 mock.patch.object(orchestrator, "run_qa_agent_node", new=AsyncMock(side_effect=lambda c, _e: setattr(c, "test_code_snapshot", "tests"))),
                 mock.patch.object(orchestrator, "run_developer_node", new_callable=AsyncMock),
@@ -261,7 +261,7 @@ class MainCheckpointWritePointsTests(unittest.IsolatedAsyncioTestCase):
                 strict_type_validation_rules="noop",
                 techlead_reasoning="noop",
                 topology_contract=[],
-                environment_id="python-3.11-core",
+                environment_id="python-3.12-core",
             )
 
             async def _set_approved_review(*_args, **_kwargs) -> None:
@@ -355,7 +355,7 @@ class MainCheckpointWritePointsTests(unittest.IsolatedAsyncioTestCase):
                     strict_type_validation_rules="noop",
                     techlead_reasoning="noop",
                     topology_contract=[],
-                    environment_id="python-3.11-core",
+                    environment_id="python-3.12-core",
                 )))),
                 mock.patch.object(orchestrator, "run_qa_agent_node", new=AsyncMock(side_effect=lambda c, _e: setattr(c, "test_code_snapshot", "tests"))) as qa,
                 mock.patch.object(orchestrator, "run_developer_node", new_callable=AsyncMock) as developer,
@@ -413,7 +413,7 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 strict_type_validation_rules="noop",
                 techlead_reasoning="noop",
                 topology_contract=[],
-                environment_id="python-3.11-core",
+                environment_id="python-3.12-core",
             )
             ctx.review_report = ReviewReport(
                 code_quality_analysis="ok",
@@ -483,7 +483,7 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 strict_type_validation_rules="noop",
                 techlead_reasoning="noop",
                 topology_contract=[],
-                environment_id="python-3.11-core",
+                environment_id="python-3.12-core",
             )
             ctx.review_report = ReviewReport(
                 code_quality_analysis="needs fix",
@@ -553,7 +553,7 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 strict_type_validation_rules="noop",
                 techlead_reasoning="noop",
                 topology_contract=[],
-                environment_id="python-3.11-core",
+                environment_id="python-3.12-core",
             )
 
             with (
@@ -607,7 +607,7 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 strict_type_validation_rules="noop",
                 techlead_reasoning="noop",
                 topology_contract=[],
-                environment_id="python-3.11-core",
+                environment_id="python-3.12-core",
             )
             ctx.review_report = ReviewReport(
                 code_quality_analysis="ok",
@@ -909,7 +909,7 @@ class EnforceDocumentationGuardrailTests(unittest.IsolatedAsyncioTestCase):
         ctx.contract = TechLeadContract(
             files_to_modify=files_to_modify, instruction="i", function_signatures="s",
             strict_type_validation_rules="r", techlead_reasoning="why",
-            environment_id="python-3.11-core",
+            environment_id="python-3.12-core",
             topology_contract=[{"file_path": f, "exports": [], "depends_on": []} for f in files_to_modify],
         )
         ctx.production_code_snapshot = {k: "" for k in snapshot_keys}
@@ -997,7 +997,7 @@ class DocumentationGuardrailLoopTests(unittest.IsolatedAsyncioTestCase):
         ctx.contract = TechLeadContract(
             files_to_modify=["src/core/models.py"], instruction="noop", function_signatures="noop",
             strict_type_validation_rules="noop", techlead_reasoning="noop",
-            environment_id="python-3.11-core",
+            environment_id="python-3.12-core",
             topology_contract=[{"file_path": "src/core/models.py", "exports": [], "depends_on": []}],
         )
         return ctx
@@ -1161,7 +1161,7 @@ class TestCollectionTriageRoutingTests(unittest.IsolatedAsyncioTestCase):
         ctx.contract = TechLeadContract(
             files_to_modify=["src/calc.py"], instruction="noop", function_signatures="noop",
             strict_type_validation_rules="noop", techlead_reasoning="noop",
-            environment_id="python-3.11-core",
+            environment_id="python-3.12-core",
             topology_contract=[{"file_path": "src/calc.py", "exports": [], "depends_on": []}],
         )
         return ctx
