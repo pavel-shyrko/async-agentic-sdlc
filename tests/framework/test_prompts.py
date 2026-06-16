@@ -208,5 +208,61 @@ class BuildAgentContextADRTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("LIVING ARCHITECTURE DOCUMENT", out)
 
 
+class PerLanguageCoreRoutingTests(unittest.IsolatedAsyncioTestCase):
+    """Each language's `*_core` skill gates into the techlead/developer/reviewer nodes by domain tag,
+    and the other languages' cores stay out. The LLM relevance fallback is mocked to False so a tag
+    miss deterministically excludes a domain skill (no network)."""
+
+    _MARKERS = {
+        "go": "LANGUAGE TARGET: Go",
+        "node": "LANGUAGE TARGET: Node",
+        "dotnet": "LANGUAGE TARGET: .NET",
+        "python": "LANGUAGE TARGET: Python",
+    }
+    # Topology skills targeting a node are `.format()`-ed, so supply their placeholders.
+    _TOPO = {"techlead": {"code_prefix": "src"}, "developer": {"code_dir": "/repo"}, "reviewer": {}}
+
+    def setUp(self) -> None:
+        get_skill.cache_clear()
+
+    async def _context(self, node: str, tag: str) -> str:
+        ctx = GlobalPipelineContext(pr_description="t")  # no workspace_paths -> ADR block skipped
+        with mock.patch(
+            "src.shared.core.prompts.fallback_semantic_search",
+            new=mock.AsyncMock(return_value=False),
+        ):
+            return await build_agent_context(
+                node, ctx, inferred_tags=[tag], topology_kwargs=self._TOPO[node]
+            )
+
+    async def test_core_skill_routes_into_each_node_and_others_excluded(self) -> None:
+        for node in ("techlead", "developer", "reviewer"):
+            for tag, marker in self._MARKERS.items():
+                out = await self._context(node, tag)
+                self.assertIn(marker, out, f"{tag}_core missing for node {node!r}")
+                for other_tag, other_marker in self._MARKERS.items():
+                    if other_tag != tag:
+                        self.assertNotIn(
+                            other_marker, out,
+                            f"{other_tag}_core leaked into node {node!r} routed for {tag!r}",
+                        )
+
+
+class PerLanguageCoreFrontmatterTests(unittest.TestCase):
+    """The new core skills are well-formed and target all three production nodes."""
+
+    def setUp(self) -> None:
+        get_skill.cache_clear()
+
+    def test_new_core_skills_target_three_nodes(self) -> None:
+        from src.shared.core.prompts import _parse_frontmatter, _SKILLS_DIR
+        for skill_id in ("go_core", "node_core", "dotnet_core"):
+            meta, body = _parse_frontmatter((_SKILLS_DIR / f"{skill_id}.md").read_text(encoding="utf-8"))
+            self.assertEqual(meta.get("type"), "domain", skill_id)
+            self.assertEqual(set(meta.get("nodes", [])), {"techlead", "developer", "reviewer"}, skill_id)
+            self.assertTrue(meta.get("triggers"), skill_id)
+            self.assertIn("LANGUAGE TARGET", body, skill_id)
+
+
 if __name__ == "__main__":
     unittest.main()

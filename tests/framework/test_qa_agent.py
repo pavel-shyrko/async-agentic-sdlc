@@ -92,8 +92,8 @@ class IsTestableSourceTests(unittest.TestCase):
         self.assertTrue(is_testable_source("python-3.12-core", "src/cmd/root.py"))
         self.assertFalse(is_testable_source("node-20-web", "package.json"))
         self.assertTrue(is_testable_source("node-20-web", "src/app.ts"))
-        self.assertFalse(is_testable_source("dotnet-8-sdk", "App.csproj"))
-        self.assertTrue(is_testable_source("dotnet-8-sdk", "src/Converter.cs"))
+        self.assertFalse(is_testable_source("dotnet-10-sdk", "App.csproj"))
+        self.assertTrue(is_testable_source("dotnet-10-sdk", "src/Converter.cs"))
 
 
 class DeriveTestTargetTests(unittest.TestCase):
@@ -114,7 +114,7 @@ class DeriveTestTargetTests(unittest.TestCase):
         self.assertEqual(path, "src/app.test.ts")
 
     def test_dotnet_colocated_tests_suffix(self) -> None:
-        path, _ = derive_test_target("dotnet-8-sdk", "src/Converter.cs")
+        path, _ = derive_test_target("dotnet-10-sdk", "src/Converter.cs")
         self.assertEqual(path, "src/ConverterTests.cs")
 
 

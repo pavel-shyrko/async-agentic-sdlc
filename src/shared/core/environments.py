@@ -25,12 +25,12 @@ SUPPORTED_ENVIRONMENTS = {
         "language_id": "node",
         "description": "Node.js 20 / JS / React (node, npm, yarn — frontend build & tests; npm audit SAST).",
     },
-    "dotnet-8-sdk": {
-        "image": "mcr.microsoft.com/dotnet/sdk:8.0-alpine",
+    "dotnet-10-sdk": {
+        "image": "mcr.microsoft.com/dotnet/sdk:10.0-alpine",
         "sast_cmd": "dotnet list package --vulnerable --include-transitive",
         "language_id": "dotnet",
         "test_cmd": "dotnet test",
-        "description": ".NET 8 SDK (full toolchain — dotnet build & dotnet test; vulnerable-package scan SAST).",
+        "description": ".NET 10 SDK (full toolchain — dotnet build & dotnet test; vulnerable-package scan SAST).",
     },
 }
 
