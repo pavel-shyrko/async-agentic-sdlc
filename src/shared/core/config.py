@@ -65,8 +65,13 @@ DEVELOPER_EFFORT = EFFORT_MEDIUM          # any of AVAILABLE_EFFORT_LEVELS
 
 # Wall-clock ceiling (seconds) for ONE agentic Developer CLI session. The launcher kills+reaps the
 # child on expiry so a stalled `claude` can never hang the orchestrator. Generous default (15 min);
-# env-overridable.
+# env-overridable. This is the hard BACKSTOP; the idle watchdog below normally fires first.
 DEVELOPER_CLI_TIMEOUT = int(os.environ.get("DEVELOPER_CLI_TIMEOUT", "900"))
+
+# Inactivity ceiling (seconds): if the streaming Developer CLI emits NO output for this long, the
+# launcher kills it — a stalled/rate-limited API call produces silence, so this catches it far sooner
+# than the hard wall-clock cap. Env-overridable.
+DEVELOPER_CLI_IDLE_TIMEOUT = int(os.environ.get("DEVELOPER_CLI_IDLE_TIMEOUT", "120"))
 
 # The Claude CLI executable. Default "claude" resolves on PATH; under WSL point this at the Linux
 # binary (e.g. "/usr/local/bin/claude") so the run never accidentally resolves to a Windows

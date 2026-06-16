@@ -107,7 +107,7 @@ class RunClaudeCliTests(_MutedLogMixin, unittest.IsolatedAsyncioTestCase):
         spawned = mock_exec.call_args.args
         self.assertEqual(
             spawned,
-            ("claude", "-p", "do the thing", "--output-format", "json",
+            ("claude", "-p", "do the thing", "--output-format", "stream-json", "--verbose",
              "--dangerously-skip-permissions", target),
         )
 
@@ -128,7 +128,7 @@ class RunClaudeCliTests(_MutedLogMixin, unittest.IsolatedAsyncioTestCase):
         spawned = mock_exec.call_args.args
         self.assertEqual(
             spawned,
-            ("claude", "-p", "do it", "--output-format", "json",
+            ("claude", "-p", "do it", "--output-format", "stream-json", "--verbose",
              "--model", "sonnet", "--effort", "medium",
              "--dangerously-skip-permissions", target),
         )
@@ -151,12 +151,51 @@ class RunClaudeCliTests(_MutedLogMixin, unittest.IsolatedAsyncioTestCase):
         proc.wait.assert_awaited_once()
         self.assertEqual((rc, usage), (124, None))
 
+    @mock.patch("src.shared.utils.subprocess_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    async def test_idle_watchdog_kills_on_silence(self, mock_exec: AsyncMock) -> None:
+        # Arrange — one event then silence; the inactivity watchdog must kill even with NO hard timeout.
+        target = os.path.join(_ROOT, "feature.py")
+        killed = asyncio.Event()
+        proc = MagicMock()
+        proc.stdout = _stream_then_eof_on_kill([b'{"type":"system","subtype":"init"}\n'], killed)
+        proc.stderr = _stream_then_eof_on_kill([], killed)
+        proc.kill = MagicMock(side_effect=killed.set)   # real kill closes pipes -> readers EOF
+        proc.wait = AsyncMock(return_value=-9)
+        mock_exec.return_value = proc
+        # Act — small idle window, no hard timeout; the watchdog is the only kill switch.
+        rc, usage = await run_claude_cli("do it", [target], _ROOT, idle_timeout=0.1)
+        # Assert — killed on silence, reaped, sentinel returned.
+        proc.kill.assert_called_once()
+        proc.wait.assert_awaited_once()
+        self.assertEqual((rc, usage), (124, None))
+
 
 class ParseClaudeUsageTests(_MutedLogMixin, unittest.TestCase):
     """The usage parser is total and defensive: valid envelope → dict, anything else → None."""
 
+    def test_parses_usage_from_streaming_jsonl(self) -> None:
+        # Arrange — `--output-format stream-json` emits many event lines; usage is in the LAST one.
+        jsonl = "\n".join([
+            '{"type":"system","subtype":"init"}',
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}',
+            '{"type":"user","message":{"content":[]}}',
+            '{"type":"result","subtype":"success","total_cost_usd":0.5,'
+            '"usage":{"input_tokens":3,"cache_creation_input_tokens":10,'
+            '"cache_read_input_tokens":50,"output_tokens":7}}',
+        ])
+        # Act
+        usage = parse_claude_usage(jsonl)
+        # Assert — parsed from the final result event, cache kept separate.
+        self.assertEqual(usage, {
+            "input_tokens": 3,
+            "cache_write_tokens": 10,
+            "cache_read_tokens": 50,
+            "output_tokens": 7,
+            "cost_usd": Decimal("0.5"),
+        })
+
     def test_parses_valid_envelope_keeping_cache_separate(self) -> None:
-        # Arrange — mirrors the real `claude --output-format json` result shape.
+        # Arrange — mirrors the legacy single-blob `--output-format json` result shape.
         envelope = (
             '{"type":"result","total_cost_usd":0.1234,'
             '"usage":{"input_tokens":6,"cache_creation_input_tokens":30000,'
@@ -218,6 +257,23 @@ def _hanging_stream() -> MagicMock:
         await asyncio.Event().wait()   # never set -> coroutine parks until cancelled
     reader = MagicMock()
     reader.readline = _never
+    return reader
+
+
+def _stream_then_eof_on_kill(lines: list, kill_event: "asyncio.Event") -> MagicMock:
+    """A StreamReader stand-in that yields ``lines`` then parks until ``kill_event`` is set, after
+    which it returns EOF (b"") — modelling a real pipe that closes when the child is killed."""
+    it = iter(lines)
+
+    async def _readline(*_a, **_k):
+        try:
+            return next(it)
+        except StopIteration:
+            await kill_event.wait()
+            return b""
+
+    reader = MagicMock()
+    reader.readline = _readline
     return reader
 
 

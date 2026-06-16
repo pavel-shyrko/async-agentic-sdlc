@@ -89,7 +89,7 @@ def _fake_structured_llm(*, model, response_model, messages):
     raise AssertionError(f"Unexpected response_model: {response_model!r}")
 
 
-async def _fake_claude_cli(prompt, files, allowed_root, model=None, effort=None, timeout=None):
+async def _fake_claude_cli(prompt, files, allowed_root, model=None, effort=None, timeout=None, idle_timeout=None):
     """Stand-in for the Claude CLI developer: writes real production code to each target.
 
     Returns the ``(returncode, usage)`` tuple shape of the real ``run_claude_cli``; the usage
