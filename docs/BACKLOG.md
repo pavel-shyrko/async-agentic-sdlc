@@ -4,19 +4,13 @@ Deferred fixes surfaced by the analysis of `run_9305be1f473f4337830b6d8bad0ddc29
 pipeline that hit `CIRCUIT BREAKER OPEN` after 3 cycles). Item #1 (Developer CLI `cwd` sandbox
 isolation) was fixed separately; the items below remain open.
 
-## 1. Developer agent must never touch test files (`*_test.go` cascade)
-**Symptom:** with Go colocation, QA writes `*_test.go` into the Developer's own package, and the
-Developer edited, commented, then deleted them.
-**Evidence (run audit log):**
-- L206 — *"test files are missing `package` declarations … Applying the Dependency Fix Rule to add the declarations"* → dev edits tests.
-- L218, L320–321, L331–336 — `enforce_documentation_guardrail` flags the QA tests as the dev's "undocumented new files" and forces architectural-justification comments into them.
-- L623 — Ghost-File-GC then makes the dev delete both test files.
-- L269 — contradicts the role_constraint *"You cannot edit tests."*
-**Fix direction:**
-- Exclude `*_test.go` (and language test patterns) from `build_production_snapshot`,
-  `enforce_documentation_guardrail`, and Ghost-File-GC.
-- Resolve the guard contradiction: the `CRITICAL DEPENDENCY FIX RULE` must NOT authorize editing test
-  files; tests must not block the Developer's compile step.
+## 1. Developer agent must never touch test files (`*_test.go` cascade) — ✅ RESOLVED
+**Was:** with Go colocation QA writes `*_test.go` into the Developer's package; the Python-only test
+filter let them leak into `production_code_snapshot`, so the doc guardrail flagged them and the dev
+commented/deleted them.
+**Fixed by:** env-aware `is_test_file()` SSOT used by `build_production_snapshot` (colocated tests
+excluded for every language); a hard "TEST FILES ARE OFF-LIMITS" gate in `developer.md` (dependency-fix
+rule scoped to production); SA/TPM prompts demarcate production vs test.
 
 ## 2. Gate execution environment is broken (compile/test/SAST must actually run) — ✅ RESOLVED
 **Was:** stock images lacked the gate tools (no `pytest`/`bandit` in `python:3.12-slim`, no `gosec`
@@ -39,3 +33,56 @@ or vendor dependencies offline, so no phase has unrestricted network.
 `README.md`, `go.mod`, `src/cmd/json2csv/main.go`, `src/internal/converter/converter.go`.
 **Fix direction:** investigate why mandated TASK-01 files (`.gitignore`, `LICENSE`) are lost across
 the develop/snapshot/retry cycles and ensure baseline artifacts persist to the final commit.
+
+---
+New items from `run_bb7a268aad844656910343c081e44f3e` (Go `json2csv`, `CIRCUIT BREAKER OPEN` after 3
+cycles — both gates red EVERY cycle). The surfaced line (`go: no module dependencies to download`) was
+a red herring; the real causes are below.
+
+## 5. [P0] QA emits SYNTACTICALLY INVALID Go test files (no `package` clause) — actual failure cause
+**Symptom:** every cycle, both the compile gate and the functional gate failed with:
+`internal/converter/processor_test.go:1:1: expected 'package', found 'import'` (×3 files). The QA
+test files start with `import (...)` and have NO `package <name>` first line — invalid Go, won't
+parse. QA regenerated the same broken shape each cycle → 3 cycles → breaker.
+**Root cause:** the non-Python whole-file assembly (`_assemble_suite_text`) concatenates
+`new_imports` + `new_test_code` verbatim; the model emitted imports with no leading `package` clause,
+and nothing enforces/repairs it. `go_qa.md` doesn't hard-require a `package` declaration as line 1.
+**Fix direction (why it matters: this is THE blocker):**
+- `go_qa.md`: mandate that every Go test file's FIRST line is `package <pkg>` (same package as the
+  unit under test), before any import.
+- `_assemble_suite_text` (or a per-language post-assembly check): for Go/.NET/Node, validate the
+  emitted file has the required leading declaration (`package`/namespace); if missing, fail QA
+  generation loudly (route to QA channel) instead of writing an un-parseable file the gates choke on.
+- Consider a cheap structural lint on generated test files per language before they hit the gate.
+
+## 6. [P1] Semgrep `--config auto` fails behind a corporate TLS proxy AND needs network
+**Symptom:** SAST gate fails every cycle: `HTTPSConnectionPool(host='semgrep.dev', port=443) … SSL:
+CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate`. `--config auto` fetches rulesets
+from `semgrep.dev`; the corporate MITM proxy presents a cert the Semgrep container's CA store doesn't
+trust → SAST can NEVER pass here. (Same corporate-CA class as docs/docker-on-windows.md §cert.)
+**Fix direction:**
+- Bundle a ruleset INTO a custom Semgrep image and run `--config <local-dir>` with `--network none`
+  (offline) — removes both the SSL dependency AND the network-on SAST window (folds into #4).
+- OR inject the corporate CA bundle into the Semgrep image / `REQUESTS_CA_BUNDLE`, and/or
+  `--metrics=off` to avoid the telemetry call.
+
+## 7. [P1] Go compile gate parses colocated `_test.go` → leaks test errors to the Developer (who can't fix tests)
+**Symptom:** `go build ./...` failed on the malformed `*_test.go` (`expected 'package'`), so the
+compile gate (option B) rerouted the **Developer** with TEST-file parse errors — but the Developer is
+hard-forbidden from touching tests, so the reroutes are unfixable and just burn out before
+fall-through.
+**Root cause:** Go's package loader parses ALL `.go` files (incl. `_test.go`) when building a package,
+so `go build ./...` is NOT actually test-isolated — contradicting the "build never touches tests"
+assumption behind the compile gate.
+**Fix direction:** make the compile gate test-agnostic — e.g. build only non-test files / a synthetic
+build that excludes `_test.go`, or classify "test-file syntax" failures as a QA-channel issue (route
+to QA, not the Developer). At minimum, a build failure caused solely by `*_test.go` must NOT reroute
+the Developer.
+
+## 8. [P2] Misleading gate failure surface buries the real error
+**Symptom:** `[GATE][FUNCTIONAL-TESTS] Failure raw output:` showed only
+`go: no module dependencies to download` — an INFORMATIONAL stderr line from `go mod download`
+(exit 0, stdlib-only project), while the actual compile errors were elsewhere in the stream.
+**Fix direction:** drop restore-phase stderr (and known-benign informational lines) from the
+functional-failure context shown to the operator/Reviewer; surface the build/test phase's real
+diagnostics. Keeps `_extract_failure_context` pointed at the true root cause.

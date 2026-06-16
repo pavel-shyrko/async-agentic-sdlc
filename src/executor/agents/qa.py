@@ -155,6 +155,52 @@ def _assemble_suite_text(existing_source: str, suite: QATestSuite) -> str:
     return body + "\n"
 
 
+_GO_PACKAGE_RE = re.compile(r"^\s*package\s+([A-Za-z_]\w*)\s*$")
+
+
+def _derive_go_package(test_rel_path: str, production_snapshot: dict | None) -> str:
+    """Best-effort Go package name for a colocated ``*_test.go`` when the model omitted the clause.
+
+    Exact when a sibling production ``.go`` is in the snapshot (regeneration cycles); otherwise a
+    convention heuristic (``main`` for cmd/entrypoint dirs, else the sanitized directory basename).
+    """
+    directory = test_rel_path.rsplit("/", 1)[0] if "/" in test_rel_path else ""
+    for path, content in (production_snapshot or {}).items():
+        same_dir = (path.rsplit("/", 1)[0] if "/" in path else "") == directory
+        if same_dir and path.endswith(".go") and not path.endswith("_test.go"):
+            m = re.search(r"^\s*package\s+([A-Za-z_]\w*)", content, re.MULTILINE)
+            if m:
+                return m.group(1)
+    base = directory.rsplit("/", 1)[-1] if directory else ""
+    if f"{test_rel_path}/".startswith("cmd/") or "/cmd/" in f"/{test_rel_path}" or base in ("", "cmd"):
+        return "main"
+    ident = re.sub(r"\W", "", base)
+    if not ident:
+        return "main"
+    return ("p" + ident) if ident[0].isdigit() else ident
+
+
+def _ensure_go_package_clause(code: str, test_rel_path: str, production_snapshot: dict | None) -> str:
+    """Guarantee a Go test file starts with a `package <pkg>` clause — Go's package loader rejects any
+    file whose first declaration isn't `package`. Repairs a missing clause (derived) or one emitted in
+    the wrong position (moved to the top). No-op for already-valid input."""
+    lines = code.splitlines()
+    first_code_idx = next(
+        (i for i, ln in enumerate(lines)
+         if ln.strip() and not ln.strip().startswith(("//", "/*", "*"))),
+        None,
+    )
+    pkg_idx = next((i for i, ln in enumerate(lines) if _GO_PACKAGE_RE.match(ln)), None)
+    if pkg_idx is not None and pkg_idx == first_code_idx:
+        return code  # already correct (comments may precede it)
+    if pkg_idx is not None:
+        pkg_line = lines.pop(pkg_idx)                      # misplaced (e.g. after imports) → hoist
+        return pkg_line.strip() + "\n\n" + "\n".join(lines).lstrip("\n")
+    pkg = _derive_go_package(test_rel_path, production_snapshot)
+    log.warning(f"🛠️  QA: Go test file missing `package` clause — prepending `package {pkg}` ({test_rel_path}).")
+    return f"package {pkg}\n\n" + code.lstrip("\n")
+
+
 async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -> None:
     model_name = QA_MODEL
     log.info(f"🔶 [ROLE] QA Agent | [MODEL] {model_name}")
@@ -282,6 +328,11 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
         # Python uses AST-based incremental maintenance; other stacks use whole-file text assembly
         # (no language-specific parser available — the model returns the complete suite).
         final_code = _assemble_suite(existing_source, suite) if profile["uses_ast"] else _assemble_suite_text(existing_source, suite)
+        # Go's package loader rejects any file whose first declaration isn't `package` — guarantee it,
+        # so a model that omits/misplaces the clause can't write an un-parseable file the gates choke on.
+        if env_language(env_id) == "go":
+            rel = Path(test_path).relative_to(repo_dir).as_posix()
+            final_code = _ensure_go_package_clause(final_code, rel, ctx.production_code_snapshot)
         with open(test_path, "w", encoding="utf-8") as f:
             f.write(final_code)
         written_paths.append(str(test_path))
