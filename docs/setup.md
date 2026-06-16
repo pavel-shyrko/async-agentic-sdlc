@@ -74,11 +74,19 @@ pip install --upgrade pip
 pip install instructor google-genai pydantic bandit pytest jsonref
 ```
 
-## 6. Pre-pull Docker Image
+## 6. Build the Sandbox Images
+
+The runtime gates run tests + SAST inside per-environment sandbox images (test runner + writable
+caches baked in) plus a generic Semgrep image for SAST. Build them once (re-run after editing any
+`docker/*.Dockerfile`):
 
 ```bash
-docker pull python:3.11-slim
+bash scripts/build_sandbox_images.sh
 ```
+
+This builds `sdlc-sandbox/{python,go,node,dotnet}:latest` and pulls the pinned `semgrep/semgrep`
+image. The tags must match `SUPPORTED_ENVIRONMENTS[...]["image"]` and `SAST_IMAGE` in
+`src/shared/core/environments.py`.
 
 ## 7. Claude CLI (native Linux build)
 

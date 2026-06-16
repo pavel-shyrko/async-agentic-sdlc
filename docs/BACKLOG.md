@@ -18,17 +18,21 @@ Developer edited, commented, then deleted them.
 - Resolve the guard contradiction: the `CRITICAL DEPENDENCY FIX RULE` must NOT authorize editing test
   files; tests must not block the Developer's compile step.
 
-## 2. Gate execution environment is broken for Go (compile/test/SAST must actually run)
-**Symptom:** correct code still fails the gates; the Developer also self-reports builds it can't run.
-**Evidence:**
-- L797 — functional gate: `failed to initialize build cache at /.cache/go-build: mkdir /.cache: permission denied` (no writable `GOCACHE`/`HOME` after sandbox least-privilege hardening).
-- L798, L885 — SAST gate: `gosec` binary absent from `golang:1.23-alpine`, so the Go SAST gate can never pass.
-- L336 — Developer claims *"Build is clean"* although `go` is not on the host PATH (hallucinated self-build).
-**Fix direction (`src/shared/core/docker_adapter.py`):**
-- Provide writable `GOCACHE=/tmp/.cache`, `HOME=/tmp`, `GOPATH` (tmp) in the sandbox env so
-  `go test ./...` can run under least-privilege.
-- Ship `gosec` (custom Go image) or swap the Go SAST tool to one present in the image.
-- Compilation/tests belong to the gate ONLY — the Developer agent should not attempt to build/test.
+## 2. Gate execution environment is broken (compile/test/SAST must actually run) — ✅ RESOLVED
+**Was:** stock images lacked the gate tools (no `pytest`/`bandit` in `python:3.12-slim`, no `gosec`
+in `golang:1.23-alpine`) and the non-root run hit `mkdir /.cache: permission denied` (L797/L798).
+**Fixed by:** per-env custom sandbox images (`docker/*.Dockerfile` + `scripts/build_sandbox_images.sh`)
+carrying the test runner + writable `HOME`/cache; a generic **Semgrep** SAST image for ALL languages
+(`SAST_IMAGE`/`SAST_CMD`); `docker_adapter.run_in_image` injecting `sandbox_env` + resource limits +
+`--cap-drop ALL` + tmpfs; and a network-ON dependency-restore phase (`setup_cmd`) before the
+network-OFF test phase in `gates.py`.
+
+## 4. Restrict egress during the dependency-restore / SAST phases
+**Why:** the restore phase (`setup_cmd`) and Semgrep rule-fetch run with `--network bridge`. Package
+managers execute install hooks (e.g. npm `postinstall`) → an exfiltration surface for LLM-authored
+code. Test execution stays `--network none`, so the window is narrow but real.
+**Fix direction:** route restore through an egress-restricted proxy (allowlist package registries),
+or vendor dependencies offline, so no phase has unrestricted network.
 
 ## 3. TASK-01 mandated baseline artifacts don't survive the run
 **Symptom:** the contract included `.gitignore` and `LICENSE`, but the final repo tree had only

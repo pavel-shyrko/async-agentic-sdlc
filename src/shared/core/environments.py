@@ -2,37 +2,55 @@
 # The SA selects an `environment_id` from this registry; downstream agents and the Docker
 # adapter look up the canonical image + commands here, so no agent can invent a tech stack.
 # `language_id` keys the per-language QA test profile (see QA_LANGUAGE_PROFILES).
+#
+# Gate execution (src/executor/nodes/gates.py + docker_adapter.py):
+#   image        custom sandbox image built by scripts/build_sandbox_images.sh — carries the test
+#                runner + writable HOME/cache (stock images lack pytest etc. and EPERM on /.cache).
+#   sandbox_env  env vars injected into the container so the non-root --user run has writable caches.
+#   setup_cmd    dependency restore, run in a NETWORK-ON phase before the network-OFF test phase.
+#   test_cmd     the functional-test command (network-OFF).
+# SAST is generic across all stacks — one Semgrep image (SAST_IMAGE/SAST_CMD), never per-language.
 
 SUPPORTED_ENVIRONMENTS = {
     "python-3.12-core": {
-        "image": "python:3.12-slim",
-        "sast_cmd": "bandit -r .",
+        "image": "sdlc-sandbox/python:latest",
         "test_cmd": "pytest",
+        "setup_cmd": "pip install -r requirements.txt 2>/dev/null || true",
+        "sandbox_env": {"HOME": "/tmp", "XDG_CACHE_HOME": "/tmp/.cache", "PYTHONDONTWRITEBYTECODE": "1"},
         "language_id": "python",
-        "description": "Python 3.12 core runtime (slim — stable C-extension builds; bandit SAST, pytest).",
+        "description": "Python 3.12 core runtime (pytest; Semgrep SAST).",
     },
     "go-1.23-cli": {
-        "image": "golang:1.23-alpine",
-        "sast_cmd": "gosec ./...",
+        "image": "sdlc-sandbox/go:latest",
         "test_cmd": "go test ./...",
+        "setup_cmd": "go mod download",
+        "sandbox_env": {"HOME": "/tmp", "GOCACHE": "/tmp/.cache/go-build", "GOPATH": "/tmp/go", "GOMODCACHE": "/tmp/go/pkg/mod"},
         "language_id": "go",
-        "description": "Go 1.23 CLI runtime, full compile toolchain (gosec SAST, go test).",
+        "description": "Go 1.23 CLI runtime, full compile toolchain (go test; Semgrep SAST).",
     },
     "node-20-web": {
-        "image": "node:20-alpine",
-        "sast_cmd": "npm audit --audit-level=high",
+        "image": "sdlc-sandbox/node:latest",
         "test_cmd": "npm test",
+        "setup_cmd": "npm ci || npm install",
+        "sandbox_env": {"HOME": "/tmp", "npm_config_cache": "/tmp/.npm"},
         "language_id": "node",
-        "description": "Node.js 20 / JS / React (node, npm, yarn — frontend build & tests; npm audit SAST).",
+        "description": "Node.js 20 / JS / React (node, npm — frontend build & tests; Semgrep SAST).",
     },
     "dotnet-10-sdk": {
-        "image": "mcr.microsoft.com/dotnet/sdk:10.0-alpine",
-        "sast_cmd": "dotnet list package --vulnerable --include-transitive",
-        "language_id": "dotnet",
+        "image": "sdlc-sandbox/dotnet:latest",
         "test_cmd": "dotnet test",
-        "description": ".NET 10 SDK (full toolchain — dotnet build & dotnet test; vulnerable-package scan SAST).",
+        "setup_cmd": "dotnet restore",
+        "sandbox_env": {"HOME": "/tmp", "DOTNET_CLI_HOME": "/tmp", "NUGET_PACKAGES": "/tmp/nuget", "XDG_DATA_HOME": "/tmp/.local"},
+        "language_id": "dotnet",
+        "description": ".NET 10 SDK (full toolchain — dotnet build & dotnet test; Semgrep SAST).",
     },
 }
+
+# Generic SAST — ONE scanner for every language (replaces per-stack bandit/gosec/npm-audit). Runs in
+# its own pinned image over /workspace; scanning does not execute the code. Keep the pin in sync with
+# scripts/build_sandbox_images.sh. `--error` makes findings a non-zero (gate-failing) exit.
+SAST_IMAGE = "semgrep/semgrep:1.92.0"
+SAST_CMD = "semgrep scan --error --config auto /workspace"
 
 
 # ==========================================================================================
