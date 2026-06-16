@@ -12,6 +12,8 @@ async def run_developer_node(ctx: GlobalPipelineContext, error_trace: str = "") 
 
     prompt = get_system_prompt("developer").format(
         instruction=ctx.contract.instruction,
+        core_libraries="\n".join(f"- {x}" for x in ctx.contract.core_libraries) or "- (none specified)",
+        architectural_constraints="\n".join(f"- {x}" for x in ctx.contract.architectural_constraints) or "- (none specified)",
         function_signatures=ctx.contract.function_signatures,
         strict_type_validation_rules=ctx.contract.strict_type_validation_rules,
         code_dir=repo_dir,

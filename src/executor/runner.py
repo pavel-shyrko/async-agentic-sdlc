@@ -36,6 +36,7 @@ class RunConfig:
     tests_dir: str = "tests/"
     push: bool = False
     idea: str | None = None  # Nexus Control Plane PoC: raw idea string (bypasses the executor entirely).
+    file: str | None = None  # ticket file path; used to locate the sibling blueprint.md at runtime
 
 
 def parse_args() -> RunConfig:
@@ -106,6 +107,7 @@ def parse_args() -> RunConfig:
         src_dir=args.src_dir,
         tests_dir=args.tests_dir,
         push=args.push,
+        file=args.file,
     )
 
 
@@ -567,6 +569,20 @@ async def main():
             ticket=cfg.ticket or "",
             workspace_paths=paths,
         )
+
+        # Context routing: feed the architectural blueprint (sibling of the ticket file) into the
+        # TechLead's input. TechLead is the SOLE router — it reads ticket + blueprint and distributes
+        # all specs into the contract; the Developer never sees the blueprint directly.
+        if cfg.file:
+            blueprint_path = Path(cfg.file).parent / "blueprint.md"
+            if blueprint_path.exists():
+                bp_content = blueprint_path.read_text(encoding="utf-8")
+                ctx.pr_description = (
+                    f"[ARCHITECTURAL BLUEPRINT]\n{bp_content}\n\n"
+                    f"[CURRENT TASK]\n{ctx.pr_description}"
+                )
+                log.info(f"   [CONTEXT] Blueprint routed into TechLead input ({len(bp_content)} chars).")
+
         log.debug(f"Initialized global context for run {run_dir} with PR: {cfg.description}")
 
     checkpoint_file = ctx.workspace_paths.reports_dir / "checkpoint.json"

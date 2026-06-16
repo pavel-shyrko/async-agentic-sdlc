@@ -2,6 +2,10 @@ Implement the core logic.
 
 ## Contract
 * **Directives**: {instruction}
+* **Core Libraries (MANDATORY)**:
+{core_libraries}
+* **Architectural Constraints (MANDATORY)**:
+{architectural_constraints}
 * **Signatures**: {function_signatures}
 * **Strict type rules**: {strict_type_validation_rules}
 

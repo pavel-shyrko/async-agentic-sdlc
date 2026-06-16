@@ -68,6 +68,12 @@ class TechLeadContract(BaseModel):
         "and its dependency links. SSOT for downstream import resolution. No language syntax.",
     )
     instruction: str = Field(description="Technical directives for the Developer Agent.")
+    architectural_constraints: list[str] = Field(
+        default_factory=list,
+        description="Architectural rules, patterns, and constraints extracted from the blueprint.")
+    core_libraries: list[str] = Field(
+        default_factory=list,
+        description="Mandatory libraries and frameworks the implementation MUST use.")
     function_signatures: str = Field(description="Function names, arguments, types, and exceptions.")
     strict_type_validation_rules: str = Field(description="Type validation rules for the implementation.")
     techlead_reasoning: str = Field(description="Justification for the chosen design.")

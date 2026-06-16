@@ -43,12 +43,16 @@ class GetSystemPromptTests(unittest.TestCase):
         raw = get_system_prompt("developer")
         rendered = raw.format(
             instruction="Build X",
+            core_libraries="- pydantic",
+            architectural_constraints="- use DI",
             function_signatures="def foo()",
             strict_type_validation_rules="bool is not int",
             code_dir="/tmp/code",
         )
         self.assertIn("Build X", rendered)
         self.assertIn("/tmp/code", rendered)
+        self.assertIn("pydantic", rendered)
+        self.assertIn("use DI", rendered)
 
     def test_qa_prompt_splits_into_system_and_user(self) -> None:
         system, user_template = get_system_prompt_sections("qa")
