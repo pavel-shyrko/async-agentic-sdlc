@@ -26,4 +26,11 @@ Populate the `ReviewReport` JSON keys according to these rules:
 * `log_verification_analysis`: Analyze and interpret the sandboxed test-runner results and SAST scanner output.
 * `code_quality_approved`: Set to `true` ONLY IF production code is fully ready for release with no outstanding quality defects.
 * `test_integrity_approved`: Set to `true` ONLY IF tests are written without loopholes or test-softening bypasses.
-* `diagnostic_payload`: On any rejection, provide detailed, actionable fix instructions for the Developer or QA Agent.
+* `dev_diagnostic_payload`: Fix instructions EXCLUSIVELY for the Developer to repair PRODUCTION CODE bugs. Leave empty (`""`) when `code_quality_approved` is `true`.
+* `qa_diagnostic_payload`: Fix instructions EXCLUSIVELY for the QA Agent to repair the TEST SUITE. Leave empty (`""`) when `test_integrity_approved` is `true`.
+
+## STRICT RULE — Separation of Concerns (Feedback Channel Isolation)
+The Developer and the QA Agent read PHYSICALLY ISOLATED feedback channels. Routing a fix to the wrong channel causes a deadlock: the Developer is forbidden by its own guardrail from editing tests, and the QA Agent cannot touch production code.
+* If a test fails because the TEST ITSELF is badly written, uses wrong types, hallucinates parameters/imports, or is otherwise broken: set `test_integrity_approved` to `false` and put the fix instructions EXCLUSIVELY in `qa_diagnostic_payload`. DO NOT mention test fixes in `dev_diagnostic_payload`.
+* If production code has a genuine bug: set `code_quality_approved` to `false` and put the fix instructions EXCLUSIVELY in `dev_diagnostic_payload`. DO NOT mention production-code fixes in `qa_diagnostic_payload`.
+* Never duplicate the same instruction across both channels. Each payload addresses only its own agent's domain.

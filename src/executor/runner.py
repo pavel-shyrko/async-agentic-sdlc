@@ -609,13 +609,21 @@ async def main():
         # already over budget, before spending any more tokens this cycle.
         enforce_financial_circuit_breaker(ctx)
 
-        # Reset accumulated errors before starting a new cycle. Developer/QA will see only clean feedback.
-        current_error_trace = ctx.error_trace
+        # Reset BOTH isolated feedback channels before a new cycle. The Developer reads only
+        # `error_trace` (production-code fixes); QA reads only `qa_error_trace` (test fixes).
+        prev_dev_trace = ctx.error_trace
+        prev_qa_trace = ctx.qa_error_trace
         ctx.error_trace = ""
+        ctx.qa_error_trace = ""
+
+        # DAG bypass: skip the Developer on a test-only repair cycle — the Reviewer approved
+        # production code (empty dev channel) but rejected the tests. Guarded by `review_report is
+        # not None` so cycle 1 (no review yet) never skips the Developer that must write the code.
+        skip_developer = regenerate_tests and not prev_dev_trace and ctx.review_report is not None
 
         # 2. Testing Phase (Runs initially, on rejected tests, or whenever no snapshot exists)
         if regenerate_tests:
-            await run_qa_agent_node(ctx, current_error_trace)
+            await run_qa_agent_node(ctx, prev_qa_trace)
             ctx.save_checkpoint(checkpoint_file)
             log.debug(f"Checkpoint saved after QA node: {checkpoint_file}")
             regenerate_tests = False  # Reset the flag until the next rejection
@@ -626,31 +634,37 @@ async def main():
         #    runs BEFORE the Reviewer. A miss free-reroutes to the Developer (NO functional-budget
         #    retry consumed) and bypasses the Reviewer; after GUARDRAIL_MAX_REROUTES fast-fail reroutes
         #    a still-undocumented file triggers a Hard Halt.
-        dev_feedback = current_error_trace
-        guardrail_halt = False
-        guardrail_msg: str | None = None
-        for guardrail_retries in range(GUARDRAIL_MAX_REROUTES + 1):
-            await run_developer_node(ctx, dev_feedback)
-            # Snapshot the real working-tree production delta (git-tracked, full content) for the Reviewer.
-            build_production_snapshot(ctx)
-            guardrail_msg = await enforce_documentation_guardrail(ctx)
-            if not guardrail_msg:
-                break  # documented (or no new files) → proceed to gates/Reviewer
-            if guardrail_retries == GUARDRAIL_MAX_REROUTES:
-                guardrail_halt = True  # cap reached and still failing → hard halt below
-                break
-            log.warning(
-                f"🔶 Doc guardrail: undocumented new file(s) — fast-fail reroute "
-                f"{guardrail_retries + 1}/{GUARDRAIL_MAX_REROUTES} to Developer (no budget spent), Reviewer bypassed."
-            )
-            dev_feedback = guardrail_msg  # focused reroute: just the comment instruction
+        if skip_developer:
+            # Production code was approved last cycle; only the test suite is being regenerated.
+            # The Developer (the dominant Claude cost) is skipped entirely. The prior cycle's
+            # production_code_snapshot / production_code_diff (persisted) stay valid for the Reviewer.
+            log.info("⏭️  DAG bypass: production code approved — regenerating tests only, Developer skipped.")
+        else:
+            dev_feedback = prev_dev_trace
+            guardrail_halt = False
+            guardrail_msg: str | None = None
+            for guardrail_retries in range(GUARDRAIL_MAX_REROUTES + 1):
+                await run_developer_node(ctx, dev_feedback)
+                # Snapshot the real working-tree production delta (git-tracked, full content) for the Reviewer.
+                build_production_snapshot(ctx)
+                guardrail_msg = await enforce_documentation_guardrail(ctx)
+                if not guardrail_msg:
+                    break  # documented (or no new files) → proceed to gates/Reviewer
+                if guardrail_retries == GUARDRAIL_MAX_REROUTES:
+                    guardrail_halt = True  # cap reached and still failing → hard halt below
+                    break
+                log.warning(
+                    f"🔶 Doc guardrail: undocumented new file(s) — fast-fail reroute "
+                    f"{guardrail_retries + 1}/{GUARDRAIL_MAX_REROUTES} to Developer (no budget spent), Reviewer bypassed."
+                )
+                dev_feedback = guardrail_msg  # focused reroute: just the comment instruction
 
-        if guardrail_halt:
-            ctx.error_trace = guardrail_msg
-            _abort_with_incident(
-                ctx,
-                f"\n🚨 HARD HALT: Developer failed the documentation guardrail after {GUARDRAIL_MAX_REROUTES} fast-fail reroutes.",
-            )
+            if guardrail_halt:
+                ctx.error_trace = guardrail_msg
+                _abort_with_incident(
+                    ctx,
+                    f"\n🚨 HARD HALT: Developer failed the documentation guardrail after {GUARDRAIL_MAX_REROUTES} fast-fail reroutes.",
+                )
 
         # Developer is the dominant token drain — enforce the budget before spending on gates.
         enforce_financial_circuit_breaker(ctx)
@@ -685,12 +699,14 @@ async def main():
                 f"{triage_try + 1}/{TEST_TRIAGE_MAX_REROUTES} (Developer & Reviewer bypassed, stale tests cleared)."
             )
             _clear_test_files(ctx.workspace_paths.tests_dir)
-            ctx.error_trace = _cap_text(
+            # Collection failure is a broken TEST artifact → route to the QA channel only, keeping
+            # the Developer channel clean.
+            ctx.qa_error_trace = _cap_text(
                 "Test suite failed to import (collection error). Regenerate the tests against the real "
                 "production code: import every symbol from the module the contract assigns it to, and "
                 "never invent or cross-import modules. Failure tail:\n" + _truncate_tail(qa_lines)
             )
-            await run_qa_agent_node(ctx, ctx.error_trace)
+            await run_qa_agent_node(ctx, ctx.qa_error_trace)
             enforce_financial_circuit_breaker(ctx)
             ctx.save_checkpoint(checkpoint_file)
 
@@ -724,8 +740,10 @@ async def main():
             regenerate_tests = True
 
         if not all_gates_passed:
-            ctx.error_trace = _cap_text(ctx.review_report.diagnostic_payload)
-            log.warning(f"🔶 Cycle {attempt} failed. Routing reviewer diagnostic to target agent.")
+            # Isolated routing: production-code fixes → Developer channel; test fixes → QA channel.
+            ctx.error_trace = _cap_text(ctx.review_report.dev_diagnostic_payload)
+            ctx.qa_error_trace = _cap_text(ctx.review_report.qa_diagnostic_payload)
+            log.warning(f"🔶 Cycle {attempt} failed. Routing reviewer diagnostics to isolated channels.")
 
         # Advance the persisted attempt counter so a resumed run cannot exceed the
         # original retry budget. The counter is bumped before saving so the next

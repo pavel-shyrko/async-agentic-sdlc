@@ -129,7 +129,7 @@ class MainResumeSkipFlowTests(unittest.IsolatedAsyncioTestCase):
                     log_verification_analysis="ok",
                     code_quality_approved=True,
                     test_integrity_approved=True,
-                    diagnostic_payload="",
+                    dev_diagnostic_payload="",
                 )
 
             with (
@@ -193,7 +193,7 @@ class MainCheckpointWritePointsTests(unittest.IsolatedAsyncioTestCase):
                     log_verification_analysis="ok",
                     code_quality_approved=True,
                     test_integrity_approved=True,
-                    diagnostic_payload="",
+                    dev_diagnostic_payload="",
                 )
 
             with (
@@ -263,7 +263,7 @@ class MainCheckpointWritePointsTests(unittest.IsolatedAsyncioTestCase):
                     log_verification_analysis="ok",
                     code_quality_approved=True,
                     test_integrity_approved=True,
-                    diagnostic_payload="",
+                    dev_diagnostic_payload="",
                 )
 
             with (
@@ -318,7 +318,7 @@ class MainCheckpointWritePointsTests(unittest.IsolatedAsyncioTestCase):
                         log_verification_analysis="qa failed",
                         code_quality_approved=False,
                         test_integrity_approved=True,
-                        diagnostic_payload="fix implementation",
+                        dev_diagnostic_payload="fix implementation",
                     )
                     return
                 ctx.review_report = ReviewReport(
@@ -327,7 +327,7 @@ class MainCheckpointWritePointsTests(unittest.IsolatedAsyncioTestCase):
                     log_verification_analysis="all green",
                     code_quality_approved=True,
                     test_integrity_approved=True,
-                    diagnostic_payload="",
+                    dev_diagnostic_payload="",
                 )
 
             with (
@@ -407,7 +407,7 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 log_verification_analysis="ok",
                 code_quality_approved=True,
                 test_integrity_approved=False,
-                diagnostic_payload="rewrite tests",
+                qa_diagnostic_payload="rewrite tests",
             )
 
             async def _approve(*_args, **_kwargs) -> None:
@@ -417,7 +417,7 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
                     log_verification_analysis="ok",
                     code_quality_approved=True,
                     test_integrity_approved=True,
-                    diagnostic_payload="",
+                    dev_diagnostic_payload="",
                 )
 
             with (
@@ -474,7 +474,7 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 log_verification_analysis="ok",
                 code_quality_approved=False,
                 test_integrity_approved=True,
-                diagnostic_payload="fix prod",
+                dev_diagnostic_payload="fix prod",
             )
 
             async def _approve(*_args, **_kwargs) -> None:
@@ -484,7 +484,7 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
                     log_verification_analysis="ok",
                     code_quality_approved=True,
                     test_integrity_approved=True,
-                    diagnostic_payload="",
+                    dev_diagnostic_payload="",
                 )
 
             with (
@@ -592,7 +592,7 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 log_verification_analysis="ok",
                 code_quality_approved=True,
                 test_integrity_approved=False,
-                diagnostic_payload="rewrite tests without string matching",
+                qa_diagnostic_payload="rewrite tests without string matching",
             )
 
             async def _approve(*_args, **_kwargs) -> None:
@@ -602,7 +602,7 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
                     log_verification_analysis="ok",
                     code_quality_approved=True,
                     test_integrity_approved=True,
-                    diagnostic_payload="",
+                    dev_diagnostic_payload="",
                 )
 
             with (
@@ -626,7 +626,9 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
             # Assert
             techlead.assert_not_called()
             qa.assert_awaited_once()
-            self.assertEqual(developer.await_count, 1)
+            # Tests rejected / production code approved → DAG bypass skips the Developer entirely
+            # (single cycle, so the mock has no prior history to confuse assert_not_called).
+            developer.assert_not_called()
             # After the single successful cycle the persisted counter advances from 1 to 2.
             self.assertEqual(ctx.current_attempt, 2)
 
@@ -982,7 +984,7 @@ class DocumentationGuardrailLoopTests(unittest.IsolatedAsyncioTestCase):
             async def _approve(*_a, **_k) -> None:
                 ctx.review_report = ReviewReport(
                     code_quality_analysis="ok", test_integrity_analysis="ok", log_verification_analysis="ok",
-                    code_quality_approved=True, test_integrity_approved=True, diagnostic_payload="",
+                    code_quality_approved=True, test_integrity_approved=True, dev_diagnostic_payload="",
                 )
 
             with (
@@ -1151,7 +1153,7 @@ class TestCollectionTriageRoutingTests(unittest.IsolatedAsyncioTestCase):
                 ctx.review_report = ReviewReport(
                     code_quality_analysis="ok", test_integrity_analysis="ok",
                     log_verification_analysis="ok", code_quality_approved=True,
-                    test_integrity_approved=True, diagnostic_payload="",
+                    test_integrity_approved=True, dev_diagnostic_payload="",
                 )
 
             with (

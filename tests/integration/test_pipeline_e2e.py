@@ -73,7 +73,7 @@ def _fake_structured_llm(*, model, response_model, messages):
                 log_verification_analysis="ok",
                 code_quality_approved=True,
                 test_integrity_approved=True,
-                diagnostic_payload="",
+                dev_diagnostic_payload="",
             ),
             raw,
         )

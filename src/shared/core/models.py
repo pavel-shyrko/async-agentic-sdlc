@@ -184,7 +184,8 @@ class ReviewReport(BaseModel):
     log_verification_analysis: str = Field(description="Analysis text for test runner and scanner output.")
     code_quality_approved: bool = Field(description="Boolean flag indicating production code approval status.")
     test_integrity_approved: bool = Field(description="Boolean flag indicating test integrity approval status.")
-    diagnostic_payload: str = Field(description="Fix instructions returned on rejection.")
+    qa_diagnostic_payload: str = Field(default="", description="Instructions ONLY for the QA Agent to fix incorrect, hallucinated, or broken tests.")
+    dev_diagnostic_payload: str = Field(default="", description="Instructions ONLY for the Developer to fix production code bugs.")
 
 class GlobalPipelineContext(BaseModel):
     pr_description: str
@@ -197,7 +198,8 @@ class GlobalPipelineContext(BaseModel):
     production_code_snapshot: dict[str, str] = Field(default_factory=dict)
     production_code_diff: str = ""
     test_code_snapshot: str = ""
-    error_trace: str = ""
+    error_trace: str = ""           # Developer channel: production-code fix instructions only.
+    qa_error_trace: str = ""        # QA channel: test-suite fix instructions only (isolated from Dev).
     review_report: ReviewReport | None = None
     current_attempt: int = 1
     repository_map: str = ""

@@ -212,7 +212,7 @@ class ContractModelTests(unittest.TestCase):
             log_verification_analysis="bandit clean",
             code_quality_approved=True,
             test_integrity_approved=False,
-            diagnostic_payload="tighten assertions",
+            qa_diagnostic_payload="tighten assertions",
         )
         # Assert
         self.assertTrue(report.code_quality_approved)
@@ -330,7 +330,7 @@ class NeedsTestRegenerationTests(unittest.TestCase):
             log_verification_analysis="",
             code_quality_approved=True,
             test_integrity_approved=test_integrity_approved,
-            diagnostic_payload="",
+            dev_diagnostic_payload="",
         )
 
     def test_rejected_tests_force_regeneration_even_with_snapshot(self) -> None:
