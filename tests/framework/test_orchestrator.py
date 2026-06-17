@@ -1415,6 +1415,62 @@ class MissingContractFilesTests(unittest.TestCase):
             self.assertEqual(sorted(missing), [".gitignore", "LICENSE"])
 
 
+class OutOfScopeSourceFilesTests(unittest.TestCase):
+    """`_out_of_scope_source_files` flags Developer overreach ONLY on an infra-only contract."""
+
+    @staticmethod
+    def _ctx(files_to_modify: list[str], snapshot: dict | None, env="python-3.12-core") -> GlobalPipelineContext:
+        with TemporaryDirectory() as td:
+            repo = Path(td)
+            paths = WorkspacePaths(
+                code_dir=repo, tests_dir=repo / "tests",
+                logs_dir=repo / "logs", reports_dir=repo / "reports", repo_dir=repo,
+            )
+        contract = TechLeadContract(
+            files_to_modify=files_to_modify, topology_contract=[], instruction="x",
+            function_signatures="x", strict_type_validation_rules="x", techlead_reasoning="x",
+            environment_id=env,
+        )
+        ctx = GlobalPipelineContext(pr_description="t", workspace_paths=paths, contract=contract)
+        ctx.production_code_snapshot = snapshot or {}
+        return ctx
+
+    def test_infra_only_flags_created_source(self) -> None:
+        # Repo-init ticket (no source contracted) + Developer dropped main.py → overreach.
+        ctx = self._ctx(
+            [".gitignore", "README.md", "LICENSE"],
+            {".gitignore": "", "README.md": "", "LICENSE": "", "main.py": "import ijson"},
+        )
+        self.assertEqual(orchestrator._out_of_scope_source_files(ctx), ["main.py"])
+
+    def test_infra_only_clean_when_only_artifacts(self) -> None:
+        ctx = self._ctx(
+            [".gitignore", "README.md", "LICENSE"],
+            {".gitignore": "", "README.md": "", "LICENSE": ""},
+        )
+        self.assertEqual(orchestrator._out_of_scope_source_files(ctx), [])
+
+    def test_infra_only_allows_package_marker_glue(self) -> None:
+        # __init__.py is a package marker (NOT testable source) → legitimate glue, never flagged.
+        ctx = self._ctx(
+            [".gitignore", "README.md", "LICENSE"],
+            {".gitignore": "", "src/__init__.py": ""},
+        )
+        self.assertEqual(orchestrator._out_of_scope_source_files(ctx), [])
+
+    def test_code_ticket_is_never_policed(self) -> None:
+        # A real source file is contracted → code ticket → engine inert even with an extra source file.
+        ctx = self._ctx(
+            ["src/calc.py"],
+            {"src/calc.py": "", "src/helper.py": "def h(): ..."},
+        )
+        self.assertEqual(orchestrator._out_of_scope_source_files(ctx), [])
+
+    def test_empty_snapshot_is_noop(self) -> None:
+        ctx = self._ctx([".gitignore", "README.md", "LICENSE"], None)
+        self.assertEqual(orchestrator._out_of_scope_source_files(ctx), [])
+
+
 class BuildProductionSnapshotTests(unittest.TestCase):
     """The production snapshot must exclude COLOCATED test files (env-aware), not just `tests/`."""
 

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from src.shared.core.observability import log, reconfigure_logging
 from src.shared.core.config import check_environment, PIPELINE_BUDGET_TOKENS, PIPELINE_BUDGET_USD
 from src.shared.core.models import GlobalPipelineContext, WorkspacePaths, RUNS_BASE
-from src.shared.core.environments import is_test_file
+from src.shared.core.environments import is_test_file, is_testable_source
 from src.shared.utils.git_helpers import get_git_root, get_pipeline_snapshot_files
 from src.shared.utils.redaction import redact
 from src.executor.agents.techlead import run_techlead_node
@@ -351,6 +351,31 @@ def _missing_contract_files(ctx: GlobalPipelineContext) -> list[str]:
     return [
         f for f in ctx.contract.files_to_modify
         if not is_test_file(env_id, f) and not (repo_dir / f).exists()
+    ]
+
+
+def _out_of_scope_source_files(ctx: GlobalPipelineContext) -> list[str]:
+    """Production SOURCE files the Developer created OUTSIDE an infra-only contract (scope overreach).
+
+    Only enforced when the contract is infra-only — NO contracted file is testable source (e.g. a
+    repo-init ticket: .gitignore/README.md/LICENSE). There, an infra ticket has nothing to compile,
+    so any real source file the Developer created (e.g. main.py — a later ticket's work) is overreach.
+    The `is_testable_source` SSOT keeps this precise: structural/language markers (`__init__.py`),
+    config, lockfiles and docs are NOT testable source, so legitimate glue still passes; only
+    logic-bearing source is flagged. For a normal CODE ticket (≥1 contracted source) we return [] and
+    never police extra files — glue vs overreach is undecidable there, so the Developer keeps full
+    autonomy and the soft SCOPE DISCIPLINE prompt rule + the Reviewer handle it.
+    """
+    if not ctx.contract or not ctx.production_code_snapshot:
+        return []
+    env_id = ctx.contract.environment_id
+    # Code ticket (a real source file is contracted) → engine stays inert, full Developer autonomy.
+    if any(is_testable_source(env_id, f) for f in ctx.contract.files_to_modify):
+        return []
+    contract = {Path(f).as_posix() for f in ctx.contract.files_to_modify}
+    return [
+        rel for rel in ctx.production_code_snapshot
+        if Path(rel).as_posix() not in contract and is_testable_source(env_id, rel)
     ]
 
 # ==========================================
@@ -700,6 +725,27 @@ async def main():
                         dev_feedback = (
                             "You did not create these contracted files — create EACH of them now with the "
                             f"literal content required by the ticket: {', '.join(missing)}"
+                        )
+                        continue
+
+                # Scope discipline: on an infra-only ticket the Developer must NOT implement source
+                # logic from later tickets (e.g. main.py on a repo-init ticket). Fast-fail reroute to
+                # delete the overreach (no functional budget); soft fall-through at the cap.
+                out_of_scope = _out_of_scope_source_files(ctx)
+                if out_of_scope:
+                    if guardrail_retries == GUARDRAIL_MAX_REROUTES:
+                        log.warning(f"🔶 Out-of-scope source still present after in-loop reroutes: {out_of_scope} — proceeding to the gates/Reviewer.")
+                    else:
+                        log.warning(
+                            f"🔶 Developer created out-of-scope source file(s) {out_of_scope} on an "
+                            f"infra-only ticket — fast-fail reroute {guardrail_retries + 1}/{GUARDRAIL_MAX_REROUTES} "
+                            f"(no budget spent), Reviewer bypassed."
+                        )
+                        dev_feedback = (
+                            "These files are OUTSIDE this infrastructure task's scope — DELETE them: "
+                            f"{', '.join(out_of_scope)}. This ticket only initializes repository artifacts "
+                            "(the contracted files); application logic and entrypoints belong to later tickets, "
+                            "even if the README or project context mentions them."
                         )
                         continue
 
