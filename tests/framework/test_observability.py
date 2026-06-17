@@ -12,8 +12,35 @@ from tempfile import TemporaryDirectory, mkdtemp
 from types import SimpleNamespace
 from logging.handlers import RotatingFileHandler
 
+import io
+
 from src.shared.core.models import GlobalPipelineContext
 from src.shared.core.observability import reconfigure_logging, log_token_usage
+from src.shared.utils.redaction import RedactionFilter
+
+
+class RedactionFilterInstalledTests(unittest.TestCase):
+    """The security gate must be wired onto the shared SDLC logger so every record is scrubbed."""
+
+    def test_redaction_filter_attached_to_logger(self) -> None:
+        logger = logging.getLogger("SDLC")
+        self.assertTrue(any(isinstance(f, RedactionFilter) for f in logger.filters))
+
+    def test_logged_pat_url_is_redacted_in_output(self) -> None:
+        logger = logging.getLogger("SDLC")
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger.addHandler(handler)
+        try:
+            logger.info("[GIT] Shallow-cloned %s -> repo", "https://ghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE@github.com/o/r.git")
+            out = stream.getvalue()
+            self.assertNotIn("ghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE", out)
+            self.assertIn("https://***@github.com/o/r.git", out)
+        finally:
+            logger.removeHandler(handler)
+            handler.close()
 
 
 class ReconfigureLoggingTests(unittest.TestCase):

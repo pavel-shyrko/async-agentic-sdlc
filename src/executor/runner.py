@@ -15,6 +15,7 @@ from src.shared.core.config import check_environment, PIPELINE_BUDGET_TOKENS, PI
 from src.shared.core.models import GlobalPipelineContext, WorkspacePaths, RUNS_BASE
 from src.shared.core.environments import is_test_file
 from src.shared.utils.git_helpers import get_git_root, get_pipeline_snapshot_files
+from src.shared.utils.redaction import redact
 from src.executor.agents.techlead import run_techlead_node
 from src.executor.agents.qa import run_qa_agent_node
 from src.executor.agents.developer import run_developer_node
@@ -169,7 +170,7 @@ async def bootstrap_session(cfg: RunConfig, run_dir: Path) -> WorkspacePaths:
         ["git", "-C", str(repo_dir), "fetch", "--depth", "1", "origin", f"{cfg.base_branch}:{cfg.base_branch}"],
         "git fetch base branch", timeout=GIT_NETWORK_TIMEOUT,
     )
-    log.info(f"   [GIT] Shallow-cloned {cfg.repo} -> {repo_dir} (branch: {branch})")
+    log.info(f"   [GIT] Shallow-cloned {redact(cfg.repo)} -> {repo_dir} (branch: {branch})")
 
     try:
         paths = WorkspacePaths.for_run(run_dir, repo_dir, cfg.src_dir, cfg.tests_dir)
@@ -542,7 +543,7 @@ def _abort_with_incident(ctx: GlobalPipelineContext, header: str) -> NoReturn:
     log.error(header)
     incident_file = str(ctx.workspace_paths.reports_dir / "incident_report.json")
     with open(incident_file, "w", encoding="utf-8") as f:
-        f.write(ctx.model_dump_json(indent=2))
+        f.write(redact(ctx.model_dump_json(indent=2)))  # never persist secrets into a shared report
     log.error(f"  └── Incident report written to {incident_file}")
     log.debug(f"Final Incident Context Dump: {ctx.model_dump_json(indent=2)}")
     # Always persist + surface the FinOps breakdown, even on a halt, so spend is auditable.

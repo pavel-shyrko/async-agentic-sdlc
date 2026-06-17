@@ -4,6 +4,8 @@ from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from typing import Any
 
+from src.shared.utils.redaction import RedactionFilter
+
 # Shared audit-file handler config — kept in one place so setup and reconfigure stay in sync.
 _AUDIT_FILENAME = "sdlc_audit.log"
 _AUDIT_MAX_BYTES = 5 * 1024 * 1024
@@ -37,6 +39,12 @@ def setup_observability():
     """
     logger = logging.getLogger("SDLC")
     logger.setLevel(logging.DEBUG)
+
+    # Security gate: a logger-level filter runs once in Logger.handle() before EITHER handler formats
+    # the record, so secrets (PATs, basic-auth URLs, bearer/API-key values) are scrubbed from BOTH the
+    # console and the audit file, and it survives reconfigure_logging() (which only swaps handlers).
+    if not any(isinstance(f, RedactionFilter) for f in logger.filters):
+        logger.addFilter(RedactionFilter())
 
     # Avoid duplicate handlers on re-runs
     if not logger.handlers:
