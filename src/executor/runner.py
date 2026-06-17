@@ -604,14 +604,17 @@ async def main():
 
         # Context routing: feed the architectural blueprint (sibling of the ticket file) into the
         # TechLead's input. TechLead is the SOLE router — it reads ticket + blueprint and distributes
-        # all specs into the contract; the Developer never sees the blueprint directly.
+        # all specs into the contract; the Developer never sees the blueprint directly. The CURRENT TASK
+        # leads (it is the authoritative SCOPE of the contract); the blueprint is demoted to reference
+        # so the TechLead does not mistake the whole-project topology for its file list (see techlead.md
+        # Rule 0). LLMs anchor on the leading block — scope first, reference second.
         if cfg.file:
             blueprint_path = Path(cfg.file).parent / "blueprint.md"
             if blueprint_path.exists():
                 bp_content = blueprint_path.read_text(encoding="utf-8")
                 ctx.pr_description = (
-                    f"[ARCHITECTURAL BLUEPRINT]\n{bp_content}\n\n"
-                    f"[CURRENT TASK]\n{ctx.pr_description}"
+                    f"[CURRENT TASK — the authoritative scope of this contract]\n{ctx.pr_description}\n\n"
+                    f"[ARCHITECTURAL BLUEPRINT — reference only; whole-project specs, NOT your file list]\n{bp_content}"
                 )
                 log.info(f"   [CONTEXT] Blueprint routed into TechLead input ({len(bp_content)} chars).")
 

@@ -29,6 +29,14 @@ class GetSystemPromptTests(unittest.TestCase):
         self.assertIn("TOPOLOGY RULE", result)
         self.assertIn("topology_contract", result)
 
+    def test_techlead_prompt_topology_example_is_language_neutral(self) -> None:
+        # The system prompt must NOT bias the stack — the topology example uses placeholders, not a
+        # concrete language (language specifics belong in the gated *_core skills).
+        result = get_system_prompt("techlead")
+        self.assertIn("<ext>", result)                 # placeholder example, not a committed extension
+        self.assertNotIn("validation.py", result)      # no Python-specific example paths
+        self.assertNotIn('"Circle"', result)
+
     def test_tpm_reserves_task00_repo_prep_business_starts_task01(self) -> None:
         # Repo baseline is a dedicated FIRST task (TASK-00); all other tickets are business-only.
         result = get_system_prompt("tpm")
@@ -42,6 +50,14 @@ class GetSystemPromptTests(unittest.TestCase):
         result = get_system_prompt("sa")
         self.assertIn("HONOR THE USER'S MANDATED STACK", result)
         self.assertIn("ORIGINAL USER REQUEST", result)
+
+    def test_techlead_prompt_scopes_contract_to_current_task(self) -> None:
+        # The contract scope is the CURRENT TASK ticket, not the whole Blueprint (the SOLE router must
+        # not implement the entire project topology when running one ticket).
+        result = get_system_prompt("techlead")
+        self.assertIn("CURRENT TASK SCOPE", result)
+        self.assertIn("REFERENCE CONTEXT", result)
+        self.assertIn("INFRA / NON-CODE TASK", result)
 
     def test_qa_prompt_has_dependency_resolution_rule(self) -> None:
         # QA translates the neutral topology graph into language-specific imports.
