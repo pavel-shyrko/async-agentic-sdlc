@@ -115,11 +115,13 @@ class GetSystemPromptTests(unittest.TestCase):
         self.assertIn("use DI", rendered)
 
     def test_developer_prompt_has_scope_discipline_rule(self) -> None:
-        # The Developer must be fenced to the contract — never implement out-of-scope source (e.g.
-        # main.py on a repo-init ticket) just because the README/PROJECT CONTEXT mentions it.
+        # The Developer must be fenced to the contract — never implement another ticket's feature
+        # logic just because the README/PROJECT CONTEXT mentions it — but a contracted build manifest
+        # DOES authorize the minimal language-required entry point/glue it needs to compile.
         raw = get_system_prompt("developer")
         self.assertIn("SCOPE DISCIPLINE", raw)
-        self.assertIn("NOT in your contract", raw)
+        self.assertIn("OTHER tickets'", raw)
+        self.assertIn("build manifest", raw)
 
     def test_qa_prompt_splits_into_system_and_user(self) -> None:
         system, user_template = get_system_prompt_sections("qa")

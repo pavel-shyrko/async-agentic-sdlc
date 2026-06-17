@@ -25,8 +25,9 @@ def _has_test_files(environment_id: str, repo_root: str) -> bool:
     """True if the workspace holds ≥1 test file for the target stack (language-aware, via the
     is_test_file SSOT). Runner-agnostic empty-suite detection: rather than special-casing each
     runner's "no tests" exit code (pytest 5, jest 1, go/dotnet 0), ask whether any test file is
-    even present. None present → the functional gate is a no-op pass (e.g. an infra-only ticket).
-    The Reviewer's test_integrity gate remains the backstop when tests WERE expected."""
+    even present. None present → the functional gate is a no-op pass (e.g. a ticket with no testable
+    source, like a thin scaffold/entrypoint). The Reviewer's test_integrity gate remains the backstop
+    when tests WERE expected."""
     for root, dirs, files in os.walk(repo_root):
         if ".git" in dirs:
             dirs.remove(".git")  # never descend into git internals
@@ -47,7 +48,8 @@ async def run_qa_unit_tests(environment_id: str, repo_root: str) -> tuple[bool, 
 
     # Empty-suite short-circuit: with no test files there is nothing to execute, so the gate is a
     # no-op pass — skipping the dependency restore too. This avoids a fictitious failure from a
-    # runner that exits non-zero on "no tests collected" (pytest 5, jest 1) for infra-only tickets.
+    # runner that exits non-zero on "no tests collected" (pytest 5, jest 1) for a ticket with no
+    # testable source (e.g. a thin scaffold/entrypoint).
     if not _has_test_files(environment_id, repo_root):
         log.debug(f"No test files present for [{environment_id}] — functional-test gate is a no-op pass.")
         return True, ["No test files present — functional-test gate skipped (empty suite is a no-op pass)."]

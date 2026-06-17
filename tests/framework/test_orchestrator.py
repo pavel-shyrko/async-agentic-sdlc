@@ -1057,18 +1057,20 @@ class EnforceDocumentationGuardrailTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(await orchestrator.enforce_documentation_guardrail(ctx))
             git.assert_not_awaited()  # contracted-only candidates short-circuit before any git call
 
-    async def test_out_of_scope_source_on_infra_ticket_is_not_doc_flagged(self) -> None:
-        # Regression: on an infra-only contract the SCOPE-DISCIPLINE guardrail owns over-delivered
-        # source (it soft-falls-through to the Reviewer at the cap). The doc guardrail must NOT also
-        # flag the same file, or the two deadlock into a Hard Halt on otherwise-complete code.
+    async def test_uncontracted_uncommented_new_source_is_doc_flagged(self) -> None:
+        # With the infra-only scope-discipline guardrail retired, the doc guardrail directly polices an
+        # uncontracted NEW source file (e.g. glue an entrypoint needs): it must carry a top-of-file
+        # justification comment. A bare, commentless one is flagged (not silently exempted).
         with TemporaryDirectory() as td:
             repo = Path(td)
-            ctx = self._ctx(repo, ["README.md"], ["src/main.py"])  # infra-only ticket, source overreach
+            ctx = self._ctx(repo, ["README.md"], ["src/main.py"])  # main.py is uncontracted + new
             (repo / "src").mkdir(parents=True, exist_ok=True)
             (repo / "src" / "main.py").write_text("def x():\n    return 1\n", encoding="utf-8")  # no comment
             with mock.patch.object(orchestrator, "get_pipeline_snapshot_files",
                                    new=AsyncMock(return_value=["src/main.py"])):
-                self.assertIsNone(await orchestrator.enforce_documentation_guardrail(ctx))
+                msg = await orchestrator.enforce_documentation_guardrail(ctx)
+            self.assertIsNotNone(msg)
+            self.assertIn("src/main.py", msg)
 
 
 class DocumentationGuardrailLoopTests(unittest.IsolatedAsyncioTestCase):
@@ -1210,50 +1212,6 @@ class DocumentationGuardrailLoopTests(unittest.IsolatedAsyncioTestCase):
             reviewer.assert_awaited_once()
             self.assertEqual(ctx.current_attempt, 2)          # one functional cycle consumed
             self.assertIn("LICENSE", developer.await_args_list[1].args[1])  # missing file named in the reroute
-
-    async def test_out_of_scope_reroute_commands_deletion_and_focuses_the_cli(self) -> None:
-        # Arrange — infra-only ticket; the Developer drops an out-of-scope source file on the first
-        # pass, deletes it on the second. The reroute must name the file + "delete" and surface it to
-        # the CLI as focus_files so the agent is pointed at exactly what it must remove.
-        with TemporaryDirectory() as td:
-            ctx = self._resume_ctx(Path(td))
-
-            async def _approve(*_a, **_k) -> None:
-                ctx.review_report = ReviewReport(
-                    code_quality_analysis="ok", test_integrity_analysis="ok", log_verification_analysis="ok",
-                    code_quality_approved=True, test_integrity_approved=True, dev_diagnostic_payload="",
-                )
-
-            with (
-                mock.patch.object(orchestrator, "check_environment"),
-                mock.patch.object(orchestrator, "reconfigure_logging"),
-                mock.patch.object(orchestrator, "build_production_snapshot"),
-                mock.patch.object(orchestrator, "run_build_gate", new=AsyncMock(return_value=(True, []))),
-                mock.patch.object(orchestrator, "_missing_contract_files", return_value=[]),
-                mock.patch.object(orchestrator, "_out_of_scope_source_files",
-                                  side_effect=[["src/Program.cs"], []]),
-                mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
-                    description=None, base_branch="main", resume=Path("cp.json"), reset_attempts=False)),
-                mock.patch.object(GlobalPipelineContext, "load_checkpoint", return_value=ctx),
-                mock.patch.object(orchestrator, "run_techlead_node", new_callable=AsyncMock),
-                mock.patch.object(orchestrator, "run_qa_agent_node", new_callable=AsyncMock),
-                mock.patch.object(orchestrator, "run_developer_node", new_callable=AsyncMock) as developer,
-                mock.patch.object(orchestrator, "enforce_documentation_guardrail", new=AsyncMock(return_value=None)),
-                mock.patch.object(orchestrator, "run_reviewer_node", new=AsyncMock(side_effect=_approve)) as reviewer,
-                mock.patch.object(orchestrator, "run_qa_unit_tests", new=AsyncMock(return_value=(True, []))),
-                mock.patch.object(orchestrator, "run_security_scan", new=AsyncMock(return_value=(True, []))),
-                mock.patch.object(orchestrator, "finalize_transaction", new_callable=AsyncMock),
-                mock.patch.object(orchestrator, "run_techwriter_node", new_callable=AsyncMock),
-            ):
-                await orchestrator.main()
-
-            self.assertEqual(developer.await_count, 2)        # initial + one free scope reroute
-            reviewer.assert_awaited_once()
-            self.assertEqual(ctx.current_attempt, 2)          # one functional cycle consumed
-            reroute = developer.await_args_list[1]
-            self.assertIn("src/Program.cs", reroute.args[1])  # file named in the reroute feedback
-            self.assertIn("DELETE", reroute.args[1])          # imperative deletion command
-            self.assertEqual(reroute.args[2], ["src/Program.cs"])  # CLI focused on the file to delete
 
     async def test_compile_gate_test_only_failure_does_not_reroute_developer(self) -> None:
         # Arrange — compile gate fails but ONLY on test files (Go package loader parsing `*_test.go`).
@@ -1530,62 +1488,6 @@ class MissingContractFilesTests(unittest.TestCase):
 
             # main.go exists; .gitignore/LICENSE are missing; the *_test.go is QA-owned (excluded).
             self.assertEqual(sorted(missing), [".gitignore", "LICENSE"])
-
-
-class OutOfScopeSourceFilesTests(unittest.TestCase):
-    """`_out_of_scope_source_files` flags Developer overreach ONLY on an infra-only contract."""
-
-    @staticmethod
-    def _ctx(files_to_modify: list[str], snapshot: dict | None, env="python-3.12-core") -> GlobalPipelineContext:
-        with TemporaryDirectory() as td:
-            repo = Path(td)
-            paths = WorkspacePaths(
-                code_dir=repo, tests_dir=repo / "tests",
-                logs_dir=repo / "logs", reports_dir=repo / "reports", repo_dir=repo,
-            )
-        contract = TechLeadContract(
-            files_to_modify=files_to_modify, topology_contract=[], instruction="x",
-            function_signatures="x", strict_type_validation_rules="x", techlead_reasoning="x",
-            environment_id=env,
-        )
-        ctx = GlobalPipelineContext(pr_description="t", workspace_paths=paths, contract=contract)
-        ctx.production_code_snapshot = snapshot or {}
-        return ctx
-
-    def test_infra_only_flags_created_source(self) -> None:
-        # Repo-init ticket (no source contracted) + Developer dropped main.py → overreach.
-        ctx = self._ctx(
-            [".gitignore", "README.md", "LICENSE"],
-            {".gitignore": "", "README.md": "", "LICENSE": "", "main.py": "import ijson"},
-        )
-        self.assertEqual(orchestrator._out_of_scope_source_files(ctx), ["main.py"])
-
-    def test_infra_only_clean_when_only_artifacts(self) -> None:
-        ctx = self._ctx(
-            [".gitignore", "README.md", "LICENSE"],
-            {".gitignore": "", "README.md": "", "LICENSE": ""},
-        )
-        self.assertEqual(orchestrator._out_of_scope_source_files(ctx), [])
-
-    def test_infra_only_allows_package_marker_glue(self) -> None:
-        # __init__.py is a package marker (NOT testable source) → legitimate glue, never flagged.
-        ctx = self._ctx(
-            [".gitignore", "README.md", "LICENSE"],
-            {".gitignore": "", "src/__init__.py": ""},
-        )
-        self.assertEqual(orchestrator._out_of_scope_source_files(ctx), [])
-
-    def test_code_ticket_is_never_policed(self) -> None:
-        # A real source file is contracted → code ticket → engine inert even with an extra source file.
-        ctx = self._ctx(
-            ["src/calc.py"],
-            {"src/calc.py": "", "src/helper.py": "def h(): ..."},
-        )
-        self.assertEqual(orchestrator._out_of_scope_source_files(ctx), [])
-
-    def test_empty_snapshot_is_noop(self) -> None:
-        ctx = self._ctx([".gitignore", "README.md", "LICENSE"], None)
-        self.assertEqual(orchestrator._out_of_scope_source_files(ctx), [])
 
 
 class BuildProductionSnapshotTests(unittest.TestCase):

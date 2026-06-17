@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from src.shared.core.observability import log, reconfigure_logging
 from src.shared.core.config import check_environment, PIPELINE_BUDGET_TOKENS, PIPELINE_BUDGET_USD
 from src.shared.core.models import GlobalPipelineContext, WorkspacePaths, RUNS_BASE
-from src.shared.core.environments import is_test_file, is_testable_source
+from src.shared.core.environments import is_test_file
 from src.shared.utils.git_helpers import get_git_root, get_pipeline_snapshot_files
 from src.shared.utils.redaction import redact
 from src.executor.agents.techlead import run_techlead_node
@@ -354,30 +354,6 @@ def _missing_contract_files(ctx: GlobalPipelineContext) -> list[str]:
     ]
 
 
-def _out_of_scope_source_files(ctx: GlobalPipelineContext) -> list[str]:
-    """Production SOURCE files the Developer created OUTSIDE an infra-only contract (scope overreach).
-
-    Only enforced when the contract is infra-only — NO contracted file is testable source (e.g. a
-    repo-init ticket: .gitignore/README.md/LICENSE). There, an infra ticket has nothing to compile,
-    so any real source file the Developer created (e.g. main.py — a later ticket's work) is overreach.
-    The `is_testable_source` SSOT keeps this precise: structural/language markers (`__init__.py`),
-    config, lockfiles and docs are NOT testable source, so legitimate glue still passes; only
-    logic-bearing source is flagged. For a normal CODE ticket (≥1 contracted source) we return [] and
-    never police extra files — glue vs overreach is undecidable there, so the Developer keeps full
-    autonomy and the soft SCOPE DISCIPLINE prompt rule + the Reviewer handle it.
-    """
-    if not ctx.contract or not ctx.production_code_snapshot:
-        return []
-    env_id = ctx.contract.environment_id
-    # Code ticket (a real source file is contracted) → engine stays inert, full Developer autonomy.
-    if any(is_testable_source(env_id, f) for f in ctx.contract.files_to_modify):
-        return []
-    contract = {Path(f).as_posix() for f in ctx.contract.files_to_modify}
-    return [
-        rel for rel in ctx.production_code_snapshot
-        if Path(rel).as_posix() not in contract and is_testable_source(env_id, rel)
-    ]
-
 # ==========================================
 # RUNNER-LOG FORWARDING (Reviewer feed, context pruning)
 # ==========================================
@@ -471,13 +447,11 @@ async def enforce_documentation_guardrail(ctx: GlobalPipelineContext) -> str | N
         return None
 
     contract_files = {Path(f).as_posix() for f in (ctx.contract.files_to_modify if ctx.contract else [])}
-    # Out-of-scope source on an infra-only ticket is the SCOPE-DISCIPLINE guardrail's domain — it
-    # soft-falls-through to the Reviewer at the reroute cap. The doc guardrail must NOT also police
-    # those same files, or the two deadlock: scope tolerates them while doc HARD-HALTs on them.
-    scope_owned = {Path(f).as_posix() for f in _out_of_scope_source_files(ctx)}
+    # Uncontracted glue the Developer created (e.g. an entry point a build manifest needs) is policed
+    # here like on any code ticket: it just needs a top-of-file justification comment, not deletion.
     uncontracted = [
         rel for rel in ctx.production_code_snapshot
-        if Path(rel).as_posix() not in contract_files and Path(rel).as_posix() not in scope_owned
+        if Path(rel).as_posix() not in contract_files
     ]
     if not uncontracted:
         return None
@@ -736,31 +710,6 @@ async def main():
                             f"literal content required by the ticket: {', '.join(missing)}"
                         )
                         dev_focus_files = None
-                        continue
-
-                # Scope discipline: on an infra-only ticket the Developer must NOT implement source
-                # logic from later tickets (e.g. main.py on a repo-init ticket). Fast-fail reroute to
-                # delete the overreach (no functional budget); soft fall-through at the cap.
-                out_of_scope = _out_of_scope_source_files(ctx)
-                if out_of_scope:
-                    if guardrail_retries == GUARDRAIL_MAX_REROUTES:
-                        log.warning(f"🔶 Out-of-scope source still present after in-loop reroutes: {out_of_scope} — proceeding to the gates/Reviewer.")
-                    else:
-                        log.warning(
-                            f"🔶 Developer created out-of-scope source file(s) {out_of_scope} on an "
-                            f"infra-only ticket — fast-fail reroute {guardrail_retries + 1}/{GUARDRAIL_MAX_REROUTES} "
-                            f"(no budget spent), Reviewer bypassed."
-                        )
-                        dev_feedback = (
-                            "SCOPE VIOLATION — this is an INFRASTRUCTURE-ONLY ticket and your previous "
-                            "attempt is REJECTED. Using your file tools, DELETE each of these out-of-scope "
-                            f"files NOW: {', '.join(out_of_scope)}. Do NOT recreate them and do NOT write "
-                            "any application logic, features, or entrypoints — that work belongs to LATER "
-                            "tickets, even if the README, blueprint, or project context references it. After "
-                            "deletion the ONLY production files for this ticket must be the contracted "
-                            f"artifacts: {', '.join(ctx.contract.files_to_modify)}."
-                        )
-                        dev_focus_files = out_of_scope  # point the CLI at the files it must delete
                         continue
 
                 guardrail_msg = await enforce_documentation_guardrail(ctx)

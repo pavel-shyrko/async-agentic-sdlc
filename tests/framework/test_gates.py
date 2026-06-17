@@ -104,7 +104,7 @@ class HasTestFilesTests(unittest.TestCase):
             open(_os.path.join(d, "tests", "test_converter.py"), "w").close()
             self.assertTrue(_has_test_files(_ENV, d))
 
-    def test_no_test_files_in_infra_only_tree(self) -> None:
+    def test_no_test_files_in_sourceless_tree(self) -> None:
         import tempfile, os as _os
         with tempfile.TemporaryDirectory() as d:
             for name in (".gitignore", "README.md", "LICENSE"):
