@@ -70,6 +70,14 @@ class TechLeadContract(BaseModel):
         "and its dependency links. SSOT for downstream import resolution. No language syntax.",
     )
     instruction: str = Field(description="Technical directives for the Developer Agent.")
+    shared_context: str = Field(
+        default="",
+        description="Language-neutral statement of the PROJECT's goal, domain, and intended "
+        "user-facing purpose, distilled from the ticket + blueprint — enough for an agent with no "
+        "other context to understand WHAT is being built and WHY. Compact but COMPLETE: usually 1-3 "
+        "sentences, expand only when the domain genuinely requires it. Do NOT restate the technical "
+        "directives (those live in instruction/core_libraries/architectural_constraints). Reference "
+        "surfaced to the Developer and QA; instruction remains the authoritative directive.")
     architectural_constraints: list[str] = Field(
         default_factory=list,
         description="Architectural rules, patterns, and constraints extracted from the blueprint.")

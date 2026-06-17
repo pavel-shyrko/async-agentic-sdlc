@@ -196,6 +196,24 @@ class ContractModelTests(unittest.TestCase):
         # Assert
         self.assertEqual(contract.files_to_modify, ["src/core/calc.py"])
         self.assertIn("TypeError", contract.strict_type_validation_rules)
+        # shared_context is optional and defaults to empty (keeps legacy payloads/checkpoints valid).
+        self.assertEqual(contract.shared_context, "")
+
+    def test_shared_context_round_trips_when_supplied(self) -> None:
+        payload = {
+            "files_to_modify": ["src/core/calc.py"],
+            "topology_contract": [
+                {"file_path": "src/core/calc.py", "exports": ["is_prime"], "depends_on": []}
+            ],
+            "instruction": "Implement prime sieve.",
+            "shared_context": "A CLI tool that reports whether a number is prime.",
+            "function_signatures": "def is_prime(n: int) -> bool",
+            "strict_type_validation_rules": "bool must raise TypeError",
+            "techlead_reasoning": "Guard against bool subtype of int.",
+            "environment_id": "python-3.12-core",
+        }
+        contract = TechLeadContract(**payload)
+        self.assertEqual(contract.shared_context, "A CLI tool that reports whether a number is prime.")
 
     def test_topology_contract_is_required(self) -> None:
         # Omitting the language-neutral dependency graph must fail validation (strict SSOT).

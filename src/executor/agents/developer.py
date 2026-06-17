@@ -22,6 +22,15 @@ async def run_developer_node(ctx: GlobalPipelineContext, error_trace: str = "") 
         "developer", ctx, is_retry=bool(error_trace), topology_kwargs={"code_dir": repo_dir}
     )
 
+    # Project intent as REFERENCE (subordinate to the Contract Directives above) so the Developer
+    # understands WHAT it is building and does not fabricate goals — the raw ticket/blueprint never
+    # reach this node. Omitted entirely when empty so no stray header pollutes the prompt.
+    if ctx.contract.shared_context:
+        prompt += (
+            "\n\n=== PROJECT CONTEXT (reference only — the Contract Directives above are "
+            f"authoritative) ===\n{ctx.contract.shared_context}"
+        )
+
     if error_trace:
         prompt += f"\n\nValidation Failure Context:\n{error_trace}"
 

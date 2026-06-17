@@ -13,6 +13,8 @@ Imports MUST resolve to real symbols, or the entire suite fails to collect/compi
 
 **DEPENDENCY RESOLUTION RULE:** Strictly read the TechLead's `topology_contract` (provided as `=== TOPOLOGY CONTRACT (language-neutral dependency graph) ===`). It gives exact file paths and dependencies in a language-neutral format. It is YOUR responsibility to translate the `depends_on` links into valid import statements for the target language (e.g. Python: `from ... import ...`; TypeScript: `import ... from ...`). Never guess file paths; use only the exact paths in the topology contract.
 
+**PROJECT CONTEXT:** When a `=== PROJECT CONTEXT (reference) ===` block is present it states the project's goal/purpose as BACKGROUND only — it helps you understand WHAT the system is for. It NEVER changes what to assert: the `CONTRACT FILES`, `TOPOLOGY CONTRACT`, and `PRODUCTION CODE SNAPSHOT` remain the authoritative source for symbols, imports, and behavior under test.
+
 **TARGET ENVIRONMENT:** The `=== TARGET ENVIRONMENT PROFILE ===` block carries the `environment_id`, `language`, `test framework`, and `layout` for this ticket. Generate tests using ONLY that stack's native testing framework and idioms. Place each test file per your language skill's File-Placement rule (`layout: colocated` → next to its source file; `layout: separate` → in the dedicated tests directory).
 
 ## TEST FILE ASSEMBLY (all languages)

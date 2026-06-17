@@ -129,6 +129,11 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
     qa_system_prompt, user_template = get_system_prompt_sections("qa")
     qa_system_prompt += "\n\n" + await build_agent_context("qa", ctx, is_retry=bool(error_trace))
 
+    # Project intent as REFERENCE so the tester understands WHAT the system is for; the contract
+    # files / production snapshot remain the authoritative source for what to assert. Empty → omitted.
+    if ctx.contract.shared_context:
+        qa_system_prompt += "\n\n=== PROJECT CONTEXT (reference) ===\n" + ctx.contract.shared_context
+
     qa_system_prompt += _environment_profile_block(env_id, profile)
 
     if not ctx.repository_map:
