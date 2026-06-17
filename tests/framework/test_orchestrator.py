@@ -673,6 +673,66 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(ctx.current_attempt, 2)
 
 
+class DeadlockGuardTests(unittest.IsolatedAsyncioTestCase):
+    """A hard gate FAILED + Reviewer approving BOTH sides is unfixable & unprogressable — the run
+    must fail fast on the FIRST cycle, not loop to the circuit breaker (BACKLOG #16)."""
+
+    async def test_gate_fail_with_both_approved_aborts_on_first_cycle(self) -> None:
+        with TemporaryDirectory() as td:
+            base = Path(td)
+            paths = WorkspacePaths(
+                code_dir=base / "code", tests_dir=base / "tests",
+                logs_dir=base / "logs", reports_dir=base / "reports", repo_dir=base,
+            )
+            ctx = GlobalPipelineContext(
+                pr_description="resume", workspace_paths=paths, test_code_snapshot="tests",
+            )
+            ctx.contract = TechLeadContract(
+                files_to_modify=["src/converter.py"], instruction="noop", function_signatures="noop",
+                strict_type_validation_rules="noop", techlead_reasoning="noop",
+                topology_contract=[], environment_id="python-3.12-core",
+            )
+
+            async def _approve_both(*_args, **_kwargs) -> None:
+                ctx.review_report = ReviewReport(
+                    code_quality_analysis="ok", test_integrity_analysis="ok",
+                    log_verification_analysis="runner sys.path issue, not a code defect",
+                    code_quality_approved=True, test_integrity_approved=True,
+                    dev_diagnostic_payload="", qa_diagnostic_payload="",
+                )
+
+            with (
+                mock.patch.object(orchestrator, "check_environment"),
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "build_production_snapshot"),
+                mock.patch.object(orchestrator, "run_build_gate", new=AsyncMock(return_value=(True, []))),
+                mock.patch.object(orchestrator, "_missing_contract_files", return_value=[]),
+                mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
+                    description=None, base_branch="main", resume=Path("cp.json"), reset_attempts=False)),
+                mock.patch.object(GlobalPipelineContext, "load_checkpoint", return_value=ctx),
+                mock.patch.object(orchestrator, "run_techlead_node", new_callable=AsyncMock),
+                mock.patch.object(orchestrator, "run_qa_agent_node", new_callable=AsyncMock),
+                mock.patch.object(orchestrator, "run_developer_node", new_callable=AsyncMock) as developer,
+                mock.patch.object(orchestrator, "run_reviewer_node", new=AsyncMock(side_effect=_approve_both)) as reviewer,
+                # Hard gate FAILS on an unfixable import error; SAST passes.
+                mock.patch.object(orchestrator, "run_qa_unit_tests",
+                                  new=AsyncMock(return_value=(False, ["E   ModuleNotFoundError: No module named 'src'"]))),
+                mock.patch.object(orchestrator, "run_security_scan", new=AsyncMock(return_value=(True, []))),
+                mock.patch.object(orchestrator, "finalize_transaction", new_callable=AsyncMock) as finalize,
+                mock.patch.object(orchestrator, "run_techwriter_node", new_callable=AsyncMock),
+            ):
+                with self.assertRaises(SystemExit) as exit_ctx:
+                    await orchestrator.main()
+
+            self.assertEqual(exit_ctx.exception.code, 1)
+            # Fail-fast: aborted DURING cycle 1 — the Developer/Reviewer each ran exactly once, never looped.
+            developer.assert_awaited_once()
+            reviewer.assert_awaited_once()
+            finalize.assert_not_called()
+            # Incident report written by the fast-fail abort.
+            self.assertTrue((paths.reports_dir / "incident_report.json").exists())
+
+
 class BootstrapSessionTests(unittest.IsolatedAsyncioTestCase):
     """Session bootstrap must shallow-clone, branch, map paths, and re-anchor logging."""
 

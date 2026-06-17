@@ -839,6 +839,29 @@ async def main():
         # Log Approval Checkpoint Status
         log.debug(f"Approval Checkpoint Status: QA={qa_success}, SAST={sec_success}, Code_Approve={ctx.review_report.code_quality_approved}, Test_Approve={ctx.review_report.test_integrity_approved}")
 
+        # Deadlock guard (BACKLOG #16): a hard gate FAILED but the Reviewer approved BOTH code and
+        # tests — it found no fixable defect, so the dev/QA diagnostic channels are empty and every
+        # remaining cycle would repeat identically until the breaker. This is an environment/runner
+        # misconfiguration the agents cannot fix (e.g. a sandbox import-path error). Fail fast with the
+        # gate output instead of burning the rest of the retry budget.
+        gate_failed = not qa_success or not sec_success
+        reviewer_approved_both = (
+            ctx.review_report.code_quality_approved and ctx.review_report.test_integrity_approved
+        )
+        if gate_failed and reviewer_approved_both:
+            failed_gates = (
+                (["FUNCTIONAL-TESTS"] if not qa_success else [])
+                + (["SAST-SECURITY"] if not sec_success else [])
+            )
+            gate_output = _extract_failure_context(qa_lines) if not qa_success else "\n".join(sec_lines)
+            _abort_with_incident(
+                ctx,
+                f"\n🚨 ENVIRONMENT/RUNNER MISCONFIGURATION: the {', '.join(failed_gates)} gate FAILED, "
+                "but the Reviewer approved BOTH code and tests — there is no agent-fixable defect, so "
+                "retrying cannot make progress. Halting now instead of looping to the circuit breaker."
+                f"\n\n--- gate output ---\n{_cap_text(gate_output)}",
+            )
+
         # If the Reviewer rejected the tests specifically, raise the test regeneration flag
         if not all_gates_passed and not ctx.review_report.test_integrity_approved:
             log.warning("🔶 Reviewer Agent flagged test suite anomalies. Scheduling test regeneration.")

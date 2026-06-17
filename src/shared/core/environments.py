@@ -16,7 +16,11 @@ SUPPORTED_ENVIRONMENTS = {
     "python-3.12-core": {
         "image": "sdlc-sandbox/python:latest",
         "build_cmd": "python -m compileall -q .",
-        "test_cmd": "pytest",
+        # `python -m pytest` (not the bare `pytest` console script) so the sandbox cwd (/workspace) is
+        # on sys.path[0] — lets QA's topology imports (`from src.converter import …`) resolve against
+        # the repo-root `src` package (PEP 420 namespace; no __init__.py needed). The bare script would
+        # insert only the test file's own dir, breaking cross-package imports. See BACKLOG #15.
+        "test_cmd": "python -m pytest",
         "setup_cmd": "pip install -r requirements.txt 2>/dev/null || true",
         "sandbox_env": {"HOME": "/tmp", "XDG_CACHE_HOME": "/tmp/.cache", "PYTHONDONTWRITEBYTECODE": "1"},
         "language_id": "python",
