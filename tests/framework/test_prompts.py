@@ -37,6 +37,12 @@ class GetSystemPromptTests(unittest.TestCase):
         self.assertIn("BUSINESS TICKETS START AT `TASK-01`", result)
         self.assertIn("PRESENCE AND CURRENCY", result)
 
+    def test_sa_prompt_honors_user_mandated_stack(self) -> None:
+        # An explicitly user-mandated language/platform must not be overridden by the architect.
+        result = get_system_prompt("sa")
+        self.assertIn("HONOR THE USER'S MANDATED STACK", result)
+        self.assertIn("ORIGINAL USER REQUEST", result)
+
     def test_qa_prompt_has_dependency_resolution_rule(self) -> None:
         # QA translates the neutral topology graph into language-specific imports.
         result = get_system_prompt("qa")

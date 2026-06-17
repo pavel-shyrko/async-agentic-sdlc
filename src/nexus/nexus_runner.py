@@ -43,7 +43,9 @@ async def run_nexus(raw_idea: str, output_dir: Path | None = None) -> Path:
     epic_text = await run_po(raw_idea)
     (out_dir / "epic.md").write_text(epic_text, encoding="utf-8")
 
-    blueprint_text = await run_sa(epic_text)
+    # Pass the verbatim raw idea so the SA honors any stack the USER explicitly mandated (the Epic is
+    # deliberately language-neutral and would otherwise drop it before the stack-decider sees it).
+    blueprint_text = await run_sa(epic_text, raw_idea)
     (out_dir / "blueprint.md").write_text(blueprint_text, encoding="utf-8")
 
     tasks = await run_tpm(epic_text, blueprint_text)
