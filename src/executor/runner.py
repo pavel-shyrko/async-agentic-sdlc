@@ -564,7 +564,12 @@ async def main():
     # correct run dir from the very first line — fixing the late-binding bug. On resume we reuse
     # the original run dir derived from the checkpoint path; a fresh run mints a new one.
     if cfg.resume:
-        run_dir = cfg.resume.resolve().parent.parent  # runs/run_<uuid>/reports/checkpoint.json -> runs/run_<uuid>
+        # Canonical layout is runs/run_<uuid>/reports/checkpoint.json, so the run dir is the
+        # checkpoint's grandparent. Guard the assumption: a non-canonical path (e.g. a bare
+        # `cp.json`) made `.parent.parent` walk ABOVE the repo and dump logs/ into its parent
+        # (C:\code\logs). Fall back to the checkpoint's own dir when it isn't under reports/.
+        ckpt = cfg.resume.resolve()
+        run_dir = ckpt.parent.parent if ckpt.parent.name == "reports" else ckpt.parent
     else:
         run_id = uuid.uuid4().hex
         run_dir = RUNS_BASE / f"run_{run_id}"
