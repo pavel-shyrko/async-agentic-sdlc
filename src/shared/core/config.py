@@ -30,16 +30,16 @@ AVAILABLE_GEMINI_MODELS = (
 )
 
 # Per-role model — set to any value from AVAILABLE_GEMINI_MODELS.
-TECHLEAD_MODEL = GEMINI_3_1_FLASH_LITE
-QA_MODEL = GEMINI_3_1_FLASH_LITE
-REVIEWER_MODEL = GEMINI_3_1_FLASH_LITE
-TECHWRITER_MODEL = GEMINI_3_1_FLASH_LITE   # Living-ADR maintainer; matches the other Gemini worker roles.
+TECHLEAD_MODEL = GEMINI_3_5_FLASH
+QA_MODEL = GEMINI_3_5_FLASH
+REVIEWER_MODEL = GEMINI_3_5_FLASH
+TECHWRITER_MODEL = GEMINI_3_5_FLASH   # Living-ADR maintainer; matches the other Gemini worker roles.
 # Nexus Control Plane roles (Product Owner / Solution Architect / TPM). Defaulted to the
 # cheap flash-lite tier to match the worker roles and keep the PoC inexpensive; SA/TPM can be
 # bumped to GEMINI_2_5_PRO for deeper architectural reasoning.
-PO_MODEL = GEMINI_3_1_FLASH_LITE
-SA_MODEL = GEMINI_3_1_FLASH_LITE
-TPM_MODEL = GEMINI_3_1_FLASH_LITE
+PO_MODEL = GEMINI_3_5_FLASH
+SA_MODEL = GEMINI_3_5_FLASH
+TPM_MODEL = GEMINI_3_5_FLASH
 # Available Claude models for the Developer agent (Claude CLI). The CLI --model accepts a tier
 # ALIAS (always resolves to the latest of that tier) or a pinned full id for reproducibility.
 # Ordered most → least capable / expensive:

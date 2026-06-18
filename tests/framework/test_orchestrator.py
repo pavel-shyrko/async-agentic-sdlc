@@ -1124,6 +1124,18 @@ class EnforceDocumentationGuardrailTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(msg)
             self.assertIn("src/main.py", msg)
 
+    async def test_misplaced_contracted_file_is_not_doc_flagged(self) -> None:
+        # Contract wants root `models.py`; the Developer wrote `src/models.py`. The missing-contract
+        # reroute owns that case (it issues a precise MOVE instruction), so the doc guardrail must NOT
+        # mislabel the misplaced file as 'uncontracted glue needing justification'.
+        with TemporaryDirectory() as td:
+            repo = Path(td)
+            ctx = self._ctx(repo, ["models.py"], ["src/models.py"])  # root models.py never written
+            (repo / "src" / "models.py").write_text("def x():\n    return 1\n", encoding="utf-8")
+            with mock.patch.object(orchestrator, "get_pipeline_snapshot_files", new_callable=AsyncMock) as git:
+                self.assertIsNone(await orchestrator.enforce_documentation_guardrail(ctx))
+            git.assert_not_awaited()  # basename excluded before any git call
+
 
 class DocumentationGuardrailLoopTests(unittest.IsolatedAsyncioTestCase):
     """Loop integration: a free reroute spends no functional budget; the cap triggers a Hard Halt."""
@@ -1609,6 +1621,65 @@ class MissingContractFilesTests(unittest.TestCase):
 
             # main.go exists; .gitignore/LICENSE are missing; the *_test.go is QA-owned (excluded).
             self.assertEqual(sorted(missing), [".gitignore", "LICENSE"])
+
+
+class MisplacedContractFilesTests(unittest.TestCase):
+    """`_misplaced_contract_files` locates a same-basename file the Developer wrote at the wrong path."""
+
+    @staticmethod
+    def _ctx(repo: Path, files_to_modify: list[str]) -> GlobalPipelineContext:
+        paths = WorkspacePaths(logs_dir=repo / "logs", reports_dir=repo / "reports", repo_dir=repo)
+        contract = TechLeadContract(
+            files_to_modify=files_to_modify, topology_contract=[], instruction="x",
+            function_signatures="x", strict_type_validation_rules="x", techlead_reasoning="x",
+            environment_id="dotnet-10-sdk",
+        )
+        return GlobalPipelineContext(pr_description="t", workspace_paths=paths, contract=contract)
+
+    def test_finds_basename_match_under_subdir(self) -> None:
+        with TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / "src").mkdir()
+            (repo / "src" / "Program.cs").write_text("// x\n", encoding="utf-8")
+            ctx = self._ctx(repo, ["Program.cs"])
+            found = orchestrator._misplaced_contract_files(ctx, ["Program.cs"])
+            self.assertEqual(found, {"Program.cs": "src/Program.cs"})
+
+    def test_genuinely_absent_file_is_not_misplaced(self) -> None:
+        with TemporaryDirectory() as td:
+            ctx = self._ctx(Path(td), ["LICENSE"])
+            self.assertEqual(orchestrator._misplaced_contract_files(ctx, ["LICENSE"]), {})
+
+    def test_correction_message_distinguishes_move_from_create(self) -> None:
+        msg = orchestrator._format_contract_correction({"Program.cs": "src/Program.cs"}, ["LICENSE"])
+        self.assertIn("WRONG path", msg)
+        self.assertIn("`src/Program.cs` → must be `Program.cs`", msg)
+        self.assertIn("did not create", msg)
+        self.assertIn("LICENSE", msg)
+
+
+class LintTestSuiteConsistencyTests(unittest.TestCase):
+    """`lint_test_suite_consistency` flags a symbol invoked both static and instance in one suite."""
+
+    def test_flags_static_and_instance_mix(self) -> None:
+        snap = (
+            "=== FILE: A.cs ===\nvar r = CommandLineOptions.Execute(a, b, c);\n"
+            "=== FILE: B.cs ===\nint r = new CommandLineOptions().Execute(a, b, c);\n"
+        )
+        issues = orchestrator.lint_test_suite_consistency(snap, "Execute(...)")
+        self.assertEqual(len(issues), 1)
+        self.assertIn("CommandLineOptions.Execute", issues[0])
+
+    def test_consistent_instance_only_suite_passes(self) -> None:
+        snap = "var o = new CommandLineOptions();\nint r = o.Execute(a, b, c);\n"
+        self.assertEqual(orchestrator.lint_test_suite_consistency(snap, "x"), [])
+
+    def test_consistent_static_only_suite_passes(self) -> None:
+        snap = "var r = CommandLineOptions.Execute(a, b, c);\nAssert.Equal(0, r);\n"
+        self.assertEqual(orchestrator.lint_test_suite_consistency(snap, "x"), [])
+
+    def test_empty_snapshot_is_noop(self) -> None:
+        self.assertEqual(orchestrator.lint_test_suite_consistency("", "x"), [])
 
 
 class BuildProductionSnapshotTests(unittest.TestCase):

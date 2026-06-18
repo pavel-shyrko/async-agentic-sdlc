@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import json
 import uuid
@@ -324,6 +325,7 @@ def build_production_snapshot(ctx: GlobalPipelineContext) -> None:
 GUARDRAIL_TOP_LINES = 15        # top-of-file window scanned for a justification
 GUARDRAIL_MAX_REROUTES = 2      # local guardrail_retries cap: free reroutes before a Hard Halt
 QA_GATE_MAX_REROUTES = 2        # free QA regenerations on a test-compile failure (Reviewer bypassed)
+QA_LINT_MAX_REROUTES = 2        # free QA regenerations on a contract-signature lint hit (Reviewer bypassed)
 
 
 def _missing_contract_files(ctx: GlobalPipelineContext) -> list[str]:
@@ -340,6 +342,77 @@ def _missing_contract_files(ctx: GlobalPipelineContext) -> list[str]:
     return [
         f for f in ctx.contract.files_to_modify
         if not is_test_file(env_id, f) and not (repo_dir / f).exists()
+    ]
+
+
+def _misplaced_contract_files(ctx: GlobalPipelineContext, missing: list[str]) -> dict[str, str]:
+    """Map each still-missing contracted path → a same-basename file that DOES exist elsewhere.
+
+    The Developer sometimes honors the contract's CONTENT but invents a layout (e.g. nests a
+    contracted root file under `src/`), so `_missing_contract_files` flags the contracted path as
+    absent while the file actually sits at an alternate path. Surfacing that alternate path turns a
+    blind 'create it now' reroute (which loops forever — the Developer thinks it already did) into a
+    precise 'MOVE it' instruction. Conservative basename match only; first hit wins.
+    """
+    repo_dir = ctx.workspace_paths.repo_dir
+    found: dict[str, str] = {}
+    for f in missing:
+        target = Path(f).as_posix()
+        for cand in repo_dir.rglob(Path(f).name):
+            if not cand.is_file() or ".git" in cand.parts:
+                continue
+            rel = cand.relative_to(repo_dir).as_posix()
+            if rel != target:
+                found[f] = rel
+                break
+    return found
+
+
+def _format_contract_correction(misplaced: dict[str, str], absent: list[str]) -> str:
+    """Build a Developer-targeted correction that distinguishes a wrong PATH from a wrong/absent FILE.
+
+    Shared by the in-loop reroute and the hard-halt incident so both speak with one voice.
+    """
+    lines: list[str] = []
+    if misplaced:
+        lines.append(
+            "You created the following contracted file(s) at the WRONG path. MOVE each to its exact "
+            "contracted path (repo-root-relative) and leave NO copy behind:"
+        )
+        lines += [f"  - `{found}` → must be `{contracted}`" for contracted, found in misplaced.items()]
+    if absent:
+        lines.append(
+            "You did not create these contracted files — create EACH of them now with the literal "
+            f"content required by the ticket: {', '.join(absent)}"
+        )
+    return "\n".join(lines)
+
+
+# ``Type.Method(`` (static call) vs ``new Type().Method(`` / ``new Type {…}.Method(`` (instance call).
+# Conservative, language-light: catches the exact contradiction observed in the wild (a QA suite that
+# invoked the same symbol both ways across files), without trying to parse arbitrary test source.
+_STATIC_CALL_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_INSTANCE_CALL_RE = re.compile(r"\bnew\s+([A-Z][A-Za-z0-9_]*)\s*[\(\{][^;]*?\)\s*\.([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+
+
+def lint_test_suite_consistency(test_snapshot: str, function_signatures: str) -> list[str]:
+    """Flag UNAMBIGUOUS self-contradictions in the generated test suite (Reviewer-bypass gate).
+
+    Currently one rule: the same ``Type.Method`` symbol is called both statically AND as an instance
+    member within the same snapshot — a contract-signature contradiction that otherwise compiles
+    halfway and burns a full QA→Reviewer cycle. Returns one human-readable issue string per offending
+    symbol, or [] when the suite is internally consistent. ``function_signatures`` is accepted for
+    future signature-aware checks; today only intra-suite consistency is enforced (keeps it low-flake).
+    """
+    if not test_snapshot:
+        return []
+    static_calls = {(t, m) for t, m in _STATIC_CALL_RE.findall(test_snapshot)}
+    instance_calls = {(t, m) for t, m in _INSTANCE_CALL_RE.findall(test_snapshot)}
+    conflicts = sorted(static_calls & instance_calls)
+    return [
+        f"`{t}.{m}(...)` is called both as a STATIC member and via `new {t}().{m}(...)` — pick the one "
+        "matching the contract signature and use it consistently across the whole suite."
+        for t, m in conflicts
     ]
 
 
@@ -436,11 +509,16 @@ async def enforce_documentation_guardrail(ctx: GlobalPipelineContext) -> str | N
         return None
 
     contract_files = {Path(f).as_posix() for f in (ctx.contract.files_to_modify if ctx.contract else [])}
+    # A misplaced contracted file (e.g. `src/X` for contracted `X`) is owned by the missing-contract
+    # reroute, which gives the Developer a precise 'MOVE it' instruction. Excluding its basename here
+    # keeps the guardrail from mislabelling it as 'uncontracted glue needing justification' — the two
+    # checks must never describe the same file by two contradictory paths.
+    missing_basenames = {Path(f).name for f in _missing_contract_files(ctx)}
     # Uncontracted glue the Developer created (e.g. an entry point a build manifest needs) is policed
     # here like on any code ticket: it just needs a top-of-file justification comment, not deletion.
     uncontracted = [
         rel for rel in ctx.production_code_snapshot
-        if Path(rel).as_posix() not in contract_files
+        if Path(rel).as_posix() not in contract_files and Path(rel).name not in missing_basenames
     ]
     if not uncontracted:
         return None
@@ -663,7 +741,29 @@ async def main():
 
         # 2. Testing Phase (Runs initially, on rejected tests, or whenever no snapshot exists)
         if regenerate_tests:
-            await run_qa_agent_node(ctx, prev_qa_trace)
+            # Free-reroute the QA node on a contract-signature contradiction in the freshly generated
+            # suite (e.g. the same symbol called both static and instance) BEFORE any Developer/Reviewer
+            # spend — mirrors the test-compile gate. No functional-retry budget consumed; at the cap we
+            # proceed and let the Reviewer adjudicate so a false positive never deadlocks the run.
+            qa_lint_feedback = prev_qa_trace
+            for qa_lint_retries in range(QA_LINT_MAX_REROUTES + 1):
+                await run_qa_agent_node(ctx, qa_lint_feedback)
+                lint_issues = lint_test_suite_consistency(
+                    ctx.test_code_snapshot, ctx.contract.function_signatures
+                )
+                if not lint_issues or qa_lint_retries == QA_LINT_MAX_REROUTES:
+                    if lint_issues:
+                        log.warning("🔶 QA signature lint still failing after in-loop regenerations — handing to the Reviewer.")
+                    break
+                log.warning(
+                    f"🔶 QA suite has contract-signature contradiction(s) — fast-fail regeneration "
+                    f"{qa_lint_retries + 1}/{QA_LINT_MAX_REROUTES} to QA (no budget spent), Reviewer bypassed."
+                )
+                qa_lint_feedback = (
+                    "The generated test suite contradicts the contract signatures. Fix ONLY the test "
+                    "files:\n" + "\n".join(lint_issues)
+                )
+                enforce_financial_circuit_breaker(ctx)
             ctx.save_checkpoint(checkpoint_file)
             log.debug(f"Checkpoint saved after QA node: {checkpoint_file}")
             regenerate_tests = False  # Reset the flag until the next rejection
@@ -699,17 +799,32 @@ async def main():
                 # never hard-halts an otherwise-good run.
                 missing = _missing_contract_files(ctx)
                 if missing:
+                    misplaced = _misplaced_contract_files(ctx, missing)
+                    absent = [f for f in missing if f not in misplaced]
+                    correction = _format_contract_correction(misplaced, absent)
                     if guardrail_retries == GUARDRAIL_MAX_REROUTES:
+                        # A MISPLACED file at the cap is a deterministic refusal to honor the contract
+                        # path (not a stray omission) — hard-halt with an ACCURATE path-mismatch incident
+                        # instead of silently falling through to the doc guardrail, which would then mis-
+                        # report it as 'uncontracted, undocumented'. Genuinely-absent-only files keep the
+                        # soft fall-through so a stray missing artifact never aborts an otherwise-good run.
+                        if misplaced:
+                            ctx.error_trace = correction
+                            _abort_with_incident(
+                                ctx,
+                                f"\n🚨 HARD HALT: contracted file(s) created at the WRONG path after "
+                                f"{GUARDRAIL_MAX_REROUTES} fast-fail reroutes — relocate to the contracted "
+                                f"path. Misplaced: {misplaced}",
+                            )
                         log.warning(f"🔶 Contracted files still missing after in-loop reroutes: {missing} — proceeding to the gates/Reviewer.")
                     else:
                         log.warning(
-                            f"🔶 Developer skipped contracted file(s) {missing} — fast-fail reroute "
-                            f"{guardrail_retries + 1}/{GUARDRAIL_MAX_REROUTES} (no budget spent), Reviewer bypassed."
+                            f"🔶 Developer skipped contracted file(s) {missing} "
+                            + (f"(misplaced: {misplaced}) " if misplaced else "")
+                            + f"— fast-fail reroute {guardrail_retries + 1}/{GUARDRAIL_MAX_REROUTES} "
+                            "(no budget spent), Reviewer bypassed."
                         )
-                        dev_feedback = (
-                            "You did not create these contracted files — create EACH of them now with the "
-                            f"literal content required by the ticket: {', '.join(missing)}"
-                        )
+                        dev_feedback = correction
                         dev_focus_files = None
                         continue
 

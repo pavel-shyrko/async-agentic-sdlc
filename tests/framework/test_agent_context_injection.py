@@ -99,6 +99,42 @@ class DeveloperRerouteFeedbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(f.replace("\\", "/").endswith("src/overreach.py") for f in files))
 
 
+_TOPO_BLOCK = "=== TOPOLOGY CONTRACT (authoritative file placement"
+
+
+class DeveloperTopologyInjectionTests(unittest.IsolatedAsyncioTestCase):
+    """The Developer prompt carries the authoritative TOPOLOGY CONTRACT (exact paths) iff topology set.
+
+    This is the data the `developer_topology` skill rule ('obey exact paths') needs; without it the
+    Developer invents layouts (e.g. nesting a contracted root file under src/) and deadlocks the loop.
+    """
+
+    async def _captured_prompt(self, contract: TechLeadContract) -> str:
+        with TemporaryDirectory() as td:
+            ctx = GlobalPipelineContext(pr_description="x", workspace_paths=_paths(Path(td)))
+            ctx.contract = contract
+            with (
+                mock.patch.object(developer, "build_agent_context", new=AsyncMock(return_value="SKILLS")),
+                mock.patch.object(developer, "run_claude_cli", new=AsyncMock(return_value=(0, None))) as cli,
+            ):
+                await developer.run_developer_node(ctx)
+            return cli.await_args.args[0]
+
+    async def test_topology_block_lists_every_contracted_path(self) -> None:
+        prompt = await self._captured_prompt(_contract(""))
+        self.assertIn(_TOPO_BLOCK, prompt)
+        self.assertIn("src/calc.py | exports: add", prompt)
+
+    async def test_topology_block_absent_when_empty(self) -> None:
+        contract = TechLeadContract(
+            files_to_modify=["src/calc.py"], topology_contract=[], instruction="Implement add(a, b).",
+            shared_context="", function_signatures="def add(a, b)", strict_type_validation_rules="int",
+            techlead_reasoning="trivial", environment_id="python-3.12-core",
+        )
+        prompt = await self._captured_prompt(contract)
+        self.assertNotIn(_TOPO_BLOCK, prompt)
+
+
 class QaContextInjectionTests(unittest.IsolatedAsyncioTestCase):
     """The QA system prompt carries the reference PROJECT CONTEXT block iff shared_context is set."""
 

@@ -24,6 +24,21 @@ async def run_developer_node(
         "developer", ctx, is_retry=bool(error_trace), topology_kwargs={"code_dir": repo_dir}
     )
 
+    # Authoritative file placement (SSOT the TechLead already produced). The `developer_topology` skill
+    # carries the RULE ("obey exact paths"); this block carries the DATA — the exact file_path for every
+    # contracted node — so the Developer stops inventing layouts (e.g. nesting contracted root files
+    # under src/). Mirrors the QA node's topology injection; rendered identically (file_path | exports |
+    # depends_on). Placed at high salience right after the Contract Directives.
+    if ctx.contract.topology_contract:
+        topo = "\n".join(
+            f"{n.file_path} | exports: {', '.join(n.exports)} | depends_on: {', '.join(n.depends_on)}"
+            for n in ctx.contract.topology_contract
+        )
+        prompt += (
+            "\n\n=== TOPOLOGY CONTRACT (authoritative file placement — write EXACTLY these paths, "
+            "repo-root-relative; never add a `src/` or other parent prefix) ===\n" + topo
+        )
+
     # Project intent as REFERENCE (subordinate to the Contract Directives above) so the Developer
     # understands WHAT it is building and does not fabricate goals — the raw ticket/blueprint never
     # reach this node. Omitted entirely when empty so no stray header pollutes the prompt.

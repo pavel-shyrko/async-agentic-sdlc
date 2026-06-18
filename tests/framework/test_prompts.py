@@ -358,6 +358,29 @@ class PerLanguageCoreRoutingTests(unittest.IsolatedAsyncioTestCase):
                         )
 
 
+class DeveloperPathRuleOwnershipTests(unittest.IsolatedAsyncioTestCase):
+    """The pathing rule has a SINGLE owner: developer_topology renders it (with {code_dir} substituted),
+    and the developer system prompt no longer carries a duplicate PATH ROUTING bullet."""
+
+    def setUp(self) -> None:
+        get_skill.cache_clear()
+
+    async def test_topology_skill_renders_path_rule_with_code_dir(self) -> None:
+        ctx = GlobalPipelineContext(pr_description="t")  # no workspace_paths -> ADR block skipped
+        with mock.patch(
+            "src.shared.core.prompts.fallback_semantic_search",
+            new=mock.AsyncMock(return_value=False),
+        ):
+            out = await build_agent_context("developer", ctx, topology_kwargs={"code_dir": "/repo"})
+        self.assertIn("CRITICAL PATHING RULE", out)
+        self.assertIn("/repo", out)                 # {code_dir} substituted by the topology formatter
+        self.assertIn("TOPOLOGY CONTRACT", out)      # rule anchors to the injected block
+
+    def test_system_prompt_no_longer_owns_path_routing(self) -> None:
+        raw = get_system_prompt("developer")
+        self.assertNotIn("PATH ROUTING", raw)        # re-homed to developer_topology (single owner)
+
+
 class PerLanguageCoreFrontmatterTests(unittest.TestCase):
     """The new core skills are well-formed and target all three production nodes."""
 

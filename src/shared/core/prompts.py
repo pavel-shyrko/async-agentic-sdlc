@@ -3,6 +3,7 @@ from pathlib import Path
 from functools import lru_cache
 
 from src.shared.core.models import GlobalPipelineContext
+from src.shared.core.observability import log
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 _SYSTEM_DIR = _REPO_ROOT / "prompts" / "system"
@@ -244,11 +245,17 @@ async def build_agent_context(
     topology_kwargs = topology_kwargs or {}
     strict_rules = getattr(ctx.contract, "strict_type_validation_rules", "")
     parts: list[str] = []
+    # Routing telemetry — the router was previously silent, so logs gave no way to confirm which skills
+    # actually reached a node's prompt. Collected here and emitted as one line below.
+    included: list[str] = []
+    domain_fallback: list[str] = []
+    excluded: list[str] = []
 
     for path in sorted(_SKILLS_DIR.glob("*.md")):
         meta, body = _parse_frontmatter(path.read_text(encoding="utf-8"))
         if node_name not in meta.get("nodes", []):
             continue
+        skill_id = meta.get("skill_id", path.stem)
 
         skill_type = meta.get("type")
         if skill_type in ("global", "topology"):
@@ -260,16 +267,26 @@ async def build_agent_context(
             include = bool(set(meta.get("triggers", [])) & tags)
             if not include:
                 include = await fallback_semantic_search(ctx.pr_description, body)
+                if include:
+                    domain_fallback.append(skill_id)
         else:
             include = False
 
         if not include:
+            excluded.append(skill_id)
             continue
 
+        included.append(skill_id)
         body = body.replace("{strict_type_validation_rules}", strict_rules)
         if skill_type == "topology":
             body = body.format(**topology_kwargs)
         parts.append(body.strip())
+
+    log.info(
+        f"   [SKILLS] {node_name} | included: {included}"
+        + (f" | domain-fallback: {domain_fallback}" if domain_fallback else "")
+        + (f" | excluded: {excluded}" if excluded else "")
+    )
 
     # Living ADR: inject the on-disk architecture state into every consuming node's context.
     # GUARD: the document does not exist on the first task — never do a bare read_text().
