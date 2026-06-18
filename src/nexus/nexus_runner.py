@@ -8,6 +8,7 @@ import sys
 import json
 from pathlib import Path
 
+from src.shared.core.boilerplate import build_baseline_block
 from src.shared.core.config import PIPELINE_BUDGET_USD, PIPELINE_BUDGET_TOKENS
 from src.shared.core.models import PipelineTelemetry
 from src.shared.core.observability import log, log_finops_summary, describe_finish_reason
@@ -93,12 +94,17 @@ async def run_nexus(
         log_finops_summary(state.telemetry, PIPELINE_BUDGET_USD, PIPELINE_BUDGET_TOKENS)
         sys.exit(1)
 
-    # Materialise every planned task as a discrete Markdown ticket under artifacts/.
+    # Materialise every planned task as a discrete Markdown ticket under artifacts/. TASK-01 (the
+    # repository-preparation ticket) gets the engine-curated baseline files appended deterministically
+    # — the TPM no longer reproduces the .gitignore/LICENSE verbatim (that tripped Gemini RECITATION).
+    holder = state.run_dir.parent.name  # project slug; license-holder attribution
     written = []
     for i, task in enumerate(state.tasks, start=1):
         ticket_id = _safe_ticket_id(task.get("ticket_id", ""), i)
         title = task.get("title", "").strip() or ticket_id
         description = task.get("description", "").strip()
+        if i == 1:
+            description = f"{description}\n\n{build_baseline_block(task.get('environment_id', ''), holder)}"
         ticket_path = state.artifacts_dir / f"{ticket_id}.md"
         ticket_path.write_text(f"# {title}\n\n{description}\n", encoding="utf-8")
         written.append(ticket_path.name)

@@ -50,15 +50,16 @@ class GetSystemPromptTests(unittest.TestCase):
         self.assertNotIn("`TASK-00` is RESERVED", result)
         self.assertNotIn("BUSINESS TICKETS START AT `TASK-01`", result)
 
-    def test_tpm_injects_canonical_gitignore_templates(self) -> None:
-        # The vague per-env pattern lists (and the bug-causing "built binary path" line) are gone;
-        # the canonical github/gitignore templates are injected verbatim and the placeholder filled.
+    def test_tpm_delegates_gitignore_and_license_to_engine(self) -> None:
+        # The .gitignore/LICENSE are no longer reproduced by the TPM (reproducing canonical boilerplate
+        # tripped Gemini's recitation filter) — the engine appends them at materialisation via
+        # boilerplate.build_baseline_block. So no gitignore template is injected and the prompt forbids
+        # the model from writing those two files' content itself.
         result = get_system_prompt_with_platforms("tpm")
         self.assertNotIn("{injected_gitignore_templates}", result)
-        self.assertNotIn("the built binary path", result)
-        self.assertIn("```gitignore", result)              # fenced canonical blocks present
-        self.assertIn("*.test", result)                    # go template patterns injected
-        self.assertIn("NEVER ignore a build artifact by its bare project/binary NAME", result)
+        self.assertNotIn("```gitignore", result)           # no canonical gitignore blocks injected
+        self.assertIn("ENGINE-PROVIDED", result)
+        self.assertIn("Repository Baseline Files (engine-provided", result)
 
     def test_tpm_injects_readme_scaffold_and_env_commands(self) -> None:
         # README must follow the GitHub-aligned scaffold and pull accurate per-env commands; the

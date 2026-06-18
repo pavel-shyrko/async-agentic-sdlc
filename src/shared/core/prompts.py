@@ -26,20 +26,6 @@ def _format_supported_platforms() -> str:
     return "\n".join(f"- {key}: {env['description']}" for key, env in SUPPORTED_ENVIRONMENTS.items())
 
 
-def _format_gitignore_templates() -> str:
-    """Render the canonical per-environment .gitignore templates as labelled fenced blocks.
-
-    The TPM copies the block whose `environment_id` matches the ticket into TASK-01 verbatim, so
-    the ignore file is engine-curated (github/gitignore-sourced) — never an agent's invention that
-    can ignore a same-named source directory (see GITIGNORE_TEMPLATES rationale in environments.py).
-    """
-    from src.shared.core.environments import SUPPORTED_ENVIRONMENTS, get_gitignore_template
-    blocks = []
-    for env_id in SUPPORTED_ENVIRONMENTS:
-        blocks.append(f"`{env_id}`:\n```gitignore\n{get_gitignore_template(env_id).rstrip()}\n```")
-    return "\n\n".join(blocks)
-
-
 # Canonical README scaffold — aligned with GitHub's "About READMEs" guidance (what the project does,
 # why it's useful, how to get started, how to use it, how to test, license). The TPM copies this into
 # TASK-01 and fills every <...> slot with REAL content distilled from the Epic/Blueprint — so the
@@ -93,9 +79,13 @@ def _format_env_commands() -> str:
 
 def get_system_prompt_with_platforms(agent_name: str) -> str:
     """Load a system prompt and inject the engine-curated assets into its placeholders:
-    ``{injected_supported_platforms_list}`` (Paved-Road registry), ``{injected_gitignore_templates}``
-    (canonical .gitignore per env), ``{injected_readme_scaffold}`` (GitHub-aligned README structure),
-    and ``{injected_env_commands}`` (per-env setup/build/test commands).
+    ``{injected_supported_platforms_list}`` (Paved-Road registry), ``{injected_readme_scaffold}``
+    (GitHub-aligned README structure), and ``{injected_env_commands}`` (per-env setup/build/test
+    commands).
+
+    The canonical ``.gitignore``/``LICENSE`` are NOT injected here — they are appended to TASK-01
+    deterministically by the engine (``boilerplate.build_baseline_block``) so the TPM never reproduces
+    them verbatim (which tripped Gemini's recitation filter).
 
     Uses a brace-safe ``.replace()`` (not ``.format()``) — matching the
     ``{strict_type_validation_rules}`` convention below — so the prompt body may
@@ -105,7 +95,6 @@ def get_system_prompt_with_platforms(agent_name: str) -> str:
     return (
         get_system_prompt(agent_name)
         .replace("{injected_supported_platforms_list}", _format_supported_platforms())
-        .replace("{injected_gitignore_templates}", _format_gitignore_templates())
         .replace("{injected_readme_scaffold}", README_SCAFFOLD)
         .replace("{injected_env_commands}", _format_env_commands())
     )

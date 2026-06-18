@@ -15,7 +15,13 @@ from logging.handlers import RotatingFileHandler
 import io
 
 from src.shared.core.models import GlobalPipelineContext, PipelineTelemetry
-from src.shared.core.observability import reconfigure_logging, log_token_usage, describe_finish_reason
+from src.shared.core.observability import (
+    reconfigure_logging,
+    log_token_usage,
+    describe_finish_reason,
+    finish_reason_name,
+    NON_RETRYABLE_FINISH_REASONS,
+)
 from src.shared.utils.redaction import RedactionFilter
 
 
@@ -139,6 +145,34 @@ class DescribeFinishReasonTests(unittest.TestCase):
     def test_garbage_returns_none(self) -> None:
         self.assertIsNone(describe_finish_reason(object()))
         self.assertIsNone(describe_finish_reason(None))
+
+
+class FinishReasonNameTests(unittest.TestCase):
+    """The bare-name classifier feeds the retry layer's non-retryable decision; it must extract the
+    raw reason (no hint) and return None for normal/odd completions."""
+
+    @staticmethod
+    def _completion(reason: object) -> SimpleNamespace:
+        return SimpleNamespace(candidates=[SimpleNamespace(finish_reason=reason)])
+
+    def test_recitation_name_from_instructor_exception(self) -> None:
+        exc = SimpleNamespace(last_completion=self._completion(SimpleNamespace(name="RECITATION")))
+        self.assertEqual(finish_reason_name(exc), "RECITATION")
+
+    def test_enum_string_form_normalised(self) -> None:
+        self.assertEqual(finish_reason_name(self._completion("FinishReason.SAFETY")), "SAFETY")
+
+    def test_stop_and_garbage_return_none(self) -> None:
+        self.assertIsNone(finish_reason_name(self._completion(SimpleNamespace(name="STOP"))))
+        self.assertIsNone(finish_reason_name(object()))
+        self.assertIsNone(finish_reason_name(None))
+
+    def test_content_filters_are_non_retryable_max_tokens_is_not(self) -> None:
+        # Deterministic content-filter blocks fail fast; MAX_TOKENS is a retryable truncation, not a block.
+        self.assertIn("RECITATION", NON_RETRYABLE_FINISH_REASONS)
+        self.assertIn("SAFETY", NON_RETRYABLE_FINISH_REASONS)
+        self.assertNotIn("MAX_TOKENS", NON_RETRYABLE_FINISH_REASONS)
+        self.assertNotIn("STOP", NON_RETRYABLE_FINISH_REASONS)
 
 
 if __name__ == "__main__":

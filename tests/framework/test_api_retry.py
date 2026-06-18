@@ -43,6 +43,43 @@ class ApiRetryDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("ValueError", mock_log.error.call_args.args[0])
 
+    async def test_recitation_fails_fast_without_burning_retries(self) -> None:
+        # A content-filter block is DETERMINISTIC — even with retries left it must fail after one
+        # attempt (no backoff sleep), not exhaust the budget on identical re-tries.
+        calls = 0
+
+        @with_api_retry(max_retries=3, agent_name="TPM Agent")
+        async def _always_recitation() -> None:
+            nonlocal calls
+            calls += 1
+            raise _RecitationError()
+
+        with mock.patch.object(api_retry.asyncio, "sleep") as mock_sleep, \
+                mock.patch.object(api_retry, "log") as mock_log:
+            with self.assertRaises(_RecitationError):
+                await _always_recitation()
+
+        self.assertEqual(calls, 1)                 # one attempt only — no retry
+        mock_sleep.assert_not_awaited()            # no backoff burned
+        self.assertIn("non-retryable", mock_log.error.call_args.args[0])
+
+    async def test_transient_error_retries_up_to_max(self) -> None:
+        # A plain (non-content-filter) error still retries the full budget with backoff.
+        calls = 0
+
+        @with_api_retry(max_retries=3, agent_name="QA Agent")
+        async def _flaky() -> None:
+            nonlocal calls
+            calls += 1
+            raise ValueError("blip")
+
+        with mock.patch.object(api_retry.asyncio, "sleep", new=mock.AsyncMock()), \
+                mock.patch.object(api_retry, "log"):
+            with self.assertRaises(ValueError):
+                await _flaky()
+
+        self.assertEqual(calls, 3)                 # all attempts used
+
 
 if __name__ == "__main__":
     unittest.main()
