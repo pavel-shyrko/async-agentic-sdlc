@@ -111,7 +111,7 @@ class RunClaudeCliTests(_MutedLogMixin, unittest.IsolatedAsyncioTestCase):
              "--dangerously-skip-permissions", target),
         )
         # Sandbox isolation: the child is anchored to the run repo (allowed_root), so the inner
-        # Claude loads the sandbox project context, not the orchestrator's CLAUDE.md/.ai/memory.
+        # Claude loads the sandbox project context, not the orchestrator's CLAUDE.md/.claude.
         self.assertEqual(mock_exec.call_args.kwargs["cwd"], _ROOT)
 
     @mock.patch("src.shared.utils.subprocess_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)

@@ -184,24 +184,13 @@ For the release-by-release history see [CHANGELOG.md](./CHANGELOG.md), the decis
 
 ## 🛠️ Developer Meta-Tools (AI-Assisted Maintenance)
 
-The repository includes a set of isolated meta-instructions (skills) for your IDE Assistant (e.g., Claude Code, GitHub Copilot, Cursor) to automate project governance, maintain the engineering journal, and keep documentation in sync. These are strictly separated from the core runtime agent prompts located in `prompts/`.
+The repository ships a set of native [Claude Code Agent Skills](https://docs.claude.com/en/docs/claude-code/skills) under `.claude/skills/` that automate project governance, maintain the engineering journal, and keep documentation in sync. They are auto-discoverable (invoke with `/name`, or let Claude trigger them from their description) and strictly separated from the core runtime agent prompts in `prompts/`. Project knowledge is encoded as path-scoped rules under `.claude/rules/`.
 
-Run these explicit commands at the end of an iteration or when a milestone is reached:
+Run these at the end of an iteration or when a milestone is reached:
 
-* **Generate Architecture Decision Records (ADR):**
-    Analyzes recent git diffs to catch systemic architectural shifts and document them using the MADR format into `docs/adr/`.
-    ```bash
-    claude -p "Run .ai/skills/adr_generation.md to document recent architectural changes."
-    ```
+* **`/adr-generation`** — Generate Architecture Decision Records. Analyzes recent git diffs to catch systemic architectural shifts and documents them in MADR format into `docs/adr/`.
+* **`/docs-sync`** — Synchronize factual docs. Parses recent commits to update `CHANGELOG.md` (Keep a Changelog standard) and align `README.md` with new CLI flags / configuration.
+* **`/practicum-update`** — Distill engineering lessons. Reflects on the latest ADR to extract generalized multi-agent patterns into `PRACTICUM.md`.
+* **`/iteration-release`** — One-shot release documentation: runs the three skills above plus an iteration archive, with all cross-links resolved.
 
-* **Synchronize Factual Docs (Changelog & README):**
-    Parses recent commits to automatically update the project `CHANGELOG.md` strictly matching the "Keep a Changelog" standard and align `README.md` with new CLI flags or configuration parameters.
-    ```bash
-    claude -p "Run .ai/skills/docs_sync.md to update factual documentation."
-    ```
-
-* **Distill Engineering Lessons (Practicum Manifest):**
-    Reflects on the latest ADR to extract generalized multi-agent engineering patterns, adding high-level takeaways directly into `PRACTICUM.md`.
-    ```bash
-    claude -p "Run .ai/skills/practicum_update.md to distill engineering lessons from the latest ADR."
-    ```
+Non-interactive form: `claude -p "/adr-generation"`.
