@@ -168,6 +168,11 @@ If you get "certificate signed by unknown authority" errors when pulling images,
 * [HowTo: Adding Symantec Certificate](https://howto.godeltech.com/display/KB/Adding+Symantec+Certificate+to+an+Application+Specific+Trust+Store)
 * [HowTo: WSL2 + Docker Setup (Windows)](https://howto.godeltech.com/pages/viewpage.action?pageId=147652634)
 
+> **You do NOT need to set `HTTP_PROXY`/`HTTPS_PROXY`.** The corporate egress is a **transparent**
+> TLS-intercepting proxy — connectivity works once the CA above is trusted; there is no proxy URL to
+> configure. The CA install in this section, plus rebuilding the images
+> (`bash scripts/build_sandbox_images.sh`, which stages the CA from `CORP_CA_PATH` into the build
+> context), is the only mandatory step. See §6 for how dependency restore copes with this network.
 
 ---
 
@@ -175,3 +180,43 @@ If you get "certificate signed by unknown authority" errors when pulling images,
 1.  Open a new PowerShell window.
 2.  Type `docker ps`.
 3.  If WSL is off, you will see "Starting...". After a few seconds, you will see the container list.
+
+---
+
+## 6. Dependency Restore Behind the Corporate Network (NU1301 & friends)
+
+The runtime gates run dependency restore (`dotnet restore` / `go mod download` / `npm ci` /
+`pip install`) in a **network-ON** phase, then build/test with **network OFF**. Behind the
+transparent corporate proxy this used to fail with `NU1301: Unable to load the service index` (and
+`Resource temporarily unavailable`), which the orchestrator classifies as an `ENVIRONMENT/NETWORK
+HALT` and refuses to "fix" by rerouting the Developer.
+
+**Root cause:** not "no route" — the proxy/antivirus **drops bursts of parallel TLS connections**
+that the restore opens. Two further factors made it chronic: the offline fallback baked into the
+.NET image covered only a handful of packages, and restore/build run in **separate** containers each
+with a fresh `--tmpfs /tmp`, so anything restored online was discarded before the build.
+
+**How it is solved (no action needed beyond §4 + image rebuild):**
+
+1. **Throttle.** The .NET image's `/NuGet.Config` sets `maxHttpRequestsPerSource=1` and the restore
+   runs `dotnet restore --disable-parallel` with up to 3 attempts — requests are serialized, so the
+   proxy stops dropping the burst.
+2. **Persistent cache volume.** Each stack mounts a named docker volume
+   (`sdlc-cache-{python,go,node,dotnet}`, at `/cache`) for its package-download cache. It is
+   **read-write only during restore** and **read-only** for build/test (so adversarial test code
+   cannot poison it). The first run warms it online; every later run/container resolves **offline**.
+   Inspect with `docker volume ls | grep sdlc-cache`; reset (forces a fresh online warm) with
+   `docker volume rm sdlc-cache-dotnet`.
+3. **Wider .NET prewarm.** The image bakes the common test/util packages into an offline fallback so
+   even the very first run rarely needs the network.
+
+**If your site uses an EXPLICIT proxy** (not transparent): set `HTTP_PROXY` / `HTTPS_PROXY` /
+`NO_PROXY` (or lowercase) in the **WSL** shell that launches the orchestrator. The sandbox adapter
+auto-propagates them into the network-ON restore phase only (the isolated test phase stays clean) —
+no code change required. Example (`~/.bashrc`):
+
+```bash
+export HTTPS_PROXY="http://proxy.corp:8080"
+export HTTP_PROXY="http://proxy.corp:8080"
+export NO_PROXY="localhost,127.0.0.1,.corp"
+```

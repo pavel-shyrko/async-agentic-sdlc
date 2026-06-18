@@ -8,7 +8,7 @@ import unittest
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
-from src.utils.git_helpers import (
+from src.shared.utils.git_helpers import (
     get_git_root,
     get_pipeline_snapshot_files,
 )
@@ -30,7 +30,7 @@ def _git_subcommands(mock_exec: AsyncMock) -> list[tuple[str, ...]]:
 class GetPipelineSnapshotFilesTests(unittest.IsolatedAsyncioTestCase):
     """Cumulative INDEX diff against the anchor branch drives the snapshot."""
 
-    @mock.patch("src.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    @mock.patch("src.shared.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
     async def test_returns_changed_files_excluding_gitignore(self, mock_exec: AsyncMock) -> None:
         # Arrange — first call stages, second call yields the cached diff.
         mock_exec.side_effect = [
@@ -42,7 +42,7 @@ class GetPipelineSnapshotFilesTests(unittest.IsolatedAsyncioTestCase):
         # Assert
         self.assertEqual(files, ["src/a.py", "src/b.py"])
 
-    @mock.patch("src.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    @mock.patch("src.shared.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
     async def test_filters_blank_lines_from_diff_output(self, mock_exec: AsyncMock) -> None:
         # Arrange
         mock_exec.side_effect = [_fake_proc(0), _fake_proc(0, b"src/a.py\n\n\nsrc/c.py\n")]
@@ -51,7 +51,7 @@ class GetPipelineSnapshotFilesTests(unittest.IsolatedAsyncioTestCase):
         # Assert
         self.assertEqual(files, ["src/a.py", "src/c.py"])
 
-    @mock.patch("src.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    @mock.patch("src.shared.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
     async def test_raises_when_diff_fails(self, mock_exec: AsyncMock) -> None:
         # Arrange — non-zero diff returncode (e.g. unknown anchor branch / index.lock).
         mock_exec.side_effect = [_fake_proc(0), _fake_proc(128, b"")]
@@ -59,7 +59,7 @@ class GetPipelineSnapshotFilesTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             await get_pipeline_snapshot_files("/repo", "ghost-branch")
 
-    @mock.patch("src.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    @mock.patch("src.shared.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
     async def test_raises_when_git_add_fails(self, mock_exec: AsyncMock) -> None:
         # Arrange — staging itself fails (e.g. orphaned .git/index.lock).
         mock_exec.side_effect = [_fake_proc(128, b"")]
@@ -67,7 +67,7 @@ class GetPipelineSnapshotFilesTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             await get_pipeline_snapshot_files("/repo", "main")
 
-    @mock.patch("src.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    @mock.patch("src.shared.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
     async def test_stages_all_then_diffs_cached_against_base_branch(self, mock_exec: AsyncMock) -> None:
         # Arrange
         mock_exec.side_effect = [_fake_proc(0), _fake_proc(0, b"")]
@@ -78,7 +78,7 @@ class GetPipelineSnapshotFilesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(commands[0], ("add", "-A"))
         self.assertEqual(commands[1], ("diff", "--cached", "release/v2", "--name-only"))
 
-    @mock.patch("src.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    @mock.patch("src.shared.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
     async def test_scopes_diff_to_subdir_pathspec(self, mock_exec: AsyncMock) -> None:
         # Arrange
         mock_exec.side_effect = [_fake_proc(0), _fake_proc(0, b"")]
@@ -88,7 +88,7 @@ class GetPipelineSnapshotFilesTests(unittest.IsolatedAsyncioTestCase):
         commands = _git_subcommands(mock_exec)
         self.assertEqual(commands[1], ("diff", "--cached", "main", "--name-only", "--", "src"))
 
-    @mock.patch("src.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    @mock.patch("src.shared.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
     async def test_diff_filter_maps_to_diff_filter_flag(self, mock_exec: AsyncMock) -> None:
         # Arrange — diff_filter="A" restricts the diff to added (newly-created) files.
         mock_exec.side_effect = [_fake_proc(0), _fake_proc(0, b"src/new.py\n")]
@@ -99,7 +99,7 @@ class GetPipelineSnapshotFilesTests(unittest.IsolatedAsyncioTestCase):
         commands = _git_subcommands(mock_exec)
         self.assertEqual(commands[1], ("diff", "--cached", "main", "--name-only", "--diff-filter=A"))
 
-    @mock.patch("src.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    @mock.patch("src.shared.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
     async def test_diff_filter_precedes_subdir_pathspec(self, mock_exec: AsyncMock) -> None:
         # Arrange — both filter and pathspec; --diff-filter must come before the `--` separator.
         mock_exec.side_effect = [_fake_proc(0), _fake_proc(0, b"")]
@@ -109,7 +109,7 @@ class GetPipelineSnapshotFilesTests(unittest.IsolatedAsyncioTestCase):
         commands = _git_subcommands(mock_exec)
         self.assertEqual(commands[1], ("diff", "--cached", "main", "--name-only", "--diff-filter=A", "--", "src"))
 
-    @mock.patch("src.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    @mock.patch("src.shared.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
     async def test_diff_filter_absent_by_default(self, mock_exec: AsyncMock) -> None:
         # Arrange — omitting diff_filter preserves the original argv (backward compatibility).
         mock_exec.side_effect = [_fake_proc(0), _fake_proc(0, b"")]
@@ -123,7 +123,7 @@ class GetPipelineSnapshotFilesTests(unittest.IsolatedAsyncioTestCase):
 class GetGitRootTests(unittest.IsolatedAsyncioTestCase):
     """Root resolution must use git, not path guessing."""
 
-    @mock.patch("src.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    @mock.patch("src.shared.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
     async def test_returns_repository_toplevel(self, mock_exec: AsyncMock) -> None:
         # Arrange
         mock_exec.return_value = _fake_proc(0, b"/clone/root\n")
@@ -133,7 +133,7 @@ class GetGitRootTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(root, "/clone/root")
         self.assertEqual(_git_subcommands(mock_exec)[0], ("rev-parse", "--show-toplevel"))
 
-    @mock.patch("src.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    @mock.patch("src.shared.utils.git_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
     async def test_raises_when_path_is_not_a_repo(self, mock_exec: AsyncMock) -> None:
         # Arrange
         mock_exec.return_value = _fake_proc(128, b"")

@@ -1,7 +1,0 @@
-- [Context Isolation Guardrail](feedback_context_isolation.md) — Strict domain isolation between CLI config and FSM engine runtime.
-- [Workspace Topology Guardrail](workspace_topology.md) — Strict boundary between Orchestrator Engine code and the git-anchored agent session (runs/run_<uuid>/).
-- [Debugging Protocol](debugging_protocol.md) — Mandatory log and checkpoint inspection sequence for FSM failures.
-- [Iteration Release Prompt](iteration_release_prompt.md) — Reusable template for documenting an iteration release (ADR/CHANGELOG/PRACTICUM/README sync).
-- [QA Sandbox Hardening](qa_sandbox_hardening.md) — QA Docker gate runs LLM tests under-isolated (whole-repo :rw, root, host net, no limits); enforce least-privilege in gates.py.
-- [Config Constant Convention](config_constant_convention.md) — Tunable caps are env-overridable module constants; outlier is max_retries=3 local in orchestrator.main().
-- [Token Budget Excludes Cache](token_budget_excludes_cache.md) — Token budget = fresh input + output only; Claude CLI cache tracked separately; breaker gates primarily on USD.

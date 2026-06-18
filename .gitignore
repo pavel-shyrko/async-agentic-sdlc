@@ -15,6 +15,13 @@ target/
 runs/
 
 # ==========================================
+# Corporate CA — staged into the build context at build time, NEVER committed
+# (the public root cert is provisioned from the host by build_sandbox_images.sh).
+# ==========================================
+docker/certs/*.crt
+docker/certs/*.pem
+
+# ==========================================
 # Testing & Coverage
 # ==========================================
 .pytest_cache/

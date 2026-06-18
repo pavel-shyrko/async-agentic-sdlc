@@ -10,8 +10,9 @@ from pathlib import Path
 from unittest import mock
 from pydantic import ValidationError
 
-from src.core.models import (
+from src.shared.core.models import (
     PipelineTelemetry,
+    ArchitectureUpdate,
     TechLeadContract,
     TopologyNode,
     GlobalPipelineContext,
@@ -21,6 +22,19 @@ from src.core.models import (
 )
 
 
+class ArchitectureUpdateModelTests(unittest.TestCase):
+    """The TechWriter's structured output round-trips its single cumulative-document field."""
+
+    def test_round_trips_document_field(self) -> None:
+        doc = "# Architecture State\n\n## Invariants\n- Streaming: row-by-row only.\n"
+        update = ArchitectureUpdate(updated_architecture_document=doc)
+        self.assertEqual(update.updated_architecture_document, doc)
+
+    def test_document_field_is_required(self) -> None:
+        with self.assertRaises(ValidationError):
+            ArchitectureUpdate()
+
+
 class QATestSuiteFenceCleaningTests(unittest.TestCase):
     """Validator ``clean_markdown_fences`` must strip LLM markdown artifacts."""
 
@@ -28,57 +42,57 @@ class QATestSuiteFenceCleaningTests(unittest.TestCase):
         # Arrange
         raw = "```python\nprint('hi')\n```"
         # Act
-        suite = QATestSuite(test_code=raw)
+        suite = QATestSuite(new_test_code=raw)
         # Assert
-        self.assertEqual(suite.test_code, "print('hi')")
+        self.assertEqual(suite.new_test_code, "print('hi')")
 
     def test_language_fence_is_case_insensitive(self) -> None:
         # Arrange
         raw = "```PYTHON\nimport os\n```"
         # Act
-        suite = QATestSuite(test_code=raw)
+        suite = QATestSuite(new_test_code=raw)
         # Assert
-        self.assertEqual(suite.test_code, "import os")
+        self.assertEqual(suite.new_test_code, "import os")
 
     def test_strips_bare_fence_without_language(self) -> None:
         # Arrange
         raw = "```\nx = 1\n```"
         # Act
-        suite = QATestSuite(test_code=raw)
+        suite = QATestSuite(new_test_code=raw)
         # Assert
-        self.assertEqual(suite.test_code, "x = 1")
+        self.assertEqual(suite.new_test_code, "x = 1")
 
     def test_tolerates_trailing_whitespace_after_language_tag(self) -> None:
         # Arrange
         raw = "```python   \ndef f():\n    return 1\n```"
         # Act
-        suite = QATestSuite(test_code=raw)
+        suite = QATestSuite(new_test_code=raw)
         # Assert
-        self.assertEqual(suite.test_code, "def f():\n    return 1")
+        self.assertEqual(suite.new_test_code, "def f():\n    return 1")
 
     def test_trims_blank_edges_when_no_fence_present(self) -> None:
         # Arrange
         raw = "\n\n   value = 42   \n\n"
         # Act
-        suite = QATestSuite(test_code=raw)
+        suite = QATestSuite(new_test_code=raw)
         # Assert
-        self.assertEqual(suite.test_code, "value = 42")
+        self.assertEqual(suite.new_test_code, "value = 42")
 
     def test_clean_code_passes_through_unchanged(self) -> None:
         # Arrange
         raw = "def add(a: int, b: int) -> int:\n    return a + b"
         # Act
-        suite = QATestSuite(test_code=raw)
+        suite = QATestSuite(new_test_code=raw)
         # Assert
-        self.assertEqual(suite.test_code, raw)
+        self.assertEqual(suite.new_test_code, raw)
 
     def test_internal_fence_like_text_is_preserved(self) -> None:
         # Arrange — only edge fences are stripped, not interior content.
         raw = "s = '```not a fence```'"
         # Act
-        suite = QATestSuite(test_code=raw)
+        suite = QATestSuite(new_test_code=raw)
         # Assert
-        self.assertEqual(suite.test_code, "s = '```not a fence```'")
+        self.assertEqual(suite.new_test_code, "s = '```not a fence```'")
 
 
 class WorkspacePathsTests(unittest.TestCase):
@@ -87,8 +101,6 @@ class WorkspacePathsTests(unittest.TestCase):
     @staticmethod
     def _explicit(base: Path) -> dict[str, Path]:
         return {
-            "code_dir": base / "code",
-            "tests_dir": base / "tests",
             "logs_dir": base / "logs",
             "reports_dir": base / "reports",
             "repo_dir": base,
@@ -114,10 +126,9 @@ class WorkspacePathsTests(unittest.TestCase):
             fields = self._explicit(Path(td))
             # Act
             paths = WorkspacePaths(**fields)
-            # Assert — paths are stored verbatim and the work dirs materialise on disk.
-            self.assertEqual(paths.code_dir, fields["code_dir"])
+            # Assert — paths are stored verbatim and the meta dirs materialise on disk.
             self.assertEqual(paths.repo_dir, fields["repo_dir"])
-            for d in (paths.code_dir, paths.tests_dir, paths.logs_dir, paths.reports_dir):
+            for d in (paths.logs_dir, paths.reports_dir):
                 self.assertTrue(d.is_dir())
 
 
@@ -130,35 +141,18 @@ class WorkspacePathsForRunTests(unittest.TestCase):
         repo_dir.mkdir(parents=True)
         return run_dir, repo_dir
 
-    def test_maps_code_tests_inside_repo_and_meta_state_outside(self) -> None:
+    def test_maps_repo_root_and_meta_state_outside_clone(self) -> None:
         # Arrange
         with TemporaryDirectory() as td:
             run_dir, repo_dir = self._make_run(Path(td))
             # Act
-            paths = WorkspacePaths.for_run(run_dir, repo_dir, "src/", "tests/")
-            # Assert — code/tests anchor in the clone; logs/reports stay outside it.
-            self.assertEqual(paths.code_dir, (repo_dir / "src").resolve())
-            self.assertEqual(paths.tests_dir, (repo_dir / "tests").resolve())
+            paths = WorkspacePaths.for_run(run_dir, repo_dir)
+            # Assert — repo root is the clone; logs/reports stay outside it. Source/test layout is
+            # no longer fixed here (contract-/profile-driven), so no code_dir/tests_dir to map.
+            self.assertEqual(paths.repo_dir, repo_dir.resolve())
             self.assertEqual(paths.logs_dir, (run_dir / "logs").resolve())
             self.assertEqual(paths.reports_dir, (run_dir / "reports").resolve())
-            self.assertTrue(paths.code_dir.is_relative_to(repo_dir.resolve()))
             self.assertFalse(paths.logs_dir.is_relative_to(repo_dir.resolve()))
-
-    def test_rejects_dotdot_traversal_in_src_dir(self) -> None:
-        # Arrange
-        with TemporaryDirectory() as td:
-            run_dir, repo_dir = self._make_run(Path(td))
-            # Act / Assert
-            with self.assertRaises(ValueError):
-                WorkspacePaths.for_run(run_dir, repo_dir, "../../etc", "tests/")
-
-    def test_rejects_absolute_path_injection_in_tests_dir(self) -> None:
-        # Arrange
-        with TemporaryDirectory() as td:
-            run_dir, repo_dir = self._make_run(Path(td))
-            # Act / Assert — an absolute operand would otherwise escape the repo root.
-            with self.assertRaises(ValueError):
-                WorkspacePaths.for_run(run_dir, repo_dir, "src/", "/etc")
 
 
 class ContractModelTests(unittest.TestCase):
@@ -175,12 +169,69 @@ class ContractModelTests(unittest.TestCase):
             "function_signatures": "def is_prime(n: int) -> bool",
             "strict_type_validation_rules": "bool must raise TypeError",
             "techlead_reasoning": "Guard against bool subtype of int.",
+            "environment_id": "python-3.12-core",
         }
         # Act
         contract = TechLeadContract(**payload)
         # Assert
         self.assertEqual(contract.files_to_modify, ["src/core/calc.py"])
         self.assertIn("TypeError", contract.strict_type_validation_rules)
+        # shared_context is optional and defaults to empty (keeps legacy payloads/checkpoints valid).
+        self.assertEqual(contract.shared_context, "")
+
+    def test_shared_context_round_trips_when_supplied(self) -> None:
+        payload = {
+            "files_to_modify": ["src/core/calc.py"],
+            "topology_contract": [
+                {"file_path": "src/core/calc.py", "exports": ["is_prime"], "depends_on": []}
+            ],
+            "instruction": "Implement prime sieve.",
+            "shared_context": "A CLI tool that reports whether a number is prime.",
+            "function_signatures": "def is_prime(n: int) -> bool",
+            "strict_type_validation_rules": "bool must raise TypeError",
+            "techlead_reasoning": "Guard against bool subtype of int.",
+            "environment_id": "python-3.12-core",
+        }
+        contract = TechLeadContract(**payload)
+        self.assertEqual(contract.shared_context, "A CLI tool that reports whether a number is prime.")
+
+    def test_leading_slash_paths_are_normalized_to_repo_relative(self) -> None:
+        # Regression: blueprint topology uses leading slashes (`/.gitignore`, `/cmd/app/main.go`).
+        # Joined onto repo_dir they go ABSOLUTE and escape the write sandbox / read as missing.
+        payload = {
+            "files_to_modify": ["/.gitignore", "/cmd/app/main.go", "go.mod", ".\\nested\\x.go"],
+            "topology_contract": [
+                {"file_path": "/cmd/app/main.go", "exports": ["main"], "depends_on": []}
+            ],
+            "instruction": "noop",
+            "function_signatures": "func main()",
+            "strict_type_validation_rules": "noop",
+            "techlead_reasoning": "noop",
+            "environment_id": "go-1.23-cli",
+        }
+        contract = TechLeadContract(**payload)
+        self.assertEqual(
+            contract.files_to_modify,
+            [".gitignore", "cmd/app/main.go", "go.mod", "nested/x.go"],
+        )
+        # Joining the normalized path onto a root now stays INSIDE the root.
+        self.assertFalse(str(Path("/repo") / contract.files_to_modify[0]).endswith(":/.gitignore"))
+        self.assertEqual(contract.topology_contract[0].file_path, "cmd/app/main.go")
+
+    def test_traversal_path_is_rejected(self) -> None:
+        payload = {
+            "files_to_modify": ["../../etc/passwd"],
+            "topology_contract": [
+                {"file_path": "src/x.py", "exports": [], "depends_on": []}
+            ],
+            "instruction": "noop",
+            "function_signatures": "noop",
+            "strict_type_validation_rules": "noop",
+            "techlead_reasoning": "noop",
+            "environment_id": "python-3.12-core",
+        }
+        with self.assertRaises(ValidationError):
+            TechLeadContract(**payload)
 
     def test_topology_contract_is_required(self) -> None:
         # Omitting the language-neutral dependency graph must fail validation (strict SSOT).
@@ -190,6 +241,7 @@ class ContractModelTests(unittest.TestCase):
             "function_signatures": "def is_prime(n: int) -> bool",
             "strict_type_validation_rules": "noop",
             "techlead_reasoning": "noop",
+            "environment_id": "python-3.12-core",
         }
         with self.assertRaises(ValidationError):
             TechLeadContract(**payload)
@@ -212,7 +264,7 @@ class ContractModelTests(unittest.TestCase):
             log_verification_analysis="bandit clean",
             code_quality_approved=True,
             test_integrity_approved=False,
-            diagnostic_payload="tighten assertions",
+            qa_diagnostic_payload="tighten assertions",
         )
         # Assert
         self.assertTrue(report.code_quality_approved)
@@ -330,7 +382,7 @@ class NeedsTestRegenerationTests(unittest.TestCase):
             log_verification_analysis="",
             code_quality_approved=True,
             test_integrity_approved=test_integrity_approved,
-            diagnostic_payload="",
+            dev_diagnostic_payload="",
         )
 
     def test_rejected_tests_force_regeneration_even_with_snapshot(self) -> None:
@@ -364,8 +416,6 @@ class GlobalContextCheckpointTests(unittest.TestCase):
         with TemporaryDirectory() as td:
             base = Path(td)
             paths = WorkspacePaths(
-                code_dir=base / "code",
-                tests_dir=base / "tests",
                 logs_dir=base / "logs",
                 reports_dir=base / "reports",
                 repo_dir=base,
@@ -395,8 +445,6 @@ class GlobalContextCheckpointTests(unittest.TestCase):
         with TemporaryDirectory() as td:
             base = Path(td)
             paths = WorkspacePaths(
-                code_dir=base / "code",
-                tests_dir=base / "tests",
                 logs_dir=base / "logs",
                 reports_dir=base / "reports",
                 repo_dir=base,
@@ -408,8 +456,7 @@ class GlobalContextCheckpointTests(unittest.TestCase):
             loaded = GlobalPipelineContext.load_checkpoint(checkpoint)
 
             # Assert
-            self.assertIsInstance(loaded.workspace_paths.code_dir, Path)
-            self.assertIsInstance(loaded.workspace_paths.tests_dir, Path)
+            self.assertIsInstance(loaded.workspace_paths.repo_dir, Path)
             self.assertIsInstance(loaded.workspace_paths.logs_dir, Path)
             self.assertIsInstance(loaded.workspace_paths.reports_dir, Path)
 

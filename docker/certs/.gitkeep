@@ -1,0 +1,5 @@
+# Build-context staging dir for the corporate root CA.
+# build_sandbox_images.sh copies the host cert (CORP_CA_PATH) here before building;
+# the Dockerfiles COPY this directory and run update-ca-certificates. The *.crt/*.pem
+# files are gitignored — only this placeholder is committed so the COPY layer is a
+# safe no-op when no cert is staged.

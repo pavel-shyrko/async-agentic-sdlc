@@ -7,7 +7,7 @@ nodes: [techlead, developer, reviewer]
 LANGUAGE TARGET: Python — production-code rules for the Python tech stack.
 
 ## Runtime & Sandbox
-- Target Python 3.11+, executed in the isolated Docker sandbox (`python:3.11-slim`).
+- Target Python 3.12+, executed in the isolated Docker sandbox (`python:3.12-slim`).
 
 ## Type Guards
 - Enforce strict `isinstance` checks. A `bool` MUST NOT pass where an `int` is expected:

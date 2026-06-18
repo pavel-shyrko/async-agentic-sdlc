@@ -1,0 +1,1120 @@
+import os
+import re
+import sys
+import json
+import uuid
+import argparse
+import asyncio
+# subprocess: only fixed-argument `git` exec with no shell=True, never untrusted input as a command.
+import subprocess  # nosec B404
+from pathlib import Path
+from typing import NoReturn
+from dataclasses import dataclass
+
+from src.shared.core.observability import log, reconfigure_logging
+from src.shared.core.observability import log_finops_summary as _render_finops_summary
+from src.shared.core.config import check_environment, PIPELINE_BUDGET_TOKENS, PIPELINE_BUDGET_USD
+from src.shared.core.models import GlobalPipelineContext, WorkspacePaths, RUNS_BASE
+from src.shared.core.runs import Projects
+from src.shared.core.environments import is_test_file, get_qa_profile
+from src.shared.core.prompts import generate_repo_map
+from src.shared.utils.git_helpers import get_git_root, get_pipeline_snapshot_files
+from src.shared.utils.redaction import redact
+from src.executor.agents.techlead import run_techlead_node
+from src.executor.agents.qa import run_qa_agent_node
+from src.executor.agents.developer import run_developer_node
+from src.executor.agents.reviewer import run_reviewer_node
+from src.executor.agents.techwriter import run_techwriter_node
+from src.executor.nodes.gates import run_qa_unit_tests, run_security_scan, run_build_gate, run_test_compile_gate, build_failure_is_test_only, build_failure_is_environmental
+
+# ==========================================
+# CLI ARGUMENT PARSER
+# ==========================================
+@dataclass
+class RunConfig:
+    """Normalized invocation parameters for a single orchestrator run."""
+    description: str | None
+    base_branch: str
+    resume: Path | None
+    reset_attempts: bool
+    repo: str | None = None
+    ticket: str | None = None
+    push: bool = False
+    idea: str | None = None  # Nexus Control Plane: raw idea string → starts a new project (planning run).
+    file: str | None = None  # ticket file path; used to locate the sibling blueprint.md at runtime
+    run_project: str | None = None    # --run <project>: execute a ticket under an existing project
+    resume_project: str | None = None  # --resume <project> [N]: resume by project (+ optional run number)
+    resume_number: str | None = None   # the optional NNN for --resume <project> <N>
+
+
+def parse_args() -> RunConfig:
+    parser = argparse.ArgumentParser(
+        description="Antigravity SDLC Orchestrator — git-anchored, per-run isolated pipeline."
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("description", nargs="?", help="Inline task description string.")
+    group.add_argument("-f", "--file", help="Path to a file containing the task description.")
+    parser.add_argument("--repo", help="Git URL or local path to the target repository (required for a fresh direct run / first --run of a project).")
+    parser.add_argument("--ticket", help="Ticket ID or feature name; names the session and feat/ticket-<id> branch (direct run).")
+    parser.add_argument("--base-branch", default="main", help="Base branch of the repository.")
+    parser.add_argument("--run", dest="run_project", metavar="PROJECT",
+                        help="Execute a ticket under an existing project: --run <project> -f <ticket> (e.g. -f TASK-01).")
+    parser.add_argument("--resume", nargs="+", metavar="TARGET",
+                        help="Resume: a checkpoint JSON path, OR a project slug, OR a project slug + run number "
+                             "(e.g. --resume my-proj 002). Project slug alone continues the latest Nexus run.")
+    parser.add_argument("--reset-attempts", action="store_true", help="Reset circuit breaker counter on resume.")
+    parser.add_argument("--push", action="store_true", help="Push the feature branch to origin after the atomic success commit.")
+    parser.add_argument("--idea", help="Raw idea → start a NEW project and run the Nexus planning pipeline.")
+
+    args = parser.parse_args()
+
+    # Nexus Control Plane: an idea starts a new project (planning run). --repo (optional) is captured
+    # into the project so later `--run` ticket executions reuse it.
+    if args.idea:
+        return RunConfig(
+            description=None, base_branch=args.base_branch, resume=None, reset_attempts=False,
+            idea=args.idea, repo=args.repo,
+        )
+
+    # Execute a ticket under an existing project: --run <project> -f <ticket>.
+    if args.run_project:
+        if not args.file:
+            parser.error("--run requires -f <ticket> (the ticket id to execute, e.g. --run my-proj -f TASK-01)")
+        return RunConfig(
+            description=None, base_branch=args.base_branch, resume=None,
+            reset_attempts=args.reset_attempts, push=args.push,
+            run_project=args.run_project, ticket=args.file, repo=args.repo,
+        )
+
+    # Resume: either an explicit checkpoint PATH (legacy, incl. old run_<uuid>), or a project slug
+    # (+ optional run number). A token ending in .json or pointing at an existing file is a path.
+    if args.resume:
+        first = args.resume[0]
+        if first.endswith(".json") or Path(first).exists():
+            return RunConfig(
+                description=None, base_branch=args.base_branch, resume=Path(first),
+                reset_attempts=args.reset_attempts, push=args.push,
+            )
+        return RunConfig(
+            description=None, base_branch=args.base_branch, resume=None,
+            reset_attempts=args.reset_attempts, push=args.push,
+            resume_project=first, resume_number=(args.resume[1] if len(args.resume) > 1 else None),
+        )
+
+    # Fresh DIRECT run: a target repo and ticket are mandatory for git-anchored bootstrapping.
+    missing = [name for name, val in (("--repo", args.repo), ("--ticket", args.ticket)) if not val]
+    if missing:
+        parser.error(f"the following arguments are required for a fresh run: {', '.join(missing)}")
+
+    # Task description: explicit file → inline → fall back to the ticket text.
+    if args.file:
+        path = Path(args.file)
+        if not path.exists():
+            log.error(f"🚨 File not found: {args.file}")
+            sys.exit(1)
+        description = path.read_text(encoding="utf-8")
+    elif args.description:
+        description = args.description
+    else:
+        description = args.ticket
+
+    return RunConfig(
+        description=description,
+        base_branch=args.base_branch,
+        resume=None,
+        reset_attempts=args.reset_attempts,
+        repo=args.repo,
+        ticket=args.ticket,
+        push=args.push,
+        file=args.file,
+    )
+
+
+# ==========================================
+# GIT-ANCHORED SESSION BOOTSTRAP
+# ==========================================
+GIT_NETWORK_TIMEOUT = 300  # seconds; hard ceiling for network git ops (clone/fetch)
+
+
+async def _run_checked(cmd: list[str], action: str, timeout: float | None = None) -> None:
+    """Runs a fixed-argument git subprocess (shell=False) and aborts the run on failure.
+
+    Disables interactive credential prompts (GIT_TERMINAL_PROMPT=0) so a private/HTTPS repo
+    without creds fails fast instead of blocking forever on a dead tty, and enforces a wall-clock
+    timeout on network ops — killing AND reaping the child on expiry so no <defunct> zombie is
+    left behind. The child's stderr is always surfaced to the operator on a non-zero exit.
+    """
+    env = os.environ.copy()            # copy, never a bare dict — preserves PATH/SystemRoot
+    env["GIT_TERMINAL_PROMPT"] = "0"   # no interactive credential prompt -> fail fast, never hang
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
+    )
+    try:
+        _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()              # reap immediately after kill — no <defunct> zombie
+        log.error(f"🚨 {action} timed out after {timeout}s (possible credential prompt / network hang) — aborting.")
+        sys.exit(1)
+    if proc.returncode != 0:
+        log.error(f"🚨 {action} failed (exit {proc.returncode}): {stderr.decode(errors='replace').strip()}")
+        sys.exit(1)
+
+
+async def bootstrap_session(cfg: RunConfig, run_dir: Path) -> WorkspacePaths:
+    """Isolates a run: shallow-clone the target repo, cut the feature branch, map the workspace.
+
+    The caller owns ``run_dir`` (and has already re-anchored logging to it), so the run id is
+    bound once, up front — no late binding. Produces ``run_dir/repo/`` (shallow clone on
+    ``feat/ticket-<ticket>``) and returns the mapped workspace paths.
+    """
+    repo_dir = run_dir / "repo"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    log.info(f"🌱 Bootstrapping session at {run_dir}")
+
+    # Atomic shallow clone (single subprocess, HEAD only) — origin is configured automatically.
+    # Network op: bounded by GIT_NETWORK_TIMEOUT so a credential prompt can never hang the run.
+    await _run_checked(["git", "clone", "--depth", "1", cfg.repo, str(repo_dir)], "git clone", timeout=GIT_NETWORK_TIMEOUT)
+
+    branch = f"feat/ticket-{cfg.ticket}"
+    await _run_checked(["git", "-C", str(repo_dir), "checkout", "-b", branch], "git checkout -b")
+
+    # Force a LOCAL ref for the base branch via an explicit refspec (<base>:<base>) so the snapshot diff
+    # `git diff --cached <base_branch>` resolves it — a bare fetch lands only in FETCH_HEAD. Done AFTER
+    # the feature-branch checkout: git refuses to fetch into the still-checked-out default branch.
+    await _run_checked(
+        ["git", "-C", str(repo_dir), "fetch", "--depth", "1", "origin", f"{cfg.base_branch}:{cfg.base_branch}"],
+        "git fetch base branch", timeout=GIT_NETWORK_TIMEOUT,
+    )
+    log.info(f"   [GIT] Shallow-cloned {redact(cfg.repo)} -> {repo_dir} (branch: {branch})")
+
+    return WorkspacePaths.for_run(run_dir, repo_dir)
+
+
+# ==========================================
+# ATOMIC SUCCESS TRANSACTION
+# ==========================================
+async def _has_staged_changes(repo_root: str) -> bool:
+    """True when the index holds staged changes vs HEAD — the empty-commit guard.
+
+    ``git diff --cached --quiet`` exits 0 when nothing is staged and 1 when there ARE staged
+    changes, so this can't go through ``_run_checked`` (exit 1 is the normal signal, not an error).
+    """
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    proc = await asyncio.create_subprocess_exec(
+        "git", "-C", repo_root, "diff", "--cached", "--quiet",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
+    )
+    _stdout, stderr = await proc.communicate()
+    if proc.returncode == 0:
+        return False
+    if proc.returncode == 1:
+        return True
+    log.error(f"🚨 staged-change check failed (exit {proc.returncode}): {stderr.decode(errors='replace').strip()}")
+    sys.exit(1)
+
+
+async def finalize_transaction(ctx: GlobalPipelineContext, push: bool = False) -> None:
+    """Commits the staged delta atomically on full success; optionally pushes the branch.
+
+    Agents only stage into the index across cycles; this is the single transactional commit so the
+    ``feat/ticket-<id>`` branch never accrues intermediate self-healing commits.
+    """
+    repo_root = await get_git_root(str(ctx.workspace_paths.repo_dir))
+
+    if not await _has_staged_changes(repo_root):
+        log.warning("🟡 No staged changes in the index — skipping final commit.")
+        return
+
+    desc = (ctx.pr_description or "").strip()
+    summary = next((line.strip() for line in desc.splitlines() if line.strip()), "") if desc else ""
+    # First line is often a markdown heading (`# Title`) — strip the leading hashes/space so the
+    # conventional-commit subject reads cleanly (e.g. "feat(T-01): Repository initialization …").
+    summary = summary.lstrip("#").strip()
+    summary = (summary or ctx.ticket or "automated change")[:72]
+    subject = f"feat({ctx.ticket or 'ticket'}): {summary}"
+
+    # Pin a per-ticket agent identity so each session's commit is uniquely attributable
+    # (and so the commit succeeds even when the clone inherits no global git config).
+    agent_name = f"AI Agent ({ctx.ticket if ctx.ticket else 'Anonymous'})"
+    agent_email = f"agent-{ctx.ticket.lower() if ctx.ticket else 'session'}@sdlc-factory.local"
+    commit_args = [
+        "git", "-C", repo_root,
+        "-c", f"user.name={agent_name}", "-c", f"user.email={agent_email}",
+        "commit", "-m", subject,
+    ]
+    await _run_checked(commit_args, "git commit")
+    log.info(f"✅ Atomic commit on feat/ticket-{ctx.ticket}: {subject}")
+
+    if push:
+        await _run_checked(
+            ["git", "-C", repo_root, "push", "-u", "origin", "HEAD"],
+            "git push", timeout=GIT_NETWORK_TIMEOUT,
+        )
+        log.info("⬆️  Pushed feature branch to origin.")
+
+
+# ==========================================
+# PRODUCTION SNAPSHOT BUILDER
+# ==========================================
+MAX_FILE_SIZE_BYTES = 100 * 1024  # 100 KB; larger files are marked, not inlined, to avoid LLM token exhaustion
+
+
+def build_production_snapshot(ctx: GlobalPipelineContext) -> None:
+    """Rebuilds ``ctx.production_code_snapshot`` from the FULL transaction delta vs ``base_branch``.
+
+    Replaces the Developer agent's self-reported, subtree-scoped output. We first stage the whole
+    tree (``git add -A``) so every mutation lands in the index, then read the CUMULATIVE set of
+    changed files with ``git diff --cached --name-only <base_branch>`` and capture each one's FULL
+    content from disk (any text file — .py, json, yaml, Dockerfile, …, not just Python).
+
+    Diffing the INDEX against ``base_branch`` — rather than the working tree against the index — is
+    what keeps the snapshot cohesive across retry cycles. Once cycle 1's files are staged, a
+    ``git ls-files --others --modified`` would surface ONLY the single file cycle 2 re-touched
+    (the rest match the index), blinding the Reviewer to every previously-staged file. The cached
+    diff against the merge base always reports the complete production delta regardless of cycle.
+
+    Tests are excluded (they live in ``test_code_snapshot``); deleted paths and binary/non-UTF-8
+    files are recorded with explicit markers instead of crashing the read or flooding the Reviewer.
+    Staging up front also leaves the tree staged for ``finalize_transaction``'s atomic success commit.
+
+    Also captures the raw unified diff (``git diff --cached <base_branch>``) into
+    ``ctx.production_code_diff`` so the Reviewer can scope its audit to the actual delta instead of
+    treating untouched legacy lines in modified files as new code.
+    """
+    repo_dir = ctx.workspace_paths.repo_dir
+    # The ticket's environment_id drives the language-aware test-file predicate so COLOCATED tests
+    # (Go `*_test.go`, Node `*.test.ts`, .NET `*Tests.cs`) are excluded too — not just Python `test_*.py`.
+    env_id = ctx.contract.environment_id if ctx.contract else None
+    # Separate-layout stacks (python) keep tests under the profile's `test_root` (e.g. `tests/`); that
+    # prefix is excluded from the production snapshot. Colocated stacks have no root (test_root=None) —
+    # their tests are excluded by the language-aware is_test_file predicate instead.
+    test_root = get_qa_profile(env_id).get("test_root") if env_id else None
+    test_prefix = f"{test_root}/" if test_root else None
+
+    # 1. Stage every mutation so the index reflects the complete working-tree state across ALL cycles.
+    subprocess.run(["git", "add", "-A"], cwd=str(repo_dir), check=True)  # nosec B603 B607 — fixed git argv, no shell
+
+    # 1b. Capture the cumulative unified diff vs base — the Reviewer's authoritative scope-of-change,
+    #     so it can separate the Developer's actual edits from pre-existing legacy code in the same file.
+    diff_cmd = subprocess.run(  # nosec B603 B607 — fixed git argv, no shell
+        ["git", "diff", "--cached", ctx.base_branch],
+        cwd=str(repo_dir), capture_output=True, text=True, check=True,
+    )
+    ctx.production_code_diff = diff_cmd.stdout
+
+    # 2. Read the cumulative index-vs-base delta. -z emits raw NUL-terminated paths (no quoting of
+    #    spaces/newlines/unicode) — split on NUL.
+    listing = subprocess.run(  # nosec B603 B607 — fixed git argv, no shell
+        ["git", "diff", "--name-only", "--cached", "-z", ctx.base_branch],
+        cwd=str(repo_dir), capture_output=True, text=True, check=True,
+    )
+
+    snapshot: dict[str, str] = {}
+    for rel in listing.stdout.split('\0'):
+        rel = rel.strip()
+        if not rel:
+            continue
+        # Domain purity: QA-generated tests belong to test_code_snapshot, never the production one.
+        # Exclude both a separate tests dir AND colocated test files (language-aware predicate).
+        if (test_prefix and rel.startswith(test_prefix)) or (env_id and is_test_file(env_id, rel)):
+            continue
+        file_path = repo_dir / rel
+        if not file_path.exists():
+            # The diff also reports deletions (e.g. Developer ghost-file GC) — record, don't crash.
+            snapshot[rel] = "<FILE DELETED BY DEVELOPER>"
+            continue
+        # Payload guard: never inline a massive file into the Reviewer context — mark and skip.
+        size = file_path.stat().st_size
+        if size > MAX_FILE_SIZE_BYTES:
+            snapshot[rel] = f"<FILE TOO LARGE: {size} bytes exceeds {MAX_FILE_SIZE_BYTES} byte limit. EXCLUDED TO PREVENT TOKEN EXHAUSTION.>"
+            continue
+        try:
+            snapshot[rel] = file_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            # Never inject binary garbage into the Reviewer context (token explosion) — mark instead.
+            snapshot[rel] = "<BINARY OR NON-UTF8 FILE EXCLUDED>"
+
+    ctx.production_code_snapshot = snapshot
+
+    log.info(f"   [SNAPSHOT] Captured {len(snapshot)} production file(s): {sorted(snapshot)}")
+
+
+# ==========================================
+# FAST-FAIL DOCUMENTATION GUARDRAIL
+# ==========================================
+GUARDRAIL_TOP_LINES = 15        # top-of-file window scanned for a justification
+GUARDRAIL_MAX_REROUTES = 2      # local guardrail_retries cap: free reroutes before a Hard Halt
+QA_GATE_MAX_REROUTES = 2        # free QA regenerations on a test-compile failure (Reviewer bypassed)
+QA_LINT_MAX_REROUTES = 2        # free QA regenerations on a contract-signature lint hit (Reviewer bypassed)
+
+
+def _missing_contract_files(ctx: GlobalPipelineContext) -> list[str]:
+    """Contracted production files the Developer was supposed to create but didn't.
+
+    The Developer tends to skip non-code artifacts (`.gitignore`, `LICENSE`) even though they are in
+    `files_to_modify`, and nothing else enforces their presence. Checks the working tree directly
+    (independent of the snapshot's `.gitignore` filter); test files are QA-owned and excluded.
+    """
+    if not ctx.contract or not ctx.contract.files_to_modify:
+        return []
+    repo_dir = ctx.workspace_paths.repo_dir
+    env_id = ctx.contract.environment_id
+    return [
+        f for f in ctx.contract.files_to_modify
+        if not is_test_file(env_id, f) and not (repo_dir / f).exists()
+    ]
+
+
+def _misplaced_contract_files(ctx: GlobalPipelineContext, missing: list[str]) -> dict[str, str]:
+    """Map each still-missing contracted path → a same-basename file that DOES exist elsewhere.
+
+    The Developer sometimes honors the contract's CONTENT but invents a layout (e.g. nests a
+    contracted root file under `src/`), so `_missing_contract_files` flags the contracted path as
+    absent while the file actually sits at an alternate path. Surfacing that alternate path turns a
+    blind 'create it now' reroute (which loops forever — the Developer thinks it already did) into a
+    precise 'MOVE it' instruction. Conservative basename match only; first hit wins.
+    """
+    repo_dir = ctx.workspace_paths.repo_dir
+    found: dict[str, str] = {}
+    for f in missing:
+        target = Path(f).as_posix()
+        for cand in repo_dir.rglob(Path(f).name):
+            if not cand.is_file() or ".git" in cand.parts:
+                continue
+            rel = cand.relative_to(repo_dir).as_posix()
+            if rel != target:
+                found[f] = rel
+                break
+    return found
+
+
+def _format_contract_correction(misplaced: dict[str, str], absent: list[str]) -> str:
+    """Build a Developer-targeted correction that distinguishes a wrong PATH from a wrong/absent FILE.
+
+    Shared by the in-loop reroute and the hard-halt incident so both speak with one voice.
+    """
+    lines: list[str] = []
+    if misplaced:
+        lines.append(
+            "You created the following contracted file(s) at the WRONG path. MOVE each to its exact "
+            "contracted path (repo-root-relative) and leave NO copy behind:"
+        )
+        lines += [f"  - `{found}` → must be `{contracted}`" for contracted, found in misplaced.items()]
+    if absent:
+        lines.append(
+            "You did not create these contracted files — create EACH of them now with the literal "
+            f"content required by the ticket: {', '.join(absent)}"
+        )
+    return "\n".join(lines)
+
+
+# ``Type.Method(`` (static call) vs ``new Type().Method(`` / ``new Type {…}.Method(`` (instance call).
+# Conservative, language-light: catches the exact contradiction observed in the wild (a QA suite that
+# invoked the same symbol both ways across files), without trying to parse arbitrary test source.
+_STATIC_CALL_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_INSTANCE_CALL_RE = re.compile(r"\bnew\s+([A-Z][A-Za-z0-9_]*)\s*[\(\{][^;]*?\)\s*\.([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+
+
+def lint_test_suite_consistency(test_snapshot: str, function_signatures: str) -> list[str]:
+    """Flag UNAMBIGUOUS self-contradictions in the generated test suite (Reviewer-bypass gate).
+
+    Currently one rule: the same ``Type.Method`` symbol is called both statically AND as an instance
+    member within the same snapshot — a contract-signature contradiction that otherwise compiles
+    halfway and burns a full QA→Reviewer cycle. Returns one human-readable issue string per offending
+    symbol, or [] when the suite is internally consistent. ``function_signatures`` is accepted for
+    future signature-aware checks; today only intra-suite consistency is enforced (keeps it low-flake).
+    """
+    if not test_snapshot:
+        return []
+    static_calls = {(t, m) for t, m in _STATIC_CALL_RE.findall(test_snapshot)}
+    instance_calls = {(t, m) for t, m in _INSTANCE_CALL_RE.findall(test_snapshot)}
+    conflicts = sorted(static_calls & instance_calls)
+    return [
+        f"`{t}.{m}(...)` is called both as a STATIC member and via `new {t}().{m}(...)` — pick the one "
+        "matching the contract signature and use it consistently across the whole suite."
+        for t, m in conflicts
+    ]
+
+
+# ==========================================
+# RUNNER-LOG FORWARDING (Reviewer feed, context pruning)
+# ==========================================
+FEEDBACK_TAIL_LINES = 50        # budget for runner lines fed forward to the Reviewer (context pruning)
+FEEDBACK_MAX_CHARS = 8000       # hard cap on any failure text injected into an agent prompt
+# Lead-ins that mark the ORIGIN of a failure. The root ImportError/Traceback can sit far above the
+# final summary, so a plain tail slice would drop it — the extractor keeps an error-origin head too.
+_TRACEBACK_MARKERS = (
+    "Traceback (most recent call",
+    "ImportError",
+    "ModuleNotFoundError",
+    "cannot import name",
+    "ERROR:",
+    "FAILED",
+)
+
+
+def _extract_failure_context(lines: list[str], max_lines: int = FEEDBACK_TAIL_LINES) -> str:
+    """Marker-aware slice that guarantees the root error reaches the Reviewer.
+
+    A bare tail slice can drop the root ``ImportError``/``Traceback`` when it sits above a long stack
+    or many ``_FailedTest`` entries. So when the log overflows the budget we keep BOTH an error-origin
+    head window (anchored at the first traceback/import marker) AND the final summary tail, separated
+    by a snip marker. With no marker present we fall back to a plain tail (failures live at the end).
+    """
+    if len(lines) <= max_lines:
+        return "\n".join(lines)
+    half = max_lines // 2
+    first = next(
+        (i for i, line in enumerate(lines) if any(m in line for m in _TRACEBACK_MARKERS)),
+        None,
+    )
+    if first is None:
+        return "\n".join(lines[-max_lines:])
+    head = lines[first:first + half]
+    tail = lines[-half:]
+    return "\n".join([*head, "…[snip]…", *tail])
+
+
+def _cap_text(text: str, max_chars: int = FEEDBACK_MAX_CHARS) -> str:
+    """Hard-cap any failure text injected into an agent prompt (head + tail kept)."""
+    if len(text) <= max_chars:
+        return text
+    half = max_chars // 2
+    return f"{text[:half]}\n…[truncated]…\n{text[-half:]}"
+
+
+# Language-agnostic comment lead-ins. ''' is added beyond the spec list so a Python single-quote module
+# docstring (a valid justification) isn't flagged as undocumented; '<!--' covers XML-family files
+# (.csproj / .xml / .html) whose only valid comment syntax the scanner would otherwise miss.
+_COMMENT_PREFIXES = ("#", "//", "/*", "*", '"""', "'''", "<!--")
+_GUARDRAIL_MESSAGE = (
+    "SYSTEM GUARDRAIL: File `{file_name}` was created without an architectural justification. "
+    "You must add a comment block at the top of the file explaining its purpose before the system "
+    "will route your code to the Reviewer."
+)
+
+
+def _top_block_has_comment(file_path: Path) -> bool | None:
+    """True/False if the file's first GUARDRAIL_TOP_LINES carry a comment lead-in; None = ignore safely.
+
+    Returns None for binary/non-UTF-8, empty/whitespace-only, or unreadable (vanished) files so the
+    scanner never raises and never emits a false 'undocumented' violation — mirroring
+    build_production_snapshot's binary handling (UnicodeDecodeError → skip).
+    """
+    try:
+        lines: list[str] = []
+        with file_path.open("r", encoding="utf-8") as fh:
+            for i, line in enumerate(fh):
+                if i >= GUARDRAIL_TOP_LINES:
+                    break
+                lines.append(line)
+    except (UnicodeDecodeError, OSError):
+        return None  # binary / non-UTF-8 / unreadable → ignore safely
+    if not any(line.strip() for line in lines):
+        return None  # empty or whitespace-only → ignore safely
+    return any(line.strip().startswith(_COMMENT_PREFIXES) for line in lines)
+
+
+async def enforce_documentation_guardrail(ctx: GlobalPipelineContext) -> str | None:
+    """Blocks the Developer→Reviewer transition on undocumented NEWLY-CREATED files.
+
+    Reuses the production delta build_production_snapshot() just computed (QA tests already excluded) as
+    the candidate set, intersects it with the git-ADDED set so only genuinely new files count — never
+    edits to pre-existing files — and scans each uncontracted new file's top block for any comment.
+    Returns a Developer-targeted diagnostic naming every offender, or None when all new files are
+    documented (or there are none) so the pipeline may proceed to the Reviewer.
+    """
+    # Fast no-op when there is no production delta (also keeps snapshot-mocked unit tests git-free).
+    if not ctx.production_code_snapshot:
+        return None
+
+    contract_files = {Path(f).as_posix() for f in (ctx.contract.files_to_modify if ctx.contract else [])}
+    # A misplaced contracted file (e.g. `src/X` for contracted `X`) is owned by the missing-contract
+    # reroute, which gives the Developer a precise 'MOVE it' instruction. Excluding its basename here
+    # keeps the guardrail from mislabelling it as 'uncontracted glue needing justification' — the two
+    # checks must never describe the same file by two contradictory paths.
+    missing_basenames = {Path(f).name for f in _missing_contract_files(ctx)}
+    # Uncontracted glue the Developer created (e.g. an entry point a build manifest needs) is policed
+    # here like on any code ticket: it just needs a top-of-file justification comment, not deletion.
+    uncontracted = [
+        rel for rel in ctx.production_code_snapshot
+        if Path(rel).as_posix() not in contract_files and Path(rel).name not in missing_basenames
+    ]
+    if not uncontracted:
+        return None
+
+    # Only NEWLY-CREATED files need a justification — intersect the candidates with the git-added set.
+    repo_dir = ctx.workspace_paths.repo_dir
+    added = set(await get_pipeline_snapshot_files(str(repo_dir), ctx.base_branch, diff_filter="A"))
+    violations = [
+        rel for rel in uncontracted
+        if rel in added and _top_block_has_comment(repo_dir / rel) is False
+    ]
+    if not violations:
+        return None
+
+    log.warning(f"   [GUARDRAIL] {len(violations)} undocumented new file(s): {sorted(violations)}")
+    return "\n".join(_GUARDRAIL_MESSAGE.format(file_name=v) for v in violations)
+
+
+def enforce_financial_circuit_breaker(ctx: GlobalPipelineContext) -> None:
+    """Financial Circuit Breaker: hard-halt the FSM once spend breaches budget.
+
+    Primary gate is USD spend (authoritative for Claude, estimated for Gemini); the token total is a
+    secondary ceiling and counts only the real new footprint (cache read/write are excluded, so the
+    agentic CLI's cheap cache reads can't drain the token budget). Checked after every cost-accruing
+    node so a pathological retry loop cannot drain the API budget. Reuses the incident machinery —
+    ``incident_report.json`` carries the full per-agent telemetry breakdown for audit. Totals are
+    persisted in the checkpoint, so both budgets are enforced consistently across ``--resume``.
+    """
+    tel = ctx.telemetry
+    if tel.total_cost_usd >= PIPELINE_BUDGET_USD:
+        _abort_with_incident(
+            ctx,
+            f"\n🚨 FINANCIAL CIRCUIT BREAKER OPEN: cumulative spend ${tel.total_cost_usd:.4f} "
+            f"≥ budget ${PIPELINE_BUDGET_USD:.4f}. Halting before further spend.",
+        )
+    if tel.total_tokens >= PIPELINE_BUDGET_TOKENS:
+        _abort_with_incident(
+            ctx,
+            f"\n🚨 FINANCIAL CIRCUIT BREAKER OPEN: cumulative {tel.total_tokens} tokens "
+            f"(cache-excluded) ≥ budget {PIPELINE_BUDGET_TOKENS}. Halting before further spend.",
+        )
+
+
+def _finops_subtotals(ctx: GlobalPipelineContext) -> str:
+    """Per-provider cost split, e.g. 'Gemini est. $0.0010 | Claude $0.1328 | Σ $0.1338'.
+
+    Gemini cost is estimated from the price table (flagged ``est.``); Claude cost is authoritative.
+    """
+    bp = ctx.telemetry.by_provider()
+    parts: list[str] = []
+    for prov in ("gemini", "claude"):
+        if prov in bp:
+            label = "Gemini est." if prov == "gemini" else "Claude"
+            parts.append(f"{label} ${bp[prov]['cost_usd']:.4f}")
+    parts.append(f"Σ ${ctx.telemetry.total_cost_usd:.4f}")
+    return " | ".join(parts)
+
+
+def write_finops_report(ctx: GlobalPipelineContext) -> None:
+    """Persist the cumulative FinOps breakdown to ``reports/finops_report.json``."""
+    report_file = ctx.workspace_paths.reports_dir / "finops_report.json"
+    report_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(report_file, "w", encoding="utf-8") as f:
+        # default=str serialises Decimal money as exact strings (json can't encode Decimal natively).
+        json.dump(
+            ctx.telemetry.finops_report(PIPELINE_BUDGET_TOKENS, PIPELINE_BUDGET_USD),
+            f, indent=2, default=str,
+        )
+    log.debug(f"FinOps report written to {report_file}")
+
+
+def log_finops_summary(ctx: GlobalPipelineContext) -> None:
+    """Print the end-of-run GRAND TOTAL block against the pipeline budgets. Thin wrapper over the
+    shared telemetry-first renderer (also used by the Nexus control plane) so the block is identical."""
+    _render_finops_summary(ctx.telemetry, PIPELINE_BUDGET_USD, PIPELINE_BUDGET_TOKENS)
+
+
+def _abort_with_incident(ctx: GlobalPipelineContext, header: str) -> NoReturn:
+    """Logs a terminal header, persists the full context as an incident report, and exits non-zero."""
+    log.error(header)
+    incident_file = str(ctx.workspace_paths.reports_dir / "incident_report.json")
+    with open(incident_file, "w", encoding="utf-8") as f:
+        f.write(redact(ctx.model_dump_json(indent=2)))  # never persist secrets into a shared report
+    log.error(f"  └── Incident report written to {incident_file}")
+    log.debug(f"Final Incident Context Dump: {ctx.model_dump_json(indent=2)}")
+    # Always persist + surface the FinOps breakdown, even on a halt, so spend is auditable.
+    write_finops_report(ctx)
+    log_finops_summary(ctx)
+    sys.exit(1)
+
+
+# ==========================================
+# MAIN ORCHESTRATOR
+# ==========================================
+def _run_dir_from_checkpoint(checkpoint: Path) -> Path:
+    """Map a checkpoint path back to its run dir. Canonical layout is
+    runs/run_<uuid>/reports/checkpoint.json, so the run dir is the checkpoint's grandparent; fall back
+    to the checkpoint's own dir for a non-canonical path (so logs/ never escape ABOVE the repo)."""
+    ckpt = checkpoint.resolve()
+    return ckpt.parent.parent if ckpt.parent.name == "reports" else ckpt.parent
+
+
+def _checkpoint_kind(checkpoint: Path) -> str | None:
+    """Peek a checkpoint's ``kind`` discriminator to route --resume to the right plane. Nexus
+    checkpoints carry ``kind="nexus"``; the executor's have none → returns None (→ executor path).
+    Never raises — a missing/garbage file just routes to the executor."""
+    try:
+        return json.loads(checkpoint.read_text(encoding="utf-8")).get("kind")
+    except Exception:
+        return None
+
+
+def _resolve_ticket_file(projects: Projects, slug: str, ticket: str) -> Path | None:
+    """Locate a ticket's markdown in the project's LATEST Nexus run artifacts (accepts ``TASK-01`` or
+    ``TASK-01.md``). Returns None if the project has no planning run or the ticket isn't there."""
+    nexus_run = projects.latest_run(slug, plane="nexus")
+    if nexus_run is None:
+        return None
+    name = ticket if ticket.endswith(".md") else f"{ticket}.md"
+    cand = nexus_run / "artifacts" / name
+    return cand if cand.exists() else None
+
+
+async def main():
+    cfg = parse_args()
+    projects = Projects(RUNS_BASE)
+
+    # ---- Nexus planning: a fresh idea starts a NEW project (its --repo, if any, is captured for the
+    # later --run ticket executions). Branch BEFORE check_environment so the docker/claude/bandit
+    # requirements never block the lightweight control plane. ----
+    if cfg.idea:
+        from src.nexus.nexus_runner import run_nexus
+        project = projects.create(cfg.idea, idea=cfg.idea, repo=cfg.repo, base_branch=cfg.base_branch)
+        run_dir = projects.allocate(project.slug, "nexus", "plan")
+        reconfigure_logging(run_dir / "logs")
+        log.info(f"🗂️  Project '{project.slug}' (new) → {run_dir.name}")
+        out = await run_nexus(cfg.idea, run_dir=run_dir)
+        log.info(f"✅ Nexus complete → {out.resolve()}")
+        return
+
+    # ---- Resolve a resume target → (run_dir, checkpoint). Either a project slug (+ optional run
+    # number; bare slug continues the latest Nexus run) or an explicit checkpoint path (legacy). ----
+    resume_checkpoint: Path | None = None
+    run_dir: Path | None = None
+    if cfg.resume_project:
+        if not projects.exists(cfg.resume_project):
+            log.error(f"🚨 Unknown project '{cfg.resume_project}' (no runs/{cfg.resume_project}/project.json).")
+            sys.exit(1)
+        if cfg.resume_number:
+            run_dir = projects.run_by_number(cfg.resume_project, cfg.resume_number)
+            if run_dir is None:
+                log.error(f"🚨 Project '{cfg.resume_project}' has no run #{cfg.resume_number}.")
+                sys.exit(1)
+        else:
+            run_dir = projects.latest_run(cfg.resume_project, plane="nexus")
+            if run_dir is None:
+                log.error(f"🚨 Project '{cfg.resume_project}' has no Nexus run to continue.")
+                sys.exit(1)
+        resume_checkpoint = run_dir / "reports" / "checkpoint.json"
+    elif cfg.resume:
+        resume_checkpoint = cfg.resume
+        run_dir = _run_dir_from_checkpoint(resume_checkpoint)
+
+    # ---- A Nexus-kind checkpoint resumes the control plane, not the executor ----
+    if resume_checkpoint is not None and _checkpoint_kind(resume_checkpoint) == "nexus":
+        from src.nexus.nexus_runner import run_nexus
+        reconfigure_logging(run_dir / "logs")
+        out = await run_nexus(resume=resume_checkpoint)
+        log.info(f"✅ Nexus complete → {out.resolve()}")
+        return
+
+    # ---- Executor: a fresh run allocates a numbered dir under its project; resume reuses run_dir. ----
+    if resume_checkpoint is None:
+        if cfg.run_project:
+            if not projects.exists(cfg.run_project):
+                log.error(f"🚨 Unknown project '{cfg.run_project}' — run --idea first to create it.")
+                sys.exit(1)
+            project = projects.load(cfg.run_project)
+            cfg.repo = cfg.repo or project.repo
+            cfg.base_branch = project.base_branch
+            if not cfg.repo:
+                log.error(f"🚨 Project '{project.slug}' has no repo recorded — pass --repo once on a --run.")
+                sys.exit(1)
+            ticket_file = _resolve_ticket_file(projects, project.slug, cfg.ticket)
+            if ticket_file is None:
+                log.error(f"🚨 Ticket '{cfg.ticket}' not found in project '{project.slug}' Nexus artifacts.")
+                sys.exit(1)
+            # Feed the ticket BODY as the task description (like a normal -f run) and keep cfg.file so the
+            # sibling blueprint.md (same artifacts/ dir) is routed into the TechLead brief below.
+            cfg.file = str(ticket_file)
+            cfg.description = ticket_file.read_text(encoding="utf-8")
+            run_dir = projects.allocate(project.slug, "exec", cfg.ticket)
+        else:
+            # Fresh DIRECT run: group it under a project keyed by the ticket slug (reused on re-runs).
+            project = projects.get_or_create(cfg.ticket, repo=cfg.repo, base_branch=cfg.base_branch)
+            run_dir = projects.allocate(project.slug, "exec", cfg.ticket)
+
+    # Re-anchor the audit trail to THIS run's logs/ dir before any other log line is emitted.
+    # Append mode keeps a resumed run's timeline linear in the SAME file instead of splitting it.
+    reconfigure_logging(run_dir / "logs")
+    check_environment()
+
+    if resume_checkpoint is not None:
+        log.info(f"▶️ RESUMING FSM EXECUTION FROM CHECKPOINT: {resume_checkpoint}")
+        try:
+            ctx = GlobalPipelineContext.load_checkpoint(resume_checkpoint)
+            log.info(f"Loaded checkpoint from {resume_checkpoint}")
+        except Exception as exc:
+            log.error(f"🚨 Failed to load checkpoint '{resume_checkpoint}': {exc}")
+            sys.exit(1)
+        if cfg.reset_attempts:
+            ctx.current_attempt = 1
+            log.info("🔄 State mutated: attempt counter reset to 1.")
+    else:
+        # Bootstrap an isolated git-anchored session into the pre-bound run dir.
+        paths = await bootstrap_session(cfg, run_dir)
+        ctx = GlobalPipelineContext(
+            pr_description=cfg.description or "",
+            base_branch=cfg.base_branch,
+            ticket=cfg.ticket or "",
+            workspace_paths=paths,
+        )
+
+        # Context routing: feed the architectural blueprint (sibling of the ticket file) into the
+        # TechLead's input. TechLead is the SOLE router — it reads ticket + blueprint and distributes
+        # all specs into the contract; the Developer never sees the blueprint directly. The CURRENT TASK
+        # leads (it is the authoritative SCOPE of the contract); the blueprint is demoted to reference
+        # so the TechLead does not mistake the whole-project topology for its file list (see techlead.md
+        # Rule 0). LLMs anchor on the leading block — scope first, reference second.
+        if cfg.file:
+            blueprint_path = Path(cfg.file).parent / "blueprint.md"
+            if blueprint_path.exists():
+                bp_content = blueprint_path.read_text(encoding="utf-8")
+                # Build the routing brief in a SEPARATE field — do NOT overwrite pr_description, which
+                # stays the clean ticket text used for the commit subject / PR body. Leaking the
+                # [CURRENT TASK …] header into pr_description is what produced the placeholder commit.
+                ctx.techlead_brief = (
+                    f"[CURRENT TASK — the authoritative scope of this contract]\n{ctx.pr_description}\n\n"
+                    f"[ARCHITECTURAL BLUEPRINT — reference only; whole-project specs, NOT your file list]\n{bp_content}"
+                )
+                log.info(f"   [CONTEXT] Blueprint routed into TechLead input ({len(bp_content)} chars).")
+
+        log.debug(f"Initialized global context for run {run_dir} with PR: {cfg.description}")
+
+    checkpoint_file = ctx.workspace_paths.reports_dir / "checkpoint.json"
+
+    # 1. Architecture Phase (executed once per session)
+    if ctx.contract:
+        log.info("Skipping TechLead node: contract already present in context.")
+    else:
+        await run_techlead_node(ctx)
+        enforce_financial_circuit_breaker(ctx)
+        ctx.save_checkpoint(checkpoint_file)
+        log.debug(f"Checkpoint saved after TechLead node: {checkpoint_file}")
+
+    max_retries = 3
+
+    regenerate_tests = ctx.needs_test_regeneration()
+
+    for attempt in range(ctx.current_attempt, max_retries + 1):
+        ctx.current_attempt = attempt
+        log.info(f"🔷 Orchestration cycle {attempt}/{max_retries}")
+        log.debug(f"Starting orchestration cycle {attempt}")
+
+        # Financial Circuit Breaker: halt immediately if a prior cycle (or a resumed run) is
+        # already over budget, before spending any more tokens this cycle.
+        enforce_financial_circuit_breaker(ctx)
+
+        # Reset BOTH isolated feedback channels before a new cycle. The Developer reads only
+        # `error_trace` (production-code fixes); QA reads only `qa_error_trace` (test fixes).
+        prev_dev_trace = ctx.error_trace
+        prev_qa_trace = ctx.qa_error_trace
+        ctx.error_trace = ""
+        ctx.qa_error_trace = ""
+
+        # DAG bypass: skip the Developer on a test-only repair cycle — the Reviewer approved
+        # production code (empty dev channel) but rejected the tests. Guarded by `review_report is
+        # not None` so cycle 1 (no review yet) never skips the Developer that must write the code.
+        skip_developer = regenerate_tests and not prev_dev_trace and ctx.review_report is not None
+
+        # 2. Testing Phase (Runs initially, on rejected tests, or whenever no snapshot exists)
+        if regenerate_tests:
+            # Free-reroute the QA node on a contract-signature contradiction in the freshly generated
+            # suite (e.g. the same symbol called both static and instance) BEFORE any Developer/Reviewer
+            # spend — mirrors the test-compile gate. No functional-retry budget consumed; at the cap we
+            # proceed and let the Reviewer adjudicate so a false positive never deadlocks the run.
+            qa_lint_feedback = prev_qa_trace
+            for qa_lint_retries in range(QA_LINT_MAX_REROUTES + 1):
+                await run_qa_agent_node(ctx, qa_lint_feedback)
+                lint_issues = lint_test_suite_consistency(
+                    ctx.test_code_snapshot, ctx.contract.function_signatures
+                )
+                if not lint_issues or qa_lint_retries == QA_LINT_MAX_REROUTES:
+                    if lint_issues:
+                        log.warning("🔶 QA signature lint still failing after in-loop regenerations — handing to the Reviewer.")
+                    break
+                log.warning(
+                    f"🔶 QA suite has contract-signature contradiction(s) — fast-fail regeneration "
+                    f"{qa_lint_retries + 1}/{QA_LINT_MAX_REROUTES} to QA (no budget spent), Reviewer bypassed."
+                )
+                qa_lint_feedback = (
+                    "The generated test suite contradicts the contract signatures. Fix ONLY the test "
+                    "files:\n" + "\n".join(lint_issues)
+                )
+                enforce_financial_circuit_breaker(ctx)
+            ctx.save_checkpoint(checkpoint_file)
+            log.debug(f"Checkpoint saved after QA node: {checkpoint_file}")
+            regenerate_tests = False  # Reset the flag until the next rejection
+        elif ctx.test_code_snapshot:
+            log.info("Skipping QA generation: validated test snapshot present in context.")
+
+        # 3. Development Phase — Developer writes code, then the fast-fail documentation guardrail
+        #    runs BEFORE the Reviewer. A miss free-reroutes to the Developer (NO functional-budget
+        #    retry consumed) and bypasses the Reviewer; after GUARDRAIL_MAX_REROUTES fast-fail reroutes
+        #    a still-undocumented file triggers a Hard Halt.
+        if skip_developer:
+            # Production code was approved last cycle; only the test suite is being regenerated.
+            # The Developer (the dominant Claude cost) is skipped entirely. The prior cycle's
+            # production_code_snapshot / production_code_diff (persisted) stay valid for the Reviewer.
+            log.info("⏭️  DAG bypass: production code approved — regenerating tests only, Developer skipped.")
+        else:
+            dev_feedback = prev_dev_trace
+            dev_focus_files: list[str] | None = None
+            guardrail_halt = False
+            guardrail_msg: str | None = None
+            for guardrail_retries in range(GUARDRAIL_MAX_REROUTES + 1):
+                await run_developer_node(ctx, dev_feedback, dev_focus_files)
+                # Snapshot the real working-tree production delta (git-tracked, full content) for the Reviewer.
+                build_production_snapshot(ctx)
+                # Refresh the repo map now that the Developer has materialized the contract files. The
+                # early map (built at the TechLead node, before any code existed) is stale — without this
+                # the checkpoint/Reviewer see only the pre-clone tree (e.g. just LICENSE).
+                ctx.repository_map = generate_repo_map(ctx.workspace_paths.repo_dir)
+
+                # Contract completeness: the Developer must create EVERY contracted file (it tends to
+                # skip non-code artifacts like .gitignore/LICENSE). Fast-fail reroute on any missing
+                # file (no functional budget); soft fall-through at the cap so a stray missing file
+                # never hard-halts an otherwise-good run.
+                missing = _missing_contract_files(ctx)
+                if missing:
+                    misplaced = _misplaced_contract_files(ctx, missing)
+                    absent = [f for f in missing if f not in misplaced]
+                    correction = _format_contract_correction(misplaced, absent)
+                    if guardrail_retries == GUARDRAIL_MAX_REROUTES:
+                        # A MISPLACED file at the cap is a deterministic refusal to honor the contract
+                        # path (not a stray omission) — hard-halt with an ACCURATE path-mismatch incident
+                        # instead of silently falling through to the doc guardrail, which would then mis-
+                        # report it as 'uncontracted, undocumented'. Genuinely-absent-only files keep the
+                        # soft fall-through so a stray missing artifact never aborts an otherwise-good run.
+                        if misplaced:
+                            ctx.error_trace = correction
+                            _abort_with_incident(
+                                ctx,
+                                f"\n🚨 HARD HALT: contracted file(s) created at the WRONG path after "
+                                f"{GUARDRAIL_MAX_REROUTES} fast-fail reroutes — relocate to the contracted "
+                                f"path. Misplaced: {misplaced}",
+                            )
+                        log.warning(f"🔶 Contracted files still missing after in-loop reroutes: {missing} — proceeding to the gates/Reviewer.")
+                    else:
+                        log.warning(
+                            f"🔶 Developer skipped contracted file(s) {missing} "
+                            + (f"(misplaced: {misplaced}) " if misplaced else "")
+                            + f"— fast-fail reroute {guardrail_retries + 1}/{GUARDRAIL_MAX_REROUTES} "
+                            "(no budget spent), Reviewer bypassed."
+                        )
+                        dev_feedback = correction
+                        dev_focus_files = None
+                        continue
+
+                guardrail_msg = await enforce_documentation_guardrail(ctx)
+                if guardrail_msg:
+                    if guardrail_retries == GUARDRAIL_MAX_REROUTES:
+                        guardrail_halt = True  # cap reached and still failing → hard halt below
+                        break
+                    log.warning(
+                        f"🔶 Doc guardrail: undocumented new file(s) — fast-fail reroute "
+                        f"{guardrail_retries + 1}/{GUARDRAIL_MAX_REROUTES} to Developer (no budget spent), Reviewer bypassed."
+                    )
+                    dev_feedback = guardrail_msg  # focused reroute: just the comment instruction
+                    dev_focus_files = None
+                    continue
+
+                # Compile gate: give the Developer REAL build feedback before the expensive QA/Reviewer
+                # cycle. Build/run-only (never tests). A clean build → proceed; a failure fast-fail
+                # reroutes to the Developer (no functional-budget spent), exactly like the doc guardrail.
+                build_ok, build_lines = await run_build_gate(
+                    ctx.contract.environment_id, str(ctx.workspace_paths.repo_dir)
+                )
+                if build_ok:
+                    break  # documented + compiles → proceed to gates/Reviewer
+                # An ENVIRONMENTAL failure (package feed/DNS/proxy unreachable — e.g. NuGet NU1301) is
+                # NOT a code defect: the Developer cannot fix the network, and rerouting it just burns
+                # budget AND corrupts the contract (it drops mandated deps to "compile offline", which
+                # the Reviewer then rejects → deadlock → circuit breaker). One cheap retry absorbs a
+                # transient blip; a persistent outage fails FAST with a precise, retry-later incident.
+                if build_failure_is_environmental(ctx.contract.environment_id, build_lines):
+                    log.warning("🔶 Compile gate failed on a NETWORK/restore error (not a code defect) — retrying the build once before judging.")
+                    build_ok, build_lines = await run_build_gate(
+                        ctx.contract.environment_id, str(ctx.workspace_paths.repo_dir)
+                    )
+                    if build_ok:
+                        break
+                    if build_failure_is_environmental(ctx.contract.environment_id, build_lines):
+                        ctx.error_trace = _cap_text("\n".join(build_lines))
+                        _abort_with_incident(
+                            ctx,
+                            "\n🚨 ENVIRONMENT/NETWORK HALT: dependency restore could not reach the package "
+                            "feed (e.g. NuGet NU1301 / connection dropped). This is NOT a code defect — the "
+                            "Developer is NOT rerouted and the contract is left intact. Re-run when network "
+                            "access to the package source is restored.",
+                        )
+                    # retry surfaced a REAL compiler error instead → fall through to normal handling
+                # A build failure caused SOLELY by test files (e.g. Go's package loader parsing a
+                # colocated `*_test.go`) is QA-owned — never reroute the Developer for it. Fall through
+                # to the gates/Reviewer, which routes test issues to the QA channel.
+                if build_failure_is_test_only(ctx.contract.environment_id, build_lines):
+                    log.warning("🔶 Compile gate failed on TEST files only — routing to the QA channel (Developer not rerouted).")
+                    break
+                if guardrail_retries == GUARDRAIL_MAX_REROUTES:
+                    # Persistent compile failure: soft fall-through (NOT a hard halt). The QA gate +
+                    # Reviewer diagnose it with the full retry budget rather than aborting the run.
+                    log.warning("🔶 Compile gate still failing after in-loop reroutes — handing to the gates/Reviewer.")
+                    break
+                log.warning(
+                    f"🔶 Compile gate failed — fast-fail reroute "
+                    f"{guardrail_retries + 1}/{GUARDRAIL_MAX_REROUTES} to Developer (no budget spent), Reviewer bypassed."
+                )
+                dev_feedback = "The production code failed to compile in the sandbox. Fix it.\n\n" + _cap_text("\n".join(build_lines))
+                dev_focus_files = None
+
+            if guardrail_halt:
+                ctx.error_trace = guardrail_msg
+                _abort_with_incident(
+                    ctx,
+                    f"\n🚨 HARD HALT: Developer failed the documentation guardrail after {GUARDRAIL_MAX_REROUTES} fast-fail reroutes.",
+                )
+
+        # Developer is the dominant token drain — enforce the budget before spending on gates.
+        enforce_financial_circuit_breaker(ctx)
+
+        # 3.5 QA test-compile gate: production code now exists (Developer ran, or it was pre-approved on
+        #     a DAG-bypass test-only cycle), so the QA tests can be COMPILE-checked. A test-side compile
+        #     failure (unused import, undefined symbol — the class that otherwise burns a whole Reviewer
+        #     cycle) fast-fail-reroutes to the QA channel and regenerates the suite, with NO Reviewer
+        #     spend and NO functional-retry consumed — mirroring the Developer's compile gate. Anything
+        #     not clearly test-only (env/network, or a production-referencing failure) falls through to
+        #     the Reviewer unchanged, so real production bugs are never misrouted to QA.
+        for qa_gate_retries in range(QA_GATE_MAX_REROUTES + 1):
+            tc_ok, tc_lines = await run_test_compile_gate(
+                ctx.contract.environment_id, str(ctx.workspace_paths.repo_dir)
+            )
+            if tc_ok:
+                break
+            if build_failure_is_environmental(ctx.contract.environment_id, tc_lines):
+                log.warning("🔶 QA test-compile gate failed on a NETWORK/restore error — handing to the Reviewer (not a QA defect).")
+                break
+            if not build_failure_is_test_only(ctx.contract.environment_id, tc_lines):
+                log.warning("🔶 QA test-compile gate failed but the error references production code — handing to the Reviewer (not auto-routed to QA).")
+                break
+            if qa_gate_retries == QA_GATE_MAX_REROUTES:
+                log.warning("🔶 QA test-compile gate still failing after in-loop regenerations — handing to the Reviewer.")
+                break
+            log.warning(
+                f"🔶 QA test-compile gate failed on TEST files only — fast-fail regeneration "
+                f"{qa_gate_retries + 1}/{QA_GATE_MAX_REROUTES} to QA (no budget spent), Reviewer bypassed."
+            )
+            ctx.qa_error_trace = _cap_text(
+                "The generated test suite does not compile. Fix ONLY the test files.\n\n"
+                + "\n".join(tc_lines)
+            )
+            await run_qa_agent_node(ctx, ctx.qa_error_trace)  # its format pass re-runs over the new tests
+            enforce_financial_circuit_breaker(ctx)
+        ctx.qa_error_trace = ""  # consumed by the rebound loop; don't leak into the Reviewer's channels
+
+        # 4. Automated Validation Phase (Runtime gates).
+        #    DUMB PIPE: the orchestrator never inspects the test exit code to alter FSM state — no test
+        #    purging, no cycle skipping. All runner logs (stdout+stderr) flow to the Reviewer, the sole
+        #    node that semantically judges failures (incl. ImportError) and routes the fix.
+        log.debug("Triggering parallel validation gates (QA & Security)")
+        qa_result, sec_result = await asyncio.gather(
+            run_qa_unit_tests(
+                environment_id=ctx.contract.environment_id,
+                repo_root=str(ctx.workspace_paths.repo_dir),
+            ),
+            run_security_scan(
+                environment_id=ctx.contract.environment_id,
+                repo_root=str(ctx.workspace_paths.repo_dir),
+            ),
+        )
+        qa_success, qa_lines = qa_result
+        sec_success, sec_lines = sec_result
+
+        # 5. Comprehensive Audit Phase (Reviewer Agent) — failure log sliced marker-aware so the root
+        #    ImportError/Traceback is preserved even when buried above a long stack.
+        await run_reviewer_node(ctx, qa_success, _extract_failure_context(qa_lines), sec_success, sec_lines)
+        enforce_financial_circuit_breaker(ctx)
+
+        # Print execution logs of utilities ONLY in case of an actual failure to CLI, but log everything to file
+        if not qa_success:
+            log.info("  [GATE][FUNCTIONAL-TESTS] Failure raw output:")
+            for line in qa_lines:
+                log.info(f"    {line}")
+        if not sec_success:
+            log.info("  [GATE][SAST-SECURITY] Failure raw output:")
+            for line in sec_lines:
+                log.info(f"    {line}")
+
+        all_gates_passed = (
+            qa_success
+            and sec_success
+            and ctx.review_report.code_quality_approved
+            and ctx.review_report.test_integrity_approved
+        )
+
+        # Log Approval Checkpoint Status
+        log.debug(f"Approval Checkpoint Status: QA={qa_success}, SAST={sec_success}, Code_Approve={ctx.review_report.code_quality_approved}, Test_Approve={ctx.review_report.test_integrity_approved}")
+
+        # Deadlock guard (BACKLOG #16): a hard gate FAILED but the Reviewer approved BOTH code and
+        # tests — it found no fixable defect, so the dev/QA diagnostic channels are empty and every
+        # remaining cycle would repeat identically until the breaker. This is an environment/runner
+        # misconfiguration the agents cannot fix (e.g. a sandbox import-path error). Fail fast with the
+        # gate output instead of burning the rest of the retry budget.
+        gate_failed = not qa_success or not sec_success
+        reviewer_approved_both = (
+            ctx.review_report.code_quality_approved and ctx.review_report.test_integrity_approved
+        )
+        if gate_failed and reviewer_approved_both:
+            failed_gates = (
+                (["FUNCTIONAL-TESTS"] if not qa_success else [])
+                + (["SAST-SECURITY"] if not sec_success else [])
+            )
+            gate_output = _extract_failure_context(qa_lines) if not qa_success else "\n".join(sec_lines)
+            _abort_with_incident(
+                ctx,
+                f"\n🚨 ENVIRONMENT/RUNNER MISCONFIGURATION: the {', '.join(failed_gates)} gate FAILED, "
+                "but the Reviewer approved BOTH code and tests — there is no agent-fixable defect, so "
+                "retrying cannot make progress. Halting now instead of looping to the circuit breaker."
+                f"\n\n--- gate output ---\n{_cap_text(gate_output)}",
+            )
+
+        # If the Reviewer rejected the tests specifically, raise the test regeneration flag
+        if not all_gates_passed and not ctx.review_report.test_integrity_approved:
+            log.warning("🔶 Reviewer Agent flagged test suite anomalies. Scheduling test regeneration.")
+            regenerate_tests = True
+
+        if not all_gates_passed:
+            # Isolated routing: production-code fixes → Developer channel; test fixes → QA channel.
+            ctx.error_trace = _cap_text(ctx.review_report.dev_diagnostic_payload)
+            ctx.qa_error_trace = _cap_text(ctx.review_report.qa_diagnostic_payload)
+            log.warning(f"🔶 Cycle {attempt} failed. Routing reviewer diagnostics to isolated channels.")
+
+        # Advance the persisted attempt counter so a resumed run cannot exceed the
+        # original retry budget. The counter is bumped before saving so the next
+        # process picks up exactly where this one left off.
+        ctx.current_attempt = attempt + 1
+        ctx.save_checkpoint(checkpoint_file)
+        log.debug(f"Checkpoint saved at end of cycle {attempt}: {checkpoint_file}")
+        log.info(
+            f"   [FINOPS] {_finops_subtotals(ctx)} / ${PIPELINE_BUDGET_USD:.2f} budget "
+            f"| {ctx.telemetry.total_tokens}t / {PIPELINE_BUDGET_TOKENS}t (cache-excluded)"
+        )
+
+        if all_gates_passed:
+            log.info("🟩 PIPELINE SUCCESS: All validation gates passed.")
+            # Living-ADR maintenance: update + stage docs/architecture_state.md BEFORE the atomic
+            # commit so the verified delta and its documentation land in the same transaction.
+            await run_techwriter_node(ctx)
+            await finalize_transaction(ctx, push=cfg.push)
+            write_finops_report(ctx)
+            log_finops_summary(ctx)
+            return
+
+    # Escalation on Circuit Breaker open
+    _abort_with_incident(ctx, "\n🚨 CIRCUIT BREAKER OPEN: Retries exhausted.")
+
+if __name__ == "__main__":
+    asyncio.run(main())

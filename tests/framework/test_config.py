@@ -9,10 +9,10 @@ import unittest
 from decimal import Decimal
 from types import SimpleNamespace
 
-# config imports src.core.config at import time and needs a key present.
+# config imports src.shared.core.config at import time and needs a key present.
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
 
-from src.core.config import estimate_gemini_cost_usd, MODEL_PRICING_MATRIX
+from src.shared.core.config import estimate_gemini_cost_usd, MODEL_PRICING_MATRIX
 
 
 def _usage(prompt: int, output: int, cached: int = 0, details=None) -> SimpleNamespace:

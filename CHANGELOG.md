@@ -7,6 +7,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each release maps to a completed SDLC iteration; the corresponding Architecture
 Decision Record (ADR) is linked from the version heading.
 
+## [v0.15.0] - 2026-06-18 — Unified Project & Run Topology: the Nexus⇄Executor Sync Bridge
+
+ADR: [0015-unified-project-run-topology](./docs/adr/0015-unified-project-run-topology.md)
+(extends [0012](./docs/adr/0012-virtual-separation-monorepo-planes.md),
+[0006](./docs/adr/0006-fsm-state-serialization-resume.md))
+
+### Added
+- **One run-layout SSOT shared by both planes** (`src/shared/core/runs.py`). A new `Projects`
+  filesystem store + `allocate_run_dir(project_dir, plane, label)` name every run — planning OR
+  execution — as `runs/<slug>/<NNN>_<plane>_<label>_<YYYYMMDD-HHMMSS>_<uid6>/`, where `<NNN>` is the
+  next sequential number within the project (sortable, visible order), `<plane>` is `nexus`/`exec`,
+  and the `ts`+`uid6` suffix guarantees no overwrite. The base is **injected** (`Projects(base)`), not
+  a module global, so the layer is hermetic under test. A `Project` manifest (`project.json`) captures
+  `{slug, idea, repo, base_branch, created_at}` once; `get_or_create` stacks later runs under one
+  umbrella so repeated runs of the same ticket share lineage.
+- **Nexus control-plane checkpointing + resume** (`src/nexus/state.py` `NexusState`). Mirrors the
+  executor's `GlobalPipelineContext` dump/load contract (`save_checkpoint`/`load_checkpoint` via
+  `model_validate_json`), persisting the phase outputs (`epic_text`/`blueprint_text`/`tasks`) and a
+  `completed_phase` cursor over `PHASES = ("PO","SA","TPM")`; resume **skips finished phases and
+  reuses their artifacts** instead of re-invoking the agent. Meta-dirs (`logs/`/`reports/`/
+  `artifacts/`) are recomputed from `run_dir`, never persisted.
+- **Project-centric CLI verbs** (`parse_args`/`main`, `src/executor/runner.py`): `--idea "…" [--repo
+  R]` mints a NEW project and runs Nexus planning (`001_nexus_plan`); `--run <project> -f <ticket>`
+  executes that ticket, loading repo + base branch from `project.json` and the ticket body from the
+  latest Nexus run's `artifacts/<ticket>.md`; `--resume <project> [NNN]` resumes run #NNN (or the
+  latest Nexus run). The legacy `--resume <path.json>` and `--repo --ticket` direct forms remain.
+- **Secret redaction layer** (`src/shared/utils/redaction.py`): a `redact()` helper + logger-level
+  `RedactionFilter` scrub GitHub PATs, basic-auth URLs, and bearer tokens from console, audit log, and
+  persisted checkpoint/incident JSON across both planes.
+
+### Changed
+- **`--resume` routes by checkpoint content, not path parsing.** `NexusState` carries a
+  `kind: Literal["nexus"]` discriminator; `main()` resolves the run dir from the checkpoint's
+  grandparent and `_checkpoint_kind` peeks the `kind` field — `"nexus"` → control plane
+  (`run_nexus(resume=…)`), absent → executor (`GlobalPipelineContext`). Old `runs/run_<uuid>/`
+  checkpoints still resume via the explicit-path form.
+- **Telemetry-first shared observability.** `log_finops_summary(telemetry, budget_usd, budget_tokens)`
+  and `log_token_usage(telemetry, …)` (`src/shared/core/observability.py`) now take a
+  `PipelineTelemetry` argument instead of reading executor module constants, so **both** planes record
+  FinOps into one object; `describe_finish_reason` surfaces *why* a Gemini structured call failed
+  (e.g. `RECITATION`, `MAX_TOKENS`).
+- **Persistent package cache across containers.** Each environment declares a named Docker
+  `cache_volume` (`environments.py`); `docker_adapter.py` mounts it RW only on the network-on restore
+  phase and RO on build/test, so packages restored once survive container teardown and are reused
+  across runs (the standing cure for transient NuGet `NU1301`/npm-feed latency).
+- **Deterministic post-QA cleanup.** A non-fatal `run_format_pass` (network OFF) runs the environment's
+  `format_cmd` (`ruff --fix --exit-zero`, `goimports -w`, `dotnet format --no-restore`, eslint
+  best-effort) right after QA writes tests — stripping unused imports before the compile gate and
+  killing the trivial Go "unused import = hard compile error" bounce cycle.
+- **Engine-curated `.gitignore` templates** (`environments.py`): per-language patterns sourced from
+  github/gitignore, anchored by EXTENSION (`*.exe`, `*.test`) or DIRECTORY (`/bin/`, `obj/`) only —
+  never a bare project name — injected verbatim by the TPM into `TASK-01`.
+- **Removed the hardcoded `src/` + `tests/` workspace layout.** The `--src-dir`/`--tests-dir` CLI flags, `RunConfig.src_dir`/`tests_dir`, and the `WorkspacePaths.code_dir`/`tests_dir` fields are gone; `WorkspacePaths.for_run(run_dir, repo_dir)` now tracks only the repo root + run meta-dirs (`logs/`, `reports/`) and no longer pre-creates empty `src/`/`tests/` in the clone. Source layout is the SA/blueprint topology's job (the Developer already writes by the contract's full repo-relative paths); the techlead topology skill no longer forces a `{code_prefix}/` prefix. Test placement is owned by the QA language profile — a new `test_root` key (`"tests"` for the python separate layout, `None` for colocated go/node/dotnet) is the SSOT, replacing `tests_dir` in `qa.py` and the production-snapshot test-exclusion prefix in `runner.py`. Old checkpoints carrying `code_dir`/`tests_dir` still load (pydantic ignores extra fields).
+- **Repository preparation is no longer a standalone `TASK-00` iteration.** `prompts/system/tpm.md` now folds the mandatory baseline setup (`.gitignore`/`README.md`/`LICENSE`, idempotent verify-or-reconcile) into `TASK-01` as a clearly-delimited `## Repository Preparation (MANDATORY — do this FIRST)` block that leads the first business ticket before its feature work. There is no standalone `TASK-00`; tickets start at `TASK-01`, and `TASK-02+` remain pure business work that may not carry baseline files. This removes a full extra orchestrator iteration (clone → TechLead → Developer → QA → Reviewer → commit) per project, since the executor runs one ticket per invocation. The env-tailored `.gitignore` still keeps later business snapshots clean. `src/nexus/tpm.py` schema docstrings updated to match (`ticket_id` example, `TASK-01` prep-block note); the atomicity rule gains a narrow `TASK-01`-only exception.
+
+### Fixed
+- **Contract paths can no longer escape the sandbox.** Leading-slash / `..` blueprint paths (e.g.
+  `/.gitignore`) copied verbatim into the contract used to resolve outside the clone (`repo_dir /
+  "/.gitignore"` discards the root), leaving the Developer looping on a perpetually "missing" file. A
+  field validator on `TechLeadContract` (`src/shared/core/models.py`) normalizes every contracted path
+  to a safe repo-relative POSIX path at the contract boundary.
+- **Engine resilience to environmental dependency-restore failures.** A build/restore failure whose output bears a network/feed-unreachable signature (`NU1301`, `Unable to load the service index`, `Resource temporarily unavailable`, DNS/`dial tcp`/npm-errno markers) is now classified by `build_failure_is_environmental` (`gates.py`) and handled distinctly in the compile-gate loop (`runner.py`): one cheap retry absorbs a transient blip, and a persistent outage **fails fast with an ENVIRONMENT/NETWORK incident** instead of rerouting the Developer to "fix" the network (which corrupted the contract by dropping mandated deps and deadlocked against the Reviewer → circuit breaker, as seen on the .NET `JSON-to-CSV2` run). Plus a `docker/dotnet.Dockerfile` NuGet prewarm: common pins (System.CommandLine, xunit, Test.Sdk) are baked into a read-only fallback folder + machine-wide `/NuGet.Config`, so runtime restore resolves them offline (the runtime `/tmp` tmpfs masks any baked `/tmp/nuget`).
+- **Hermetic e2e test ~42× faster** (124.7s → 2.9s). `test_pipeline_e2e.py` did not mock the per-skill `SkillRelevance` relevance gate, so each of ~20 such calls raised, was swallowed by `with_api_retry`'s `2+4s` backoff, and silently burned ~120s; the fake structured-LLM now returns `SkillRelevance(score=0.0)`.
+- **Retired the infra-only scope-discipline guardrail.** After folding infra into `TASK-01` no ticket is infra-only, so the `_out_of_scope_source_files` engine guardrail (`src/executor/runner.py`) had no legitimate trigger left — yet it still fired on a merged "infra + build manifest" first ticket (e.g. `[.gitignore, README.md, LICENSE, *.csproj]`), deleting the entry-point glue the Developer wrote while the compile gate simultaneously demanded it (`OutputType=Exe` → CS5001) — a direct deadlock (observed on `run_b3b85070…`, .NET `JSON-to-CSV2`). Removed the predicate, its fast-fail reroute branch, and the documentation-guardrail exclusion that deferred to it; every ticket is now treated as a normal code ticket where the Developer has full glue autonomy and the Reviewer is the scope backstop. `prompts/system/developer.md` SCOPE DISCIPLINE rule rewritten to authorize the minimal language-required entry point/glue a contracted build manifest needs; `gates.py` empty-suite comments de-jargoned (behavior unchanged); obsolete scope-discipline unit tests dropped.
+
+## [v0.14.0] - 2026-06-17 — Language-Neutral QA: Skills-Driven Test Correctness & De-Hardcoded Agent
+
+ADR: [0014-language-neutral-qa-whole-file-assembly](./docs/adr/0014-language-neutral-qa-whole-file-assembly.md)
+(supersedes [0013](./docs/adr/0013-structured-test-maintenance-ast-pruning.md))
+
+### Changed
+- **QA agent is now fully language-neutral.** Removed all per-language imperative code from `src/executor/agents/qa.py`: the Python-only `ast` merge (`_assemble_suite`/`_is_main_guard`), the Go package-clause guard (`_GO_PACKAGE_RE`/`_ensure_go_package_clause`/`_derive_go_package`), the `env_language == "go"` write-loop branch, and the Python-default zombie predicate. A single `_assemble_suite` writes the model's complete file verbatim with one safety net (empty delta + existing file + no `overwrite_existing` keeps the existing file). Dropped the now-dead `uses_ast`/`fence_lang` profile keys from `src/shared/core/environments.py`.
+- **Test correctness moved into prompts/skills.** `prompts/system/qa.md` gains **TEST-FILE IDENTITY FIDELITY** (a test's package/namespace/module must match its production sibling — never a foreign one) and a **Thin / untestable module** rule; the delta-based `STRUCTURED TEST MAINTENANCE` section is replaced by a uniform **TEST FILE ASSEMBLY** contract (return the complete file, preserve still-valid cases, `overwrite_existing=true`). `go_qa.md`/`python_qa.md`/`dotnet_qa.md` state the concrete per-stack idiom.
+
+### Fixed
+- **CIRCUIT BREAKER on `run_3dc1e2043ea74ed082f47ec1744e4d8e`** (Go `json2csv`): QA emitted a root `main_test.go` declaring `package converter` next to `package main`, failing `go test ./...` every cycle (`could not import "main"`). The wrong package now (a) is far less likely — the agent is told to match the production sibling and not to fabricate a foreign-package test for a thin entrypoint — and (b) self-heals if it still slips through: the compile gate classifies it test-only and the Reviewer routes it to QA via new `reviewer.md` case **(c) WRONG TEST PACKAGE/NAMESPACE**, instead of mis-routing to the Developer (who cannot edit tests → deadlock).
+- **`__pycache__/*.pyc` polluting the production snapshot** (`run_410195801a124f369ccb6c6052fb5257`): build artifacts were staged by `git add -A` because the business ticket's clone had no `.gitignore`. Fixed at the planner level — `prompts/system/tpm.md` now reserves **`TASK-00`** as a dedicated repository-preparation ticket (verify presence + currency of `.gitignore`/`README.md`/`LICENSE`, idempotently create/reconcile) that runs FIRST; **business tickets start at `TASK-01`** and may not carry baseline/infra files. The env-tailored `.gitignore` keeps later business snapshots clean without any per-language engine filter (`src/nexus/tpm.py` schema docstrings updated to match).
+
+## [v0.13.0] - 2026-06-16 — Structured Test Maintenance (AST-Aware Pruning) & CI Security-Gate Fix
+
+ADR: [0013-structured-test-maintenance-ast-pruning](./docs/adr/0013-structured-test-maintenance-ast-pruning.md)
+
+### Changed
+- QA agent moved from LLM whole-file test merging to **Structured Test Maintenance**. The `QATestSuite` schema (`src/shared/core/models.py`) now returns deltas — `new_imports`, `new_test_code`, and `obsolete_test_names` — instead of a single `test_code` blob; the QA system prompt (`prompts/system/qa.md`) gains a `STRUCTURED TEST MAINTENANCE` rule (never re-emit the whole file).
+- Test files are now maintained by a deterministic `ast`-based engine (`_assemble_suite` in `src/executor/agents/qa.py`): it parses the existing file, prunes top-level test classes/functions named in `obsolete_test_names`, dedupes imports, relocates any `if __name__ == "__main__"` guard to the end, and appends the new cases — always rewriting the **original** test path with explicit `utf-8` I/O.
+
+### Fixed
+- QA "State Cascade Destruction": regenerating tests for an existing module no longer blindly overwrites and destroys prior test cases. Preservation is now guaranteed by the engine rather than the model. This also removes the interim `_v2.py`/`_v3.py` "zombie file" fallback (no more accumulating duplicate test files).
+
+### Security
+- CI security gate (`bandit -r src/`) restored to green. The catalog/pricing-matrix lockstep `assert` in `src/shared/core/config.py` (B101 — stripped under `python -O`) was converted to an explicit `if … raise RuntimeError`, keeping the invariant unconditional. The pre-existing fixed-argv `git` subprocess calls in `src/executor/runner.py` — exposed to the scan only after the v0.12.0 refactor moved `orchestrator.py` into `src/` — were annotated `# nosec B404/B603/B607` consistent with the existing convention.
+
+## [v0.12.0] - 2026-06-15 — Virtual Separation: Control / Worker / Shared Plane Topology (Monorepo PoC)
+
+ADR: [0012-virtual-separation-monorepo-planes](./docs/adr/0012-virtual-separation-monorepo-planes.md)
+
+### Added
+- Root `main.py` entrypoint: a thin CLI shell that imports `main` from `src.executor.runner` and runs it under `asyncio`, replicating the former `if __name__ == "__main__"` tail of `orchestrator.py`. Program start is now decoupled from FSM execution. The documented run command becomes `python3 main.py …`.
+- Control Plane scaffold: new `src/nexus/` package with empty `planner.py` and `deployer.py` placeholders, marking the seam where future run-scheduling and deployment orchestration will live. Inert for now (no runtime behaviour).
+
+### Changed
+- **Virtual Separation refactor** — the flat `src/` tree was reorganized into three logical planes, a pure lift-and-shift with **no** change to FSM transitions, agent behaviour, gates, or LLM system prompts: **Worker Plane** `src/executor/` (`agents/`, `nodes/`, and `runner.py` — the former root `orchestrator.py`), **Shared Plane** `src/shared/` (`core/`, `utils/`), and **Control Plane** `src/nexus/`. All 18 modules were relocated with history-preserving `git mv`.
+- Repo-wide import rewrite to the new plane paths (`src.core → src.shared.core`, `src.utils → src.shared.utils`, `src.agents → src.executor.agents`, `src.nodes → src.executor.nodes`), including test `mock.patch("…")` target strings; the orchestrator unit/integration tests now bind `from src.executor import runner as orchestrator`, leaving every `orchestrator.*` reference unchanged.
+
+### Fixed
+- `src/shared/core/prompts.py` `_REPO_ROOT` gained one `.parent` so it still resolves the repository-root `prompts/` tree after the module moved one directory deeper — the only non-import change required by the move. Behaviour is otherwise identical (142 tests green).
+
 ## [v0.11.0] - 2026-06-15 — Secure Sandbox, Language-Neutral Topology & Real-Time FinOps Circuit Breaker
 
 ADR: [0011-secure-sandbox-and-finops-telemetry](./docs/adr/0011-secure-sandbox-and-finops-telemetry.md)
