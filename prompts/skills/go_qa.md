@@ -4,19 +4,17 @@ type: domain
 triggers: [go]
 nodes: [qa, reviewer]
 ---
-LANGUAGE TARGET: Go — test-suite rules for the Go tech stack.
+LANGUAGE TARGET: Go — concrete syntax for the Go tech stack. The language-neutral rules (error
+fidelity, import fidelity, whole-file assembly, BVA strategy) live in the QA system prompt; this skill
+only maps them to Go idioms.
 
 ## File Header (MANDATORY — a missing clause makes the file un-parseable Go)
-- The test file's VERY FIRST line MUST be `package <pkg>` — the SAME package as the unit under test
-  (white-box) — BEFORE any `import`. NEVER start the file with `import`. Use an external `_test`
-  package only when the contract exposes a pure public API.
-- The package MUST be the one declared by the colocated production sibling in the PRODUCTION CODE
-  SNAPSHOT — NEVER a package borrowed from another module you happen to exercise (e.g. a root
-  `main_test.go` next to `package main`'s `main.go` must be `package main`, never `package converter`).
-- A `package main` file whose only logic is `func main()` delegating to other packages has NO white-box
-  logic of its own: test that logic in its real package's `_test.go`. For the entrypoint emit at most a
-  faithful `package main` check (e.g. the wired collaborators are reachable) — do not fabricate a suite
-  for another package inside the entrypoint's test file.
+- The test file's VERY FIRST line MUST be `package <pkg>` (white-box) — the SAME package its
+  `colocated production sibling` declares in the PRODUCTION CODE SNAPSHOT — BEFORE any `import`. NEVER
+  start the file with `import`. Use an external `_test` package only when the contract exposes a pure
+  public API. (e.g. a root `main_test.go` next to `package main`'s `main.go` must be `package main`,
+  never `package converter`.)
+- `new_imports` MUST therefore begin with the `package <pkg>` line, then the `import (...)` block.
 - Shape every Go test file exactly like this:
 
 ```
@@ -33,35 +31,22 @@ func TestConvert(t *testing.T) { /* table-driven cases */ }
 - Use ONLY the standard-library `testing` package. STRICTLY BAN testify, ginkgo, gomega, and any
   third-party assertion/BDD framework.
 - Colocate the test file NEXT TO its source file as `<name>_test.go` (e.g. `engine.go` →
-  `engine_test.go`). NEVER create a separate `tests/` directory — `go test ./...` discovers
-  `*_test.go` inside each package.
+  `engine_test.go`). NEVER create a separate `tests/` directory.
 
 ## Test Shape
 - One `func TestXxx(t *testing.T)` per behavior cluster. Drive cases from an explicit table — a slice
-  of anonymous structs — iterated with `t.Run(tt.name, func(t *testing.T){ ... })` so each case is
-  isolated and independently reported. Prefer one table-driven test over many near-duplicate funcs.
-
+  of anonymous structs — iterated with `t.Run(tt.name, func(t *testing.T){ ... })`.
 - FLAG PARSING (CRITICAL): NEVER exercise the global `flag.CommandLine` / `flag.Parse` / package-level
   `flag.String` from a test. Registering the same flag twice in one process PANICS with
-  `flag redefined: <name>` — so a table-driven test that parses flags per case crashes the whole
-  binary. Construct a FRESH `flag.NewFlagSet(tt.name, flag.ContinueOnError)` inside each case and parse
-  against it. If the production parser only reads global flags it is untestable: assert that via the
-  contract's signature (it should accept a `*flag.FlagSet` or an args slice) rather than invoking the
-  global parser.
+  `flag redefined: <name>`. Construct a FRESH `flag.NewFlagSet(tt.name, flag.ContinueOnError)` inside
+  each case and parse against it. If the production parser only reads global flags it is untestable:
+  assert that via the contract's signature (it should accept a `*flag.FlagSet` or an args slice).
 
-## Errors (NOT exceptions)
-- Go has no exceptions. Assert error CONDITIONS only: check `if err != nil` for the no-error path, and
-  `errors.Is(err, ExpectedSentinel)` for an expected sentinel/typed error declared in the contract.
-- NEVER assert on `err.Error()` text, the message string, or any message-derived attribute (per the
-  CRITICAL RULE). Verify only the sentinel/type via `errors.Is` / `errors.As`.
+## Errors (concrete API for the system-prompt CRITICAL RULE — Go has no exceptions)
+- Assert error CONDITIONS only: `if err != nil` for the no-error path, and
+  `errors.Is(err, ExpectedSentinel)` / `errors.As` for an expected sentinel/typed error from the
+  contract. NEVER assert on `err.Error()` text or any message-derived attribute.
 
 ## Imports
 - Import the package under test by the exact module path from the topology contract / production
-  snapshot (e.g. `<module>/internal/converter`). Never guess the module path; never re-declare
-  production symbols in the test file.
-
-## Assembly Contract
-- Return the COMPLETE test file content in `new_imports` + `new_test_code` and set
-  `overwrite_existing` to true. The engine does not AST-merge Go — emit the whole file each time.
-- `new_imports` MUST begin with the `package <pkg>` line, then the `import (...)` block. The package
-  clause is NOT optional — it is the first line of the file.
+  snapshot (e.g. `<module>/internal/converter`).
