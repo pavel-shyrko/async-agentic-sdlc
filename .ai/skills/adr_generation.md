@@ -6,7 +6,7 @@ Execute this skill to document systemic or architectural changes in the codebase
 ## Protocol
 1. **Diff Analysis**: Analyze the `git diff` against the base branch or target commits.
 2. **Trigger Condition**: Determine if core architectural changes occurred (e.g., new FSM states, routing logic changes, new integrations, structural refactoring, dependency injection shifts). If NO, abort execution with: "No ADR generation required."
-3. **File Creation**: Find the next available sequence number in `docs/adr/` (e.g., if `0006-xxx.md` exists, use `0007-xxx.md`).
+3. **File Creation**: Find the next available sequence number in `docs/adr/` (e.g., if `0014-xxx.md` is the highest, use `0015-xxx.md`).
 4. **MADR Formatting**:
    - `Title`: Concise technical description.
    - `Status`: Accepted.

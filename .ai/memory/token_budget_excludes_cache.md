@@ -11,9 +11,9 @@ metadata:
 default 1M) counts **fresh input + output ONLY**, for **all providers**. Cache tokens are tracked
 separately (`total_cache_read_tokens` / `total_cache_write_tokens`, per-agent `cache_read_tokens` /
 `cache_write_tokens`) and are **excluded** from the budgeted total:
-- **Claude** (`parse_claude_usage`, `src/utils/subprocess_helpers.py`): `cache_read_input_tokens` /
+- **Claude** (`parse_claude_usage`, `src/shared/utils/subprocess_helpers.py`): `cache_read_input_tokens` /
   `cache_creation_input_tokens` are kept separate, never folded into `input_tokens`.
-- **Gemini** (`log_token_usage`, `src/core/observability.py`): `prompt_token_count` INCLUDES
+- **Gemini** (`log_token_usage`, `src/shared/core/observability.py`): `prompt_token_count` INCLUDES
   `cached_content_token_count`, so the cached part is split out (`fresh = prompt − cached`) and
   recorded as `cache_read_tokens`.
 
