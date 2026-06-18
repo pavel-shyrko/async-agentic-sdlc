@@ -38,7 +38,7 @@ class RunQaUnitTestsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok)
         # Restore runs first (network ON), then tests (network OFF).
         self.assertEqual(mock_sandbox.await_args_list, [
-            call(_ENV, _SETUP, _REPO, network="bridge"),
+            call(_ENV, _SETUP, _REPO, network="bridge", cache_writable=True),
             call(_ENV, _TEST, _REPO, network="none"),
         ])
         # Benign successful-restore output must NOT pollute the test result context.
@@ -67,7 +67,7 @@ class RunQaUnitTestsTests(unittest.IsolatedAsyncioTestCase):
         ok, log_lines = await run_qa_unit_tests(environment_id=_ENV, repo_root=_REPO)
 
         self.assertFalse(ok)
-        mock_sandbox.assert_awaited_once_with(_ENV, _SETUP, _REPO, network="bridge")  # tests never reached
+        mock_sandbox.assert_awaited_once_with(_ENV, _SETUP, _REPO, network="bridge", cache_writable=True)  # tests never reached
         self.assertIn("🚨 Dependency restore failed:", log_lines[0])
 
     @mock.patch("src.executor.nodes.gates._has_test_files", return_value=True)
@@ -159,7 +159,7 @@ class RunBuildGateTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(ok)
         self.assertEqual(mock_sandbox.await_args_list, [
-            call(_ENV, _SETUP, _REPO, network="bridge"),
+            call(_ENV, _SETUP, _REPO, network="bridge", cache_writable=True),
             call(_ENV, _BUILD, _REPO, network="none"),
         ])
 
@@ -179,7 +179,7 @@ class RunBuildGateTests(unittest.IsolatedAsyncioTestCase):
         ok, log_lines = await run_build_gate(environment_id=_ENV, repo_root=_REPO)
 
         self.assertFalse(ok)
-        mock_sandbox.assert_awaited_once_with(_ENV, _SETUP, _REPO, network="bridge")  # build never reached
+        mock_sandbox.assert_awaited_once_with(_ENV, _SETUP, _REPO, network="bridge", cache_writable=True)  # build never reached
 
 
 class RunTestCompileGateTests(unittest.IsolatedAsyncioTestCase):
@@ -195,7 +195,7 @@ class RunTestCompileGateTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(ok)
         self.assertEqual(mock_sandbox.await_args_list, [
-            call(_ENV, _SETUP, _REPO, network="bridge"),
+            call(_ENV, _SETUP, _REPO, network="bridge", cache_writable=True),
             call(_ENV, _TCOMPILE, _REPO, network="none"),
         ])
 

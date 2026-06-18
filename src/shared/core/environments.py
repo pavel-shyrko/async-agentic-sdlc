@@ -7,6 +7,10 @@
 #   image        custom sandbox image built by scripts/build_sandbox_images.sh — carries the test
 #                runner + writable HOME/cache (stock images lack pytest etc. and EPERM on /.cache).
 #   sandbox_env  env vars injected into the container so the non-root --user run has writable caches.
+#   cache_volume {name, mount, env} — a PERSISTENT named docker volume for the package-download cache.
+#                Survives the separate restore/build/test containers (each gets a fresh tmpfs /tmp) and
+#                across runs. Mounted RW only on the network-ON restore phase, RO otherwise. Its `env`
+#                overrides the tmpfs cache path so a once-restored package resolves offline thereafter.
 #   setup_cmd    dependency restore, run in a NETWORK-ON phase before the network-OFF build/test.
 #   build_cmd    compile/typecheck only (NEVER runs tests) — the post-Developer compile gate.
 #   test_cmd     the functional-test command (network-OFF).
@@ -37,6 +41,9 @@ SUPPORTED_ENVIRONMENTS = {
         # repo that `git add -A` would commit.
         "format_cmd": "ruff check --fix --exit-zero --quiet --no-cache .",
         "sandbox_env": {"HOME": "/tmp", "XDG_CACHE_HOME": "/tmp/.cache", "PYTHONDONTWRITEBYTECODE": "1"},
+        # Persistent download cache (survives the separate restore/build/test containers + across runs);
+        # mounted RW only on the network-ON restore phase. Overrides the tmpfs pip cache.
+        "cache_volume": {"name": "sdlc-cache-python", "mount": "/cache", "env": {"PIP_CACHE_DIR": "/cache/pip"}},
         "language_id": "python",
         "description": "Python 3.12 core runtime (pytest; Semgrep SAST).",
     },
@@ -56,6 +63,8 @@ SUPPORTED_ENVIRONMENTS = {
         # goimports behind a proxy — gofmt still formats, just won't strip imports. Non-fatal post-QA pass.
         "format_cmd": "goimports -w . 2>/dev/null || gofmt -w .",
         "sandbox_env": {"HOME": "/tmp", "GOCACHE": "/tmp/.cache/go-build", "GOPATH": "/tmp/go", "GOMODCACHE": "/tmp/go/pkg/mod"},
+        # Persist the module DOWNLOAD cache (GOMODCACHE) only; the build cache (GOCACHE) stays on tmpfs.
+        "cache_volume": {"name": "sdlc-cache-go", "mount": "/cache", "env": {"GOMODCACHE": "/cache/go/pkg/mod"}},
         "language_id": "go",
         "description": "Go 1.23 CLI runtime, full compile toolchain (go test; Semgrep SAST).",
     },
@@ -68,6 +77,8 @@ SUPPORTED_ENVIRONMENTS = {
         # Non-fatal, so a project without eslint just skips the cleanup.
         "format_cmd": "npx --no-install eslint --fix . || true",
         "sandbox_env": {"HOME": "/tmp", "npm_config_cache": "/tmp/.npm"},
+        # Persist the npm download cache across the restore/build/test containers + runs.
+        "cache_volume": {"name": "sdlc-cache-node", "mount": "/cache", "env": {"npm_config_cache": "/cache/npm"}},
         "language_id": "node",
         "description": "Node.js 20 / JS / React (node, npm — frontend build & tests; Semgrep SAST).",
     },
@@ -75,10 +86,17 @@ SUPPORTED_ENVIRONMENTS = {
         "image": "sdlc-sandbox/dotnet:latest",
         "build_cmd": "dotnet build",
         "test_cmd": "dotnet test",
-        "setup_cmd": "dotnet restore",
+        # Serialized + retried restore: `--disable-parallel` and the image's NuGet.Config
+        # `maxHttpRequestsPerSource=1` stop the parallel-TLS BURST that a transparent corporate
+        # proxy/AV drops (the NU1301 deadlock); 3 attempts absorb a transient drop. Single line so it
+        # passes the adapter's no-newline command validation.
+        "setup_cmd": "for i in 1 2 3; do dotnet restore --disable-parallel && exit 0; sleep 5; done; exit 1",
         # Best-effort: --no-restore keeps it network-OFF; removes unused usings where the SDK supports it.
         "format_cmd": "dotnet format --no-restore",
         "sandbox_env": {"HOME": "/tmp", "DOTNET_CLI_HOME": "/tmp", "NUGET_PACKAGES": "/tmp/nuget", "XDG_DATA_HOME": "/tmp/.local"},
+        # Persist the NuGet global-packages folder; overrides the tmpfs NUGET_PACKAGES so a package
+        # restored online once is reused offline on every later container/run (the NU1301 cure).
+        "cache_volume": {"name": "sdlc-cache-dotnet", "mount": "/cache", "env": {"NUGET_PACKAGES": "/cache/nuget"}},
         "language_id": "dotnet",
         "description": ".NET 10 SDK (full toolchain — dotnet build & dotnet test; Semgrep SAST).",
     },

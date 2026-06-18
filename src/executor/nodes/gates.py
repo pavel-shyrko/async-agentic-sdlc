@@ -91,7 +91,9 @@ async def run_qa_unit_tests(environment_id: str, repo_root: str) -> tuple[bool, 
     setup_cmd = spec.get("setup_cmd")
     if setup_cmd:
         log.debug(f"Restoring dependencies [{environment_id}] (network ON): {setup_cmd}")
-        rc, out, err = await execute_in_sandbox(environment_id, setup_cmd, repo_root, network="bridge")
+        # cache_writable: the restore phase is the ONLY writer of the persistent package cache volume;
+        # build/test/compile mount it read-only so adversarial test code cannot poison it.
+        rc, out, err = await execute_in_sandbox(environment_id, setup_cmd, repo_root, network="bridge", cache_writable=True)
         restore_out = (out + "\n" + err).strip()
         if rc != 0:
             log.debug(f"Dependency restore failed with exit code: {rc}")
@@ -122,7 +124,9 @@ async def run_build_gate(environment_id: str, repo_root: str) -> tuple[bool, lis
     setup_cmd = spec.get("setup_cmd")
     if setup_cmd:
         log.debug(f"Restoring dependencies for build [{environment_id}] (network ON): {setup_cmd}")
-        rc, out, err = await execute_in_sandbox(environment_id, setup_cmd, repo_root, network="bridge")
+        # cache_writable: the restore phase is the ONLY writer of the persistent package cache volume;
+        # build/test/compile mount it read-only so adversarial test code cannot poison it.
+        rc, out, err = await execute_in_sandbox(environment_id, setup_cmd, repo_root, network="bridge", cache_writable=True)
         restore_out = (out + "\n" + err).strip()
         if rc != 0:
             log.debug(f"Dependency restore (build) failed with exit code: {rc}")
@@ -158,7 +162,9 @@ async def run_test_compile_gate(environment_id: str, repo_root: str) -> tuple[bo
     setup_cmd = spec.get("setup_cmd")
     if setup_cmd:
         log.debug(f"Restoring dependencies for test-compile [{environment_id}] (network ON): {setup_cmd}")
-        rc, out, err = await execute_in_sandbox(environment_id, setup_cmd, repo_root, network="bridge")
+        # cache_writable: the restore phase is the ONLY writer of the persistent package cache volume;
+        # build/test/compile mount it read-only so adversarial test code cannot poison it.
+        rc, out, err = await execute_in_sandbox(environment_id, setup_cmd, repo_root, network="bridge", cache_writable=True)
         restore_out = (out + "\n" + err).strip()
         if rc != 0:
             log.debug(f"Dependency restore (test-compile) failed with exit code: {rc}")

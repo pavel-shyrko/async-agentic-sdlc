@@ -7,6 +7,12 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0-alpine
 COPY certs/ /usr/local/share/ca-certificates/
 RUN command -v update-ca-certificates >/dev/null && update-ca-certificates || true
 
+# Mount point for the PERSISTENT NuGet-cache volume (cache_volume in environments.py). Created
+# world-writable so the fresh named volume seeds those perms — else the non-root --user run hits
+# EPERM on the root-owned empty volume. At runtime NUGET_PACKAGES=/cache/nuget (volume env) overrides
+# the tmpfs folder below, so a package restored online once is reused offline on every later run.
+RUN mkdir -p /cache && chmod 0777 /cache
+
 ENV HOME=/tmp \
     DOTNET_CLI_HOME=/tmp \
     NUGET_PACKAGES=/tmp/nuget \
@@ -32,19 +38,30 @@ RUN mkdir -p /opt/nuget-fallback /warm \
       '    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />' \
       '    <PackageReference Include="xunit" Version="2.9.3" />' \
       '    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />' \
+      '    <PackageReference Include="coverlet.collector" Version="6.0.2" />' \
+      '    <PackageReference Include="Moq" Version="4.20.72" />' \
+      '    <PackageReference Include="FluentAssertions" Version="6.12.2" />' \
+      '    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />' \
+      '    <PackageReference Include="System.Text.Json" Version="9.0.0" />' \
+      '    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.0" />' \
       '  </ItemGroup>' \
       '</Project>' > /warm/warm.csproj \
  && NUGET_PACKAGES=/opt/nuget-fallback dotnet restore /warm/warm.csproj \
  && chmod -R a+rX /opt/nuget-fallback \
  && rm -rf /warm /tmp/nuget /tmp/.local
 
-# Machine-wide NuGet config: writable global folder on the runtime tmpfs + the baked read-only
-# fallback. Placed at filesystem root so the restore's directory walk (/workspace → /) discovers it.
+# Machine-wide NuGet config: writable global folder + the baked read-only fallback. Placed at
+# filesystem root so the restore's directory walk (/workspace → /) discovers it. At runtime
+# NUGET_PACKAGES=/cache/nuget (the persistent cache_volume) OVERRIDES globalPackagesFolder, so the
+# online restore is reused offline on every later run. `maxHttpRequestsPerSource=1` serializes feed
+# requests (with `dotnet restore --disable-parallel`) so the transparent proxy/AV no longer drops the
+# parallel-TLS burst that triggers NU1301.
 RUN printf '%s\n' \
       '<?xml version="1.0" encoding="utf-8"?>' \
       '<configuration>' \
       '  <config>' \
       '    <add key="globalPackagesFolder" value="/tmp/nuget" />' \
+      '    <add key="maxHttpRequestsPerSource" value="1" />' \
       '  </config>' \
       '  <fallbackPackageFolders>' \
       '    <add key="warm" value="/opt/nuget-fallback" />' \

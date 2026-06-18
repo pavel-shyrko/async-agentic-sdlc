@@ -10,6 +10,11 @@ FROM golang:1.23-alpine
 COPY certs/ /usr/local/share/ca-certificates/
 RUN command -v update-ca-certificates >/dev/null && update-ca-certificates || true
 
+# Mount point for the PERSISTENT package-cache volume (cache_volume in environments.py). Created
+# world-writable so the fresh named volume seeds those perms — else the non-root --user run hits
+# EPERM on the root-owned empty volume. The volume is RW only on the network-ON restore phase.
+RUN mkdir -p /cache && chmod 0777 /cache
+
 # goimports powers the post-QA format pass (format_cmd): it removes unused imports — a HARD compile
 # error in Go — so generated tests clear the compile gate without a Reviewer bounce. Install it onto
 # the system PATH (runtime GOPATH=/tmp/go is an ephemeral tmpfs, so a $GOPATH/bin install would

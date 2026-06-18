@@ -89,6 +89,14 @@ generic SAST scanner with rules **vendored** so it runs fully offline — no `se
 fails behind a corporate TLS proxy). The tags must match `SUPPORTED_ENVIRONMENTS[...]["image"]` and
 `SAST_IMAGE` in `src/shared/core/environments.py`.
 
+**Dependency restore behind the corporate network:** the **first** run of each stack restores its
+packages **online** into a persistent docker cache volume (`sdlc-cache-{python,go,node,dotnet}`);
+every later run resolves **offline** from that volume, so a flaky proxy can no longer cause a
+`NU1301`/feed-unreachable halt. This needs only the corporate **CA** in the WSL trust store — no
+`HTTP_PROXY` for the (transparent) Godeltech egress. See
+[docker-on-windows.md](docker-on-windows.md) §4 for the CA install and §6 for the full restore /
+proxy / NU1301 details.
+
 ## 7. Claude CLI (native Linux build)
 
 With the nvm Node active (step 2), install the CLI globally — this pulls the **Linux** build, not `claude-code-win32-x64`:
