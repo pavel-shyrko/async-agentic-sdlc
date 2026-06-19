@@ -2,6 +2,7 @@ import os
 import re
 from decimal import Decimal
 from pathlib import Path
+from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 from src.shared.core.environments import SUPPORTED_ENVIRONMENTS
@@ -249,6 +250,22 @@ class ReviewReport(BaseModel):
         description="List of specific obsolete or zombie test filenames that must be physically deleted from disk.",
     )
 
+class ArbiterVerdict(BaseModel):
+    """Root-cause triage of a STUCK cycle. Adds a third routing target — the contract — beyond the
+    Developer/QA feedback channels, so a flawed contract (not an agent-fixable bug) can be repaired
+    instead of looping to the circuit breaker."""
+    root_cause_class: Literal["production_bug", "test_bug", "contract_conflict", "unrecoverable"] = Field(
+        description="Classification of WHY the cycle keeps failing.")
+    route: Literal["developer", "qa", "contract", "halt"] = Field(
+        description="Where to send the fix: the existing Developer/QA channel, a TechLead contract "
+        "amendment, or a hard halt to a human.")
+    reasoning: str = Field(description="Justification, citing the repeated failure evidence.")
+    contract_amendment_directive: str = Field(
+        default="",
+        description="REQUIRED when route=='contract': the precise SPEC correction for the TechLead — "
+        "which rule/precedence/approach the contract must change. MUST NOT propose changing "
+        "environment_id (the platform is fixed). Empty for any other route.")
+
 class GlobalPipelineContext(BaseModel):
     pr_description: str              # CLEAN ticket description — SSOT for the commit subject / PR body.
     # TechLead routing brief: pr_description prefixed with the [CURRENT TASK] header + appended
@@ -267,6 +284,11 @@ class GlobalPipelineContext(BaseModel):
     error_trace: str = ""           # Developer channel: production-code fix instructions only.
     qa_error_trace: str = ""        # QA channel: test-suite fix instructions only (isolated from Dev).
     review_report: ReviewReport | None = None
+    # Arbiter (failure triage) state. arbiter_verdict holds the latest classification; contract_amendments
+    # counts autonomous TechLead contract rewrites (bounded by MAX_CONTRACT_AMENDMENTS), persisted so a
+    # --resume recomputes the (extended) retry ceiling identically.
+    arbiter_verdict: ArbiterVerdict | None = None
+    contract_amendments: int = 0
     current_attempt: int = 1
     repository_map: str = ""
     telemetry: PipelineTelemetry = Field(default_factory=PipelineTelemetry)

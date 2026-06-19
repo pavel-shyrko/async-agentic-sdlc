@@ -123,6 +123,26 @@ class GetSystemPromptTests(unittest.TestCase):
         result = get_system_prompt("reviewer")
         self.assertIn("WRONG TEST PACKAGE/NAMESPACE", result)
 
+    def test_arbiter_prompt_has_routing_rubric_and_output_contract(self) -> None:
+        # The Arbiter triages a stuck cycle into a route; the contract route must carry an amendment
+        # directive and must not touch environment_id.
+        result = get_system_prompt("arbiter")
+        self.assertIn("ROUTING RUBRIC", result)
+        self.assertIn("contract_conflict", result)
+        self.assertIn("contract_amendment_directive", result)
+        self.assertIn("environment_id", result)            # the pin rule is stated
+
+    def test_techlead_prompt_has_error_precedence_and_amendment_mode(self) -> None:
+        # Root-cause hardening: overlapping Raises need explicit precedence; amendment mode is documented.
+        result = get_system_prompt("techlead")
+        self.assertIn("ERROR PRECEDENCE", result)
+        self.assertIn("AMENDMENT MODE", result)
+
+    def test_reviewer_prompt_requires_constraint_respecting_repair(self) -> None:
+        # A repair that fixes a gate by breaking a stated NFR is invalid — name the contract conflict.
+        result = get_system_prompt("reviewer")
+        self.assertIn("CONSTRAINT-RESPECTING REPAIR", result)
+
     def test_loads_template_with_placeholders(self) -> None:
         raw = get_system_prompt("developer")
         rendered = raw.format(

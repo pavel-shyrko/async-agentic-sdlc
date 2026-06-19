@@ -9,7 +9,9 @@ preserved so existing cross-references stay valid.
 > genuinely removed module is never regenerated and the disposal sticks) and **#13** (manifest
 > documentation: the design was reversed — `developer.md` now *requires* a top-of-file justification
 > comment on build manifests, so the guardrail flagging an uncommented manifest is correct behavior).
-> Items #17–#24 added from the PO→Reviewer pipeline contract analysis.
+> Items #17–#24 added from the PO→Reviewer pipeline contract analysis. Items #25–#26 added from the
+> Arbiter (ADR 0016) TASK-03 run analysis — the Arbiter's `developer`/`qa` routes are advisory, and a
+> non-amending verdict grants no extra cycle budget.
 
 ## 4. Restrict egress during the dependency-restore phase
 **Why:** the dependency-restore phase (`setup_cmd`) runs with `--network bridge`. Package managers
@@ -103,3 +105,48 @@ at [qa.py:126-129](src/executor/agents/qa.py#L126-L129). Both call the same idem
 `_dispose_zombie_tests`, so behavior is correct — only the comment is wrong.
 **Fix direction:** relabel the [qa.py:231](src/executor/agents/qa.py#L231) comment to "QA-self-identified
 obsolete files" to match the dual-path reality already documented in `qa.md`.
+
+## 25. [P2] Arbiter `developer`/`qa` routes are advisory — they don't change control flow
+**Context:** the Arbiter (ADR [0016](docs/adr/0016-arbiter-contract-self-healing.md), added to the FSM at
+[runner.py](src/executor/runner.py) in the `if not all_gates_passed:` block) returns
+`ArbiterVerdict.route ∈ {developer, qa, contract, halt}`. Only `contract` (re-derive the TechLead spec)
+and `halt` (abort) actually alter control flow. For `developer`/`qa` the code **falls through to the
+existing isolated-channel routing** — i.e. the next cycle is driven by the Reviewer's
+`dev_diagnostic_payload`/`qa_diagnostic_payload`, NOT by the Arbiter's verdict.
+**Symptom (observed):** in the TASK-03 run `005_exec_TASK-03_…`, the Arbiter fired once on cycle 2,
+correctly diagnosed a **test defect** (`route=qa`, `root_cause_class=test_bug` — a test mocked `json.load`
+while the production code streamed via `ijson`, so the mock was inert and the test ran an empty file), then
+fell through. The recovery on cycle 3 was driven entirely by the Reviewer's channels + `regenerate_tests`;
+the Arbiter's (correct) verdict cost one Gemini call (~$0.013) but changed nothing. So today the Arbiter
+only "earns its cost" on `contract`/`halt`.
+**Why it matters:** the most valuable thing a `developer`/`qa` verdict could do is **override a Reviewer
+misroute**. Channel-isolation is the classic deadlock (see #18): the Reviewer can fill the wrong channel
+(test fix written into `dev_diagnostic_payload`, or vice versa), and since the Developer can't touch tests
+and QA can't touch production code, the run loops to the breaker. The Arbiter already has the diagnosis
+needed to fix this.
+**Fix direction:** make `developer`/`qa` routes authoritative. When the Arbiter's `route` disagrees with
+which Reviewer payload is populated, re-route: move the fix text into the channel the Arbiter chose
+(`ctx.error_trace` for `developer`, `ctx.qa_error_trace` for `qa`) and clear the other, instead of copying
+both payloads verbatim. Pairs naturally with #17/#18 (payload-coherence validation). Keep the fall-through
+only when the Arbiter agrees with the Reviewer's routing.
+
+## 26. [P2] Zero retry margin when the Arbiter declines to amend the contract
+**Context:** the outer cycle ceiling is dynamic —
+`MAX_FUNCTIONAL_RETRIES + contract_amendments * AMENDMENT_RETRY_BONUS` (`runner.py`, the `while
+ctx.current_attempt <= …` loop; constants near the other reroute caps). Bonus cycles are granted **only on
+a contract amendment**. Defaults: `MAX_FUNCTIONAL_RETRIES=3` (env `PIPELINE_MAX_RETRIES`),
+`ARBITER_TRIGGER_ATTEMPT=2`, `AMENDMENT_RETRY_BONUS=2`.
+**Symptom (observed):** in `005_exec_TASK-03_…` the Arbiter (correctly) routed `qa`/`developer` rather than
+`contract`, so `contract_amendments` stayed `0` and the ceiling stayed `3`. The run succeeded on cycle
+**3 of 3** — the last allowed cycle, zero slack. A genuinely agent-fixable but hard bug that first surfaces
+at cycle 2 (when the Arbiter wakes) gets exactly **one** more attempt before "Retries exhausted." The
+Arbiter spend is incurred yet buys no extra budget unless it amends.
+**Why it matters:** the Arbiter is meant to *unstick* loops, but for non-`contract` verdicts it can detect
+"this is genuinely fixable, give it another shot" and still have the run die on the next cycle for lack of
+budget.
+**Fix direction (pick one / combine):** (a) grant a smaller bonus (e.g. +1) when the Arbiter returns a
+*confident* `developer`/`qa` verdict on a stuck cycle, so a correctly-diagnosed fixable bug gets headroom;
+(b) raise the default `MAX_FUNCTIONAL_RETRIES` (it is now an env-tunable constant — cheap to bump for
+operators); (c) gate the Arbiter on a *repeated/identical* failure rather than `attempt >= 2`, so it only
+spends when truly stuck and any granted bonus is better targeted. Bound any bonus to keep the financial
+circuit breaker the absolute ceiling.

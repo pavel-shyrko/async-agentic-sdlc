@@ -24,6 +24,7 @@ from src.executor.agents.techlead import run_techlead_node
 from src.executor.agents.qa import run_qa_agent_node
 from src.executor.agents.developer import run_developer_node
 from src.executor.agents.reviewer import run_reviewer_node
+from src.executor.agents.arbiter import run_arbiter_node
 from src.executor.agents.techwriter import run_techwriter_node
 from src.executor.nodes.gates import run_qa_unit_tests, run_security_scan, run_build_gate, run_test_compile_gate, build_failure_is_test_only, build_failure_is_environmental
 
@@ -348,6 +349,14 @@ GUARDRAIL_TOP_LINES = 15        # top-of-file window scanned for a justification
 GUARDRAIL_MAX_REROUTES = 2      # local guardrail_retries cap: free reroutes before a Hard Halt
 QA_GATE_MAX_REROUTES = 2        # free QA regenerations on a test-compile failure (Reviewer bypassed)
 QA_LINT_MAX_REROUTES = 2        # free QA regenerations on a contract-signature lint hit (Reviewer bypassed)
+
+# ==========================================
+# FUNCTIONAL RETRY BUDGET + ARBITER (contract self-healing)
+# ==========================================
+MAX_FUNCTIONAL_RETRIES = int(os.environ.get("PIPELINE_MAX_RETRIES", "3"))   # outer cycle budget
+ARBITER_TRIGGER_ATTEMPT = int(os.environ.get("ARBITER_TRIGGER_ATTEMPT", "2"))  # first cycle the Arbiter may run on failure
+MAX_CONTRACT_AMENDMENTS = int(os.environ.get("MAX_CONTRACT_AMENDMENTS", "1"))  # autonomous contract rewrites per run (else halt)
+AMENDMENT_RETRY_BONUS = int(os.environ.get("ARBITER_AMENDMENT_RETRY_BONUS", "2"))  # extra cycles granted to an amended contract
 
 
 def _missing_contract_files(ctx: GlobalPipelineContext) -> list[str]:
@@ -796,13 +805,15 @@ async def main():
         ctx.save_checkpoint(checkpoint_file)
         log.debug(f"Checkpoint saved after TechLead node: {checkpoint_file}")
 
-    max_retries = 3
-
     regenerate_tests = ctx.needs_test_regeneration()
 
-    for attempt in range(ctx.current_attempt, max_retries + 1):
-        ctx.current_attempt = attempt
-        log.info(f"🔷 Orchestration cycle {attempt}/{max_retries}")
+    # Outer functional-retry loop. The ceiling is dynamic: each autonomous contract amendment grants
+    # AMENDMENT_RETRY_BONUS extra cycles so the re-derived contract gets a fair shot. Driven by the
+    # persisted current_attempt + contract_amendments, so a --resume recomputes the same ceiling.
+    while ctx.current_attempt <= MAX_FUNCTIONAL_RETRIES + ctx.contract_amendments * AMENDMENT_RETRY_BONUS:
+        attempt = ctx.current_attempt
+        max_cycles = MAX_FUNCTIONAL_RETRIES + ctx.contract_amendments * AMENDMENT_RETRY_BONUS
+        log.info(f"🔷 Orchestration cycle {attempt}/{max_cycles}")
         log.debug(f"Starting orchestration cycle {attempt}")
 
         # Financial Circuit Breaker: halt immediately if a prior cycle (or a resumed run) is
@@ -1087,6 +1098,44 @@ async def main():
             regenerate_tests = True
 
         if not all_gates_passed:
+            # Arbiter (contract self-healing): once a cycle is demonstrably stuck (a prior fix already
+            # failed), classify the root cause. Beyond the Developer/QA channels it can route to the
+            # CONTRACT — re-deriving the TechLead spec — for failures no downstream agent can fix
+            # (contradictory contract, missing error precedence, a fix that would break an NFR).
+            if attempt >= ARBITER_TRIGGER_ATTEMPT:
+                gate_output = _extract_failure_context(qa_lines) if not qa_success else "\n".join(sec_lines)
+                await run_arbiter_node(
+                    ctx, gate_output=_cap_text(gate_output),
+                    prev_dev_trace=prev_dev_trace, prev_qa_trace=prev_qa_trace,
+                )
+                enforce_financial_circuit_breaker(ctx)
+                verdict = ctx.arbiter_verdict
+                amend_allowed = ctx.contract_amendments < MAX_CONTRACT_AMENDMENTS
+                if verdict.route == "contract" and amend_allowed:
+                    pinned_env = ctx.contract.environment_id
+                    await run_techlead_node(ctx, amendment_feedback=verdict.contract_amendment_directive)
+                    ctx.contract.environment_id = pinned_env   # PIN: amendment never thrashes the platform
+                    ctx.contract_amendments += 1
+                    regenerate_tests = True                    # QA re-derives tests vs the amended contract
+                    ctx.error_trace = ""                       # stale: referenced the pre-amendment contract
+                    ctx.qa_error_trace = ""
+                    ctx.review_report = None
+                    enforce_financial_circuit_breaker(ctx)
+                    ctx.current_attempt = attempt + 1
+                    ctx.save_checkpoint(checkpoint_file)
+                    log.warning(
+                        f"🔶 Cycle {attempt}: Arbiter amended the contract "
+                        f"({ctx.contract_amendments}/{MAX_CONTRACT_AMENDMENTS}). Re-deriving on a fresh cycle."
+                    )
+                    continue
+                if verdict.route == "halt" or (verdict.route == "contract" and not amend_allowed):
+                    _abort_with_incident(
+                        ctx,
+                        f"\n🚨 ARBITER: unrecoverable spec conflict (amendments "
+                        f"{ctx.contract_amendments}/{MAX_CONTRACT_AMENDMENTS}) — {verdict.reasoning}",
+                    )
+                # route in {developer, qa}: fall through to the normal isolated channel routing below.
+
             # Isolated routing: production-code fixes → Developer channel; test fixes → QA channel.
             ctx.error_trace = _cap_text(ctx.review_report.dev_diagnostic_payload)
             ctx.qa_error_trace = _cap_text(ctx.review_report.qa_diagnostic_payload)

@@ -12,8 +12,12 @@ from unittest.mock import AsyncMock
 # orchestrator imports src.shared.core.config at module import time.
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
 
+from contextlib import ExitStack
+
 from src.executor import runner as orchestrator
-from src.shared.core.models import TechLeadContract, GlobalPipelineContext, ReviewReport, WorkspacePaths
+from src.shared.core.models import (
+    TechLeadContract, GlobalPipelineContext, ReviewReport, WorkspacePaths, ArbiterVerdict,
+)
 
 
 class ParseArgsResumeTests(unittest.TestCase):
@@ -743,6 +747,152 @@ class DeadlockGuardTests(unittest.IsolatedAsyncioTestCase):
             finalize.assert_not_called()
             # Incident report written by the fast-fail abort.
             self.assertTrue((paths.reports_dir / "incident_report.json").exists())
+
+
+class ArbiterRoutingTests(unittest.IsolatedAsyncioTestCase):
+    """The Arbiter triages a STUCK cycle: it is gated off on cycle 1, and on a later failure can route
+    a contract amendment (bounded), fall through to Dev/QA, or halt."""
+
+    def _ctx(self, base: Path, **extra) -> GlobalPipelineContext:
+        paths = WorkspacePaths(logs_dir=base / "logs", reports_dir=base / "reports", repo_dir=base)
+        ctx = GlobalPipelineContext(
+            pr_description="arbiter run", workspace_paths=paths, test_code_snapshot="tests", **extra
+        )
+        ctx.contract = TechLeadContract(
+            files_to_modify=["src/converter.py"], instruction="noop", function_signatures="noop",
+            strict_type_validation_rules="noop", techlead_reasoning="noop", topology_contract=[],
+            environment_id="python-3.12-core",
+        )
+        return ctx
+
+    @staticmethod
+    def _reject(code_ok: bool) -> ReviewReport:
+        return ReviewReport(
+            code_quality_analysis="x", test_integrity_analysis="ok", log_verification_analysis="x",
+            code_quality_approved=code_ok, test_integrity_approved=True,
+            dev_diagnostic_payload="" if code_ok else "fix prod", qa_diagnostic_payload="",
+        )
+
+    def _patches(self, ctx, reviewer_effect, arbiter_effect, techlead):
+        """Common FSM mocks for a resume-shaped run (contract present → pre-loop TechLead skipped)."""
+        return [
+            mock.patch.object(orchestrator, "check_environment"),
+            mock.patch.object(orchestrator, "reconfigure_logging"),
+            mock.patch.object(orchestrator, "build_production_snapshot"),
+            mock.patch.object(orchestrator, "run_build_gate", new=AsyncMock(return_value=(True, []))),
+            mock.patch.object(orchestrator, "_missing_contract_files", return_value=[]),
+            mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
+                description=None, base_branch="main", resume=Path("cp.json"), reset_attempts=False)),
+            mock.patch.object(GlobalPipelineContext, "load_checkpoint", return_value=ctx),
+            mock.patch.object(orchestrator, "run_techlead_node", new=techlead),
+            mock.patch.object(orchestrator, "run_qa_agent_node", new_callable=AsyncMock),
+            mock.patch.object(orchestrator, "lint_test_suite_consistency", return_value=[]),
+            mock.patch.object(orchestrator, "run_developer_node", new_callable=AsyncMock),
+            mock.patch.object(orchestrator, "run_reviewer_node", new=AsyncMock(side_effect=reviewer_effect)),
+            mock.patch.object(orchestrator, "run_arbiter_node", new=AsyncMock(side_effect=arbiter_effect)),
+            mock.patch.object(orchestrator, "run_qa_unit_tests", new=AsyncMock(return_value=(True, []))),
+            mock.patch.object(orchestrator, "run_security_scan", new=AsyncMock(return_value=(True, []))),
+            mock.patch.object(orchestrator, "finalize_transaction", new_callable=AsyncMock),
+            mock.patch.object(orchestrator, "run_techwriter_node", new_callable=AsyncMock),
+            mock.patch.object(GlobalPipelineContext, "save_checkpoint", autospec=True),
+        ]
+
+    async def test_arbiter_not_invoked_on_first_cycle_failure(self) -> None:
+        # Cycle 1 rejects code, cycle 2 approves → success WITHOUT ever consulting the Arbiter
+        # (it is only eligible from ARBITER_TRIGGER_ATTEMPT, i.e. cycle 2, and only ON a failure).
+        with TemporaryDirectory() as td:
+            ctx = self._ctx(Path(td))
+            n = {"c": 0}
+
+            async def reviewer(c, *_a, **_k):
+                n["c"] += 1
+                c.review_report = self._reject(code_ok=(n["c"] >= 2))
+
+            async def arbiter(c, *_a, **_k):  # should never run
+                c.arbiter_verdict = ArbiterVerdict(root_cause_class="contract_conflict", route="halt", reasoning="x")
+
+            arbiter_mock = AsyncMock(side_effect=arbiter)
+            with ExitStack() as stack:
+                for p in self._patches(ctx, reviewer, arbiter, AsyncMock()):
+                    stack.enter_context(p)
+                stack.enter_context(mock.patch.object(orchestrator, "run_arbiter_node", new=arbiter_mock))
+                await orchestrator.main()
+            arbiter_mock.assert_not_awaited()
+
+    async def test_contract_route_amends_pins_env_and_recovers(self) -> None:
+        # Cycles 1 & 2 reject code; at cycle 2 the Arbiter routes `contract` → TechLead amends, env_id
+        # is pinned, the amendment counter increments, a bonus cycle runs, and cycle 3 approves.
+        with TemporaryDirectory() as td:
+            ctx = self._ctx(Path(td))
+            n = {"c": 0}
+
+            async def reviewer(c, *_a, **_k):
+                n["c"] += 1
+                c.review_report = self._reject(code_ok=(n["c"] >= 3))
+
+            async def arbiter(c, *_a, **_k):
+                c.arbiter_verdict = ArbiterVerdict(
+                    root_cause_class="contract_conflict", route="contract",
+                    reasoning="spec conflict", contract_amendment_directive="add error precedence")
+
+            async def techlead_amend(c, amendment_feedback=""):
+                # amendment mode: env_id must be re-emitted differently to prove the runner re-pins it.
+                c.contract.environment_id = "node-22-core"
+
+            techlead = AsyncMock(side_effect=techlead_amend)
+            finalize = AsyncMock()
+            with ExitStack() as stack:
+                for p in self._patches(ctx, reviewer, arbiter, techlead):
+                    stack.enter_context(p)
+                stack.enter_context(mock.patch.object(orchestrator, "finalize_transaction", new=finalize))
+                await orchestrator.main()
+
+            techlead.assert_awaited_once()                       # amendment only (pre-loop TechLead skipped)
+            self.assertEqual(ctx.contract_amendments, 1)
+            self.assertEqual(ctx.contract.environment_id, "python-3.12-core")  # PINNED across amendment
+            finalize.assert_awaited_once()                       # recovered on the bonus cycle
+
+    async def test_halt_verdict_aborts(self) -> None:
+        with TemporaryDirectory() as td:
+            ctx = self._ctx(Path(td))
+
+            async def reviewer(c, *_a, **_k):
+                c.review_report = self._reject(code_ok=False)
+
+            async def arbiter(c, *_a, **_k):
+                c.arbiter_verdict = ArbiterVerdict(
+                    root_cause_class="unrecoverable", route="halt", reasoning="runner misconfig")
+
+            with ExitStack() as stack:
+                for p in self._patches(ctx, reviewer, arbiter, AsyncMock()):
+                    stack.enter_context(p)
+                with self.assertRaises(SystemExit) as exit_ctx:
+                    await orchestrator.main()
+            self.assertEqual(exit_ctx.exception.code, 1)
+
+    async def test_amendment_cap_downgrades_contract_to_halt(self) -> None:
+        # The contract was already amended once (cap reached) → a further `contract` verdict must halt,
+        # never amend a second time.
+        with TemporaryDirectory() as td:
+            ctx = self._ctx(Path(td), contract_amendments=1)
+
+            async def reviewer(c, *_a, **_k):
+                c.review_report = self._reject(code_ok=False)
+
+            async def arbiter(c, *_a, **_k):
+                c.arbiter_verdict = ArbiterVerdict(
+                    root_cause_class="contract_conflict", route="contract",
+                    reasoning="still conflicting", contract_amendment_directive="x")
+
+            techlead = AsyncMock()
+            with ExitStack() as stack:
+                for p in self._patches(ctx, reviewer, arbiter, techlead):
+                    stack.enter_context(p)
+                with self.assertRaises(SystemExit) as exit_ctx:
+                    await orchestrator.main()
+            self.assertEqual(exit_ctx.exception.code, 1)
+            techlead.assert_not_awaited()                        # cap reached → no 2nd amendment
+            self.assertEqual(ctx.contract_amendments, 1)
 
 
 class BootstrapSessionTests(unittest.IsolatedAsyncioTestCase):

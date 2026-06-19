@@ -17,9 +17,17 @@ _EXT_LANG = {
 # ==========================================
 # AGENT NODES
 # ==========================================
-async def run_techlead_node(ctx: GlobalPipelineContext) -> None:
+async def run_techlead_node(ctx: GlobalPipelineContext, amendment_feedback: str = "") -> None:
+    """Derive (or, when ``amendment_feedback`` is set, AMEND) the TechLead contract.
+
+    Amendment mode is driven by the Arbiter: given the existing contract + a spec-correction directive +
+    the failing evidence, the TechLead re-emits a REVISED contract that resolves a contract-level
+    conflict (the runner additionally pins ``environment_id`` so the platform never thrashes).
+    """
     model_name = TECHLEAD_MODEL
-    log.info(f"🔷 [ROLE] Technical Lead Agent | [MODEL] {model_name}")
+    amending = bool(amendment_feedback) and ctx.contract is not None
+    label = "Technical Lead Agent (AMENDMENT)" if amending else "Technical Lead Agent"
+    log.info(f"🔷 [ROLE] {label} | [MODEL] {model_name}")
 
     if not ctx.repository_map:
         ctx.repository_map = generate_repo_map(ctx.workspace_paths.repo_dir)
@@ -38,21 +46,43 @@ async def run_techlead_node(ctx: GlobalPipelineContext) -> None:
         "techlead", ctx, inferred_tags=early_tags
     )
 
+    if amending:
+        # Re-derivation: hand the model the failing contract + the Arbiter directive + the evidence so it
+        # can produce a corrected spec. environment_id MUST stay byte-identical (pinned again in runner).
+        production_code = "\n\n".join(
+            f"=== FILE: {p} ===\n{c}" for p, c in ctx.production_code_snapshot.items()
+        ) or "No production code captured."
+        review = ctx.review_report.model_dump_json(indent=2) if ctx.review_report else "None"
+        user_content = (
+            "=== CONTRACT AMENDMENT MODE ===\n"
+            "The current contract led the pipeline into a STUCK loop. Produce a REVISED contract that "
+            "resolves the conflict described below. Keep `environment_id` UNCHANGED.\n\n"
+            f"=== ARBITER AMENDMENT DIRECTIVE ===\n{amendment_feedback}\n\n"
+            f"=== CURRENT (FAILING) CONTRACT ===\n{ctx.contract.model_dump_json(indent=2)}\n\n"
+            f"=== REVIEWER REPORT ===\n{review}\n\n"
+            f"=== GENERATED PRODUCTION CODE ===\n{production_code}\n\n"
+            f"=== GENERATED TEST SUITE ===\n{ctx.test_code_snapshot}\n\n"
+            f"=== EXISTING REPOSITORY TOPOLOGY ===\n{ctx.repository_map}\n\n"
+            + (ctx.techlead_brief or ctx.pr_description)
+        )
+    else:
+        user_content = (
+            f"=== EXISTING REPOSITORY TOPOLOGY ===\n{ctx.repository_map}\n\n"
+            + (ctx.techlead_brief or ctx.pr_description)
+        )
+
     contract, raw_response = await run_structured_llm(
         "techlead",
         TechLeadContract,
         [
             {"role": "system", "content": sys_prompt},
-            {
-                "role": "user",
-                "content": f"=== EXISTING REPOSITORY TOPOLOGY ===\n{ctx.repository_map}\n\n"
-                + (ctx.techlead_brief or ctx.pr_description),
-            },
+            {"role": "user", "content": user_content},
         ],
     )
     ctx.contract = contract
     log_token_usage(ctx.telemetry, "TechLead", raw_response, TECHLEAD_MODEL)
 
     log.info(f"   [THOUGHT] {ctx.contract.techlead_reasoning}")
-    log.info(f"   [ARTIFACT] Contract locked for: {ctx.contract.files_to_modify}\n")
+    verb = "Contract amended" if amending else "Contract locked"
+    log.info(f"   [ARTIFACT] {verb} for: {ctx.contract.files_to_modify}\n")
     log.debug(f"TechLead Node Output: {ctx.contract.model_dump_json(indent=2)}")
