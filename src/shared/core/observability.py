@@ -151,14 +151,23 @@ _FINISH_REASON_HINTS = {
     "MAX_TOKENS": "Gemini hit the output token cap before finishing — the response was truncated.",
 }
 
+# Content-filter finish_reasons that a plain retry CANNOT recover (the same prompt yields the same
+# block). The retry layer fails fast on these instead of burning the full backoff budget; RECITATION
+# alone is additionally given one paraphrase-guarded retry in ``run_structured_llm``.
+NON_RETRYABLE_FINISH_REASONS = frozenset(
+    {"RECITATION", "SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"}
+)
 
-def describe_finish_reason(obj: Any) -> str | None:
-    """Best-effort, never-raising extraction of a genai ``finish_reason`` (+ a hint) from either a raw
-    response or an ``instructor`` exception, for logging WHY a structured call failed.
+
+def finish_reason_name(obj: Any) -> str | None:
+    """Best-effort, never-raising extraction of the bare genai ``finish_reason`` NAME from either a raw
+    response or an ``instructor`` exception.
 
     Accepts: a genai ``GenerateContentResponse`` (``.candidates[0].finish_reason``) or an
-    ``InstructorRetryException`` (``.last_completion`` / the last of ``.failed_attempts``). Returns a
-    string like ``"RECITATION — <hint>"`` when a non-trivial reason is found, else ``None``.
+    ``InstructorRetryException`` (``.last_completion`` / the last of ``.failed_attempts``). Returns the
+    upper-cased reason name (e.g. ``"RECITATION"``) for a non-trivial block, else ``None`` (normal
+    ``STOP`` / empty / missing). This is the classification primitive; ``describe_finish_reason`` adds
+    the operator hint on top.
     """
     try:
         candidates = getattr(obj, "candidates", None)
@@ -180,7 +189,19 @@ def describe_finish_reason(obj: Any) -> str | None:
         name = name.upper()
         if name in ("STOP", ""):  # normal completion — nothing to report
             return None
-        hint = _FINISH_REASON_HINTS.get(name)
-        return f"{name} — {hint}" if hint else name
+        return name
     except Exception:
         return None
+
+
+def describe_finish_reason(obj: Any) -> str | None:
+    """Best-effort, never-raising extraction of a genai ``finish_reason`` (+ a hint) from either a raw
+    response or an ``instructor`` exception, for logging WHY a structured call failed.
+
+    Returns a string like ``"RECITATION — <hint>"`` when a non-trivial reason is found, else ``None``.
+    """
+    name = finish_reason_name(obj)
+    if name is None:
+        return None
+    hint = _FINISH_REASON_HINTS.get(name)
+    return f"{name} — {hint}" if hint else name

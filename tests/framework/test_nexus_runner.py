@@ -50,6 +50,27 @@ class NexusRunDirTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(ckpt["kind"], "nexus")
             self.assertEqual(ckpt["completed_phase"], "TPM")
 
+    async def test_task01_gets_engine_baseline_files_others_do_not(self) -> None:
+        # TASK-01 (repo-prep) is appended the engine-curated .gitignore + MIT LICENSE so the TPM never
+        # reproduces them (the RECITATION root cause); business tickets stay free of baseline files.
+        tasks = [
+            {"ticket_id": "TASK-01", "title": "Prep", "description": "prep body", "environment_id": "python-3.12-core"},
+            {"ticket_id": "TASK-02", "title": "Feature", "description": "feature body", "environment_id": "python-3.12-core"},
+        ]
+        with TemporaryDirectory() as td:
+            run_dir = Path(td) / "run_b"
+            p_po, p_sa, p_tpm = _patch_agents(tpm=tasks)
+            with p_po, p_sa, p_tpm:
+                await run_nexus("an idea", run_dir=run_dir)
+
+            t1 = (run_dir / "artifacts" / "TASK-01.md").read_text(encoding="utf-8")
+            t2 = (run_dir / "artifacts" / "TASK-02.md").read_text(encoding="utf-8")
+            self.assertIn("Repository Baseline Files (engine-provided", t1)
+            self.assertIn("Permission is hereby granted", t1)        # full MIT body injected
+            self.assertIn("```gitignore", t1)
+            self.assertNotIn("Repository Baseline Files", t2)        # business ticket untouched
+            self.assertNotIn("Permission is hereby granted", t2)
+
     async def test_resume_skips_completed_phases(self) -> None:
         with TemporaryDirectory() as td:
             run_dir = Path(td) / "run_y"
