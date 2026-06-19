@@ -7,14 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each release maps to a completed SDLC iteration; the corresponding Architecture
 Decision Record (ADR) is linked from the version heading.
 
+## [v0.16.1] - 2026-06-19 — Documentation, Licensing & Onboarding
+
+Archive: [iteration_16.1](./docs/releases/iteration_16.1/iteration_16.1_README.md)
+
+> No ADR — documentation, licensing, and meta-tooling maintenance only (no engine/runtime behavior change).
+
+### Added
+- **Apache-2.0 `LICENSE` for the engine repository** (+ a `## 📄 License` section in `README.md`). Chosen
+  over MIT for the explicit patent grant and change-notice requirement that fit a code-generating tool.
+  (Distinct from the **MIT** baseline the engine injects into *generated apps* via `boilerplate.py`, which
+  is unchanged.)
+- **`docs/ARCHITECTURE.md`** — C4 model in GitHub-native Mermaid: **L1** System Context, **L2** Containers
+  (Nexus / Executor / Shared planes, prompt store, sandbox images, run store), **L3** Executor FSM, plus an
+  end-to-end `sequenceDiagram` and a component-reference table. No C4-plugin syntax (GitHub won't render it).
+- **Docs navigation index pages** — `docs/README.md` (front door) and `docs/decisions/README.md` (ADR index
+  grouped by theme).
+- **Rewritten onboarding guide `docs/guides/setup.md`** — a single zero-to-first-run spine: prerequisites
+  table, ordered steps with per-step verifies, a **pre-flight self-check that mirrors `check_environment`**,
+  a first-run walkthrough (plan → execute → resume + success/failure signals), an environment-variable
+  reference table, and an expanded troubleshooting matrix.
+
+### Changed
+- **`docs/` restructured for navigability** (history-preserving `git mv`): `docs/adr/`→`docs/decisions/`,
+  `docs/archive/`→`docs/releases/`, `docs/{setup,docker-on-windows}.md`→`docs/guides/`; every cross-link
+  rewritten.
+- **`/docs-sync` and `/iteration-release` skills extended** to also synchronize the `docs/ARCHITECTURE.md`
+  C4 diagrams + component table when an iteration changes *structure* (a new/removed agent role, FSM route,
+  external system, or plane/container).
+
+### Removed
+- **The stale root `Dockerfile`** — it `COPY`/`ENTRYPOINT`-ed the long-deleted `orchestrator.py` (broken
+  since the ADR 0012 plane split) and was referenced by no build/compose/CI. Sandbox runtimes are built from
+  `docker/*.Dockerfile` via `scripts/build_sandbox_images.sh`. The stale `python3 orchestrator.py` example in
+  the setup guide was corrected to `main.py`.
+
 ## [v0.16.0] - 2026-06-19 — Arbiter: Autonomous Contract Self-Healing & Recitation Resilience
 
-ADR: [0016-arbiter-contract-self-healing](./docs/adr/0016-arbiter-contract-self-healing.md)
-(extends [0001](./docs/adr/0001-baseline-sequential-loop.md),
-[0003](./docs/adr/0003-dual-channel-observability.md),
-[0006](./docs/adr/0006-fsm-state-serialization-resume.md))
+ADR: [0016-arbiter-contract-self-healing](./docs/decisions/0016-arbiter-contract-self-healing.md)
+(extends [0001](./docs/decisions/0001-baseline-sequential-loop.md),
+[0003](./docs/decisions/0003-dual-channel-observability.md),
+[0006](./docs/decisions/0006-fsm-state-serialization-resume.md))
 
-Archive: [iteration_16](./docs/archive/iteration_16/iteration_16_README.md)
+Archive: [iteration_16](./docs/releases/iteration_16/iteration_16_README.md)
 
 ### Added
 - **Arbiter agent — autonomous contract self-healing (a third FSM route).** A new `arbiter` role
@@ -82,9 +117,9 @@ Archive: [iteration_16](./docs/archive/iteration_16/iteration_16_README.md)
 
 ## [v0.15.0] - 2026-06-18 — Unified Project & Run Topology: the Nexus⇄Executor Sync Bridge
 
-ADR: [0015-unified-project-run-topology](./docs/adr/0015-unified-project-run-topology.md)
-(extends [0012](./docs/adr/0012-virtual-separation-monorepo-planes.md),
-[0006](./docs/adr/0006-fsm-state-serialization-resume.md))
+ADR: [0015-unified-project-run-topology](./docs/decisions/0015-unified-project-run-topology.md)
+(extends [0012](./docs/decisions/0012-virtual-separation-monorepo-planes.md),
+[0006](./docs/decisions/0006-fsm-state-serialization-resume.md))
 
 ### Added
 - **One run-layout SSOT shared by both planes** (`src/shared/core/runs.py`). A new `Projects`
@@ -150,8 +185,8 @@ ADR: [0015-unified-project-run-topology](./docs/adr/0015-unified-project-run-top
 
 ## [v0.14.0] - 2026-06-17 — Language-Neutral QA: Skills-Driven Test Correctness & De-Hardcoded Agent
 
-ADR: [0014-language-neutral-qa-whole-file-assembly](./docs/adr/0014-language-neutral-qa-whole-file-assembly.md)
-(supersedes [0013](./docs/adr/0013-structured-test-maintenance-ast-pruning.md))
+ADR: [0014-language-neutral-qa-whole-file-assembly](./docs/decisions/0014-language-neutral-qa-whole-file-assembly.md)
+(supersedes [0013](./docs/decisions/0013-structured-test-maintenance-ast-pruning.md))
 
 ### Changed
 - **QA agent is now fully language-neutral.** Removed all per-language imperative code from `src/executor/agents/qa.py`: the Python-only `ast` merge (`_assemble_suite`/`_is_main_guard`), the Go package-clause guard (`_GO_PACKAGE_RE`/`_ensure_go_package_clause`/`_derive_go_package`), the `env_language == "go"` write-loop branch, and the Python-default zombie predicate. A single `_assemble_suite` writes the model's complete file verbatim with one safety net (empty delta + existing file + no `overwrite_existing` keeps the existing file). Dropped the now-dead `uses_ast`/`fence_lang` profile keys from `src/shared/core/environments.py`.
@@ -163,7 +198,7 @@ ADR: [0014-language-neutral-qa-whole-file-assembly](./docs/adr/0014-language-neu
 
 ## [v0.13.0] - 2026-06-16 — Structured Test Maintenance (AST-Aware Pruning) & CI Security-Gate Fix
 
-ADR: [0013-structured-test-maintenance-ast-pruning](./docs/adr/0013-structured-test-maintenance-ast-pruning.md)
+ADR: [0013-structured-test-maintenance-ast-pruning](./docs/decisions/0013-structured-test-maintenance-ast-pruning.md)
 
 ### Changed
 - QA agent moved from LLM whole-file test merging to **Structured Test Maintenance**. The `QATestSuite` schema (`src/shared/core/models.py`) now returns deltas — `new_imports`, `new_test_code`, and `obsolete_test_names` — instead of a single `test_code` blob; the QA system prompt (`prompts/system/qa.md`) gains a `STRUCTURED TEST MAINTENANCE` rule (never re-emit the whole file).
@@ -177,7 +212,7 @@ ADR: [0013-structured-test-maintenance-ast-pruning](./docs/adr/0013-structured-t
 
 ## [v0.12.0] - 2026-06-15 — Virtual Separation: Control / Worker / Shared Plane Topology (Monorepo PoC)
 
-ADR: [0012-virtual-separation-monorepo-planes](./docs/adr/0012-virtual-separation-monorepo-planes.md)
+ADR: [0012-virtual-separation-monorepo-planes](./docs/decisions/0012-virtual-separation-monorepo-planes.md)
 
 ### Added
 - Root `main.py` entrypoint: a thin CLI shell that imports `main` from `src.executor.runner` and runs it under `asyncio`, replicating the former `if __name__ == "__main__"` tail of `orchestrator.py`. Program start is now decoupled from FSM execution. The documented run command becomes `python3 main.py …`.
@@ -192,7 +227,7 @@ ADR: [0012-virtual-separation-monorepo-planes](./docs/adr/0012-virtual-separatio
 
 ## [v0.11.0] - 2026-06-15 — Secure Sandbox, Language-Neutral Topology & Real-Time FinOps Circuit Breaker
 
-ADR: [0011-secure-sandbox-and-finops-telemetry](./docs/adr/0011-secure-sandbox-and-finops-telemetry.md)
+ADR: [0011-secure-sandbox-and-finops-telemetry](./docs/decisions/0011-secure-sandbox-and-finops-telemetry.md)
 
 ### Security
 - Docker API socket restricted from `tcp://0.0.0.0:2375` (no TLS) to `tcp://127.0.0.1:2375`, closing an unauthenticated remote-root exposure: the plaintext daemon port was published on every interface, allowing any process on the local subnet to drive the Docker engine and obtain root on the WSL/Windows host via a privileged bind mount. The API is now reachable only over loopback.
@@ -215,7 +250,7 @@ ADR: [0011-secure-sandbox-and-finops-telemetry](./docs/adr/0011-secure-sandbox-a
 
 ## [v0.10.0] - 2026-06-11 — Fast-Fail Documentation Guardrail & Repo Topology Routing
 
-ADR: [0010-fast-fail-documentation-guardrail](./docs/adr/0010-fast-fail-documentation-guardrail.md)
+ADR: [0010-fast-fail-documentation-guardrail](./docs/decisions/0010-fast-fail-documentation-guardrail.md)
 
 ### Added
 - Fast-Fail Documentation Guardrail (`enforce_documentation_guardrail` in `orchestrator.py`): a deterministic, zero-LLM-cost middleware after the Developer phase that scans the first 15 lines of every newly-created uncontracted file for a language-agnostic comment lead-in (`#`, `//`, `/*`, `*`, `"""`, `'''`). A miss triggers a "free reroute" straight back to the Developer — bypassing the Reviewer/QA nodes and consuming none of the functional circuit-breaker budget. Binary/empty/unreadable files are ignored safely.
@@ -243,7 +278,7 @@ ADR: [0010-fast-fail-documentation-guardrail](./docs/adr/0010-fast-fail-document
 
 ## [v0.9.0] - 2026-06-08 — Hybrid Skill Routing
 
-ADR: [0009-hybrid-skill-routing](./docs/adr/0009-hybrid-skill-routing.md)
+ADR: [0009-hybrid-skill-routing](./docs/decisions/0009-hybrid-skill-routing.md)
 
 ### Added
 - Declarative YAML frontmatter routing: every `prompts/skills/*.md` file now carries a `type` / `nodes` / `triggers` header parsed by a stdlib-only `_parse_frontmatter` (no `pyyaml` dependency), so a skill declares which agent nodes it targets and when it applies.
@@ -263,7 +298,7 @@ ADR: [0009-hybrid-skill-routing](./docs/adr/0009-hybrid-skill-routing.md)
 
 ## [v0.8.0] - 2026-06-01 — Git-Anchored Sessions & Atomic Commit
 
-ADR: [0008-git-anchored-sessions-atomic-commit](./docs/adr/0008-git-anchored-sessions-atomic-commit.md)
+ADR: [0008-git-anchored-sessions-atomic-commit](./docs/decisions/0008-git-anchored-sessions-atomic-commit.md)
 
 ### Added
 - Git-anchored sessions: each run generates a UUID base directory `runs/run_<uuid>/`, shallow-clones the target repo (`git clone --depth 1`) into `runs/run_<uuid>/repo/`, checks out a `feat/ticket-<ticket>` branch, and force-fetches the base branch into a local ref.
@@ -294,7 +329,7 @@ ADR: [0008-git-anchored-sessions-atomic-commit](./docs/adr/0008-git-anchored-ses
 
 ## [v0.7.0] - 2026-05-31 — Prompt/Schema Layer Separation
 
-ADR: [0007-prompt-schema-layer-separation](./docs/adr/0007-prompt-schema-layer-separation.md)
+ADR: [0007-prompt-schema-layer-separation](./docs/decisions/0007-prompt-schema-layer-separation.md)
 
 ### Added
 - `src/core/prompts.py` — `get_system_prompt(agent_name)` and `get_skill(skill_name)` loaders backed by `lru_cache`, resolving markdown files from `prompts/system/` and `prompts/skills/` relative to the repo root.
@@ -309,7 +344,7 @@ ADR: [0007-prompt-schema-layer-separation](./docs/adr/0007-prompt-schema-layer-s
 
 ## [v0.6.0] - 2026-05-31 — FSM State Serialization & Resume Mechanism
 
-ADR: [0006-fsm-state-serialization-resume](./docs/adr/0006-fsm-state-serialization-resume.md)
+ADR: [0006-fsm-state-serialization-resume](./docs/decisions/0006-fsm-state-serialization-resume.md)
 
 ### Added
 - `GlobalPipelineContext.save_checkpoint` / `load_checkpoint` — full-context FSM serialization to a single rolling `artifacts/reports/checkpoint.json`.
@@ -326,7 +361,7 @@ ADR: [0006-fsm-state-serialization-resume](./docs/adr/0006-fsm-state-serializati
 
 ## [v0.5.0] - 2026-05-28 — Git-Driven State Tracking & QA Fan-Out Concurrency
 
-ADR: [0005-git-driven-state-tracking-qa-fanout](./docs/adr/0005-git-driven-state-tracking-qa-fanout.md)
+ADR: [0005-git-driven-state-tracking-qa-fanout](./docs/decisions/0005-git-driven-state-tracking-qa-fanout.md)
 
 ### Added
 - `src/utils/git_helpers.py` — Git Anchor pattern (`init_sandbox_git` + `get_pipeline_snapshot_files`) producing a strict causal delta via `git diff <base_branch> --name-only`.
@@ -341,7 +376,7 @@ ADR: [0005-git-driven-state-tracking-qa-fanout](./docs/adr/0005-git-driven-state
 
 ## [v0.4.0] - 2026-05-27 — Modularization & Sandbox Hardening
 
-ADR: [0004-modularization-sandbox-hardening](./docs/adr/0004-modularization-sandbox-hardening.md)
+ADR: [0004-modularization-sandbox-hardening](./docs/decisions/0004-modularization-sandbox-hardening.md)
 
 ### Added
 - Production-grade `Dockerfile` (Node.js, Claude CLI, Docker CLI, Python utils) running under an unprivileged `appuser`.
@@ -359,7 +394,7 @@ ADR: [0004-modularization-sandbox-hardening](./docs/adr/0004-modularization-sand
 
 ## [v0.3.0] - 2026-05-26 — Dual-Channel Observability & Gemini 2.5 Routing
 
-ADR: [0003-dual-channel-observability](./docs/adr/0003-dual-channel-observability.md)
+ADR: [0003-dual-channel-observability](./docs/decisions/0003-dual-channel-observability.md)
 
 ### Added
 - Dual-channel logging: `StreamHandler` (INFO, console) + `RotatingFileHandler` (DEBUG, `sdlc_audit.log`) with microsecond timestamps.
@@ -373,7 +408,7 @@ ADR: [0003-dual-channel-observability](./docs/adr/0003-dual-channel-observabilit
 
 ## [v0.2.0] - 2026-05-26 — Async Fork-Join & QA Node Isolation
 
-ADR: [0002-async-qa-node-isolation](./docs/adr/0002-async-qa-node-isolation.md)
+ADR: [0002-async-qa-node-isolation](./docs/decisions/0002-async-qa-node-isolation.md)
 
 ### Added
 - Dedicated QA-Generator node compiling an immutable test suite *before* code generation.
@@ -384,7 +419,7 @@ ADR: [0002-async-qa-node-isolation](./docs/adr/0002-async-qa-node-isolation.md)
 
 ## [v0.1.0] - 2026-05-25 — Baseline Sequential Loop
 
-ADR: [0001-baseline-sequential-loop](./docs/adr/0001-baseline-sequential-loop.md)
+ADR: [0001-baseline-sequential-loop](./docs/decisions/0001-baseline-sequential-loop.md)
 
 ### Added
 - Baseline linear orchestrator: Architect → Developer → Dockerized QA validation with sequential error-routing loops.
@@ -394,20 +429,20 @@ ADR: [0001-baseline-sequential-loop](./docs/adr/0001-baseline-sequential-loop.md
 
 ## [v0.0.0] - 2026-05-24 — Cloud Infra & FSM Architecture Research
 
-ADR: [0000-cloud-infra-fsm-research](./docs/adr/0000-cloud-infra-fsm-research.md)
+ADR: [0000-cloud-infra-fsm-research](./docs/decisions/0000-cloud-infra-fsm-research.md)
 
 ### Added
 - System topology blueprint: custom Python/Pydantic FSM (over LangGraph), localized Docker sandboxing (over Cloud Run), hybrid Gemini/Claude model routing with context + prompt caching, GitHub App RS256 auth, and a 10-cycle FinOps cost model (~$5.83).
 
-[v0.11.0]: ./docs/adr/0011-secure-sandbox-and-finops-telemetry.md
-[v0.10.0]: ./docs/adr/0010-fast-fail-documentation-guardrail.md
-[v0.9.0]: ./docs/adr/0009-hybrid-skill-routing.md
-[v0.8.0]: ./docs/adr/0008-git-anchored-sessions-atomic-commit.md
-[v0.7.0]: ./docs/adr/0007-prompt-schema-layer-separation.md
-[v0.6.0]: ./docs/adr/0006-fsm-state-serialization-resume.md
-[v0.5.0]: ./docs/adr/0005-git-driven-state-tracking-qa-fanout.md
-[v0.4.0]: ./docs/adr/0004-modularization-sandbox-hardening.md
-[v0.3.0]: ./docs/adr/0003-dual-channel-observability.md
-[v0.2.0]: ./docs/adr/0002-async-qa-node-isolation.md
-[v0.1.0]: ./docs/adr/0001-baseline-sequential-loop.md
-[v0.0.0]: ./docs/adr/0000-cloud-infra-fsm-research.md
+[v0.11.0]: ./docs/decisions/0011-secure-sandbox-and-finops-telemetry.md
+[v0.10.0]: ./docs/decisions/0010-fast-fail-documentation-guardrail.md
+[v0.9.0]: ./docs/decisions/0009-hybrid-skill-routing.md
+[v0.8.0]: ./docs/decisions/0008-git-anchored-sessions-atomic-commit.md
+[v0.7.0]: ./docs/decisions/0007-prompt-schema-layer-separation.md
+[v0.6.0]: ./docs/decisions/0006-fsm-state-serialization-resume.md
+[v0.5.0]: ./docs/decisions/0005-git-driven-state-tracking-qa-fanout.md
+[v0.4.0]: ./docs/decisions/0004-modularization-sandbox-hardening.md
+[v0.3.0]: ./docs/decisions/0003-dual-channel-observability.md
+[v0.2.0]: ./docs/decisions/0002-async-qa-node-isolation.md
+[v0.1.0]: ./docs/decisions/0001-baseline-sequential-loop.md
+[v0.0.0]: ./docs/decisions/0000-cloud-infra-fsm-research.md

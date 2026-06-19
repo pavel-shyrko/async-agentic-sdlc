@@ -1,5 +1,8 @@
 # Docker Setup Guide (WSL2 + Windows CLI)
 
+> This is **Step 1 of [setup.md](setup.md)** — the Docker deep-dive (daemon, loopback binding, corporate
+> CA, dependency restore). New here? Start at [setup.md](setup.md) and come back when it sends you here.
+
 ## 1. Why we use this setup
 This configuration replaces **Docker Desktop** for several reasons:
 * **No licensing restrictions:** Avoids paid licenses for JDG (B2B) or Business users.

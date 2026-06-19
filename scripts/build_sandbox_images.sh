@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the per-environment sandbox images and pull the generic Semgrep SAST image.
 # One-time (or after a Dockerfile change) prerequisite for the runtime validation gates.
-# Run inside the WSL2 Ubuntu shell where the docker-ce engine lives (see docs/docker-on-windows.md).
+# Run inside the WSL2 Ubuntu shell where the docker-ce engine lives (see docs/guides/docker-on-windows.md).
 #
 # Image tags MUST match SUPPORTED_ENVIRONMENTS[...]["image"] in src/shared/core/environments.py.
 set -euo pipefail

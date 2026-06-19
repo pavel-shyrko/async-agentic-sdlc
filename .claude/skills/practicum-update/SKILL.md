@@ -10,7 +10,7 @@ Run after a major milestone or highly complex iteration to distill new engineeri
 anti-patterns into the project's executive summary (`PRACTICUM.md`).
 
 ## Protocol
-1. **Context Gathering**: Read the latest additions to `CHANGELOG.md` and the most recently generated `docs/adr/*.md` file.
+1. **Context Gathering**: Read the latest additions to `CHANGELOG.md` and the most recently generated `docs/decisions/*.md` file.
 2. **Analysis**: Determine if the recent changes yielded a *generalizable engineering lesson* (e.g. handling LLM context limits, managing agent state, overriding model biases, FinOps optimizations). If the changes were purely routine (e.g. fixing a minor bug, updating a README), abort with: "No new engineering takeaways derived."
 3. **Drafting the Takeaway**:
    - Formulate a strong, concise title for the concept.

@@ -14,12 +14,26 @@ The core objective of this repository is to fully satisfy the **Mission · OPS_0
 Product ──> Planner ──> Architect ──> TechLead ──> Developer ──> Reviewer ──> QA ──> DevOps
 ```
 
+> The **implemented** architecture (two planes — a Nexus control plane `PO→SA→TPM` and an Executor
+> worker-plane FSM) is documented with C4 diagrams in **[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)**.
+
 ### Mandated Success Criteria
 
 * **Absolute Autonomy**: Achieve ≥ 80% human-free execution across the workflow.
 * **Deterministic Execution**: Strict machine-readable Pydantic/JSON contracts between every node to prevent semantic degradation.
 * **Resilience**: The engine must autonomously process, route, and heal from at least 2 simulated runtime or compilation failures.
 * **Immutable Verification**: Code passes tests generated independently by a QA agent, isolated from the Developer agent's write scope.
+
+---
+
+## 📚 Documentation
+
+Full docs live under **[docs/](./docs/README.md)** (start there). Highlights:
+
+* **[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)** — C4 diagrams (System Context, Containers, Executor FSM) + end-to-end sequence, in Mermaid.
+* **[docs/guides/](./docs/guides/setup.md)** — environment setup (WSL2, Docker, venv, Gemini key).
+* **[docs/decisions/](./docs/decisions/README.md)** — the ADR log (0000–0016), indexed by theme.
+* **[CHANGELOG.md](./CHANGELOG.md)** · **[PRACTICUM.md](./PRACTICUM.md)** · **[docs/BACKLOG.md](./docs/BACKLOG.md)** — release history, distilled lessons, open work.
 
 ---
 
@@ -36,7 +50,7 @@ As determined during the initial research phase, this project intentionally reje
 5. **Git-Anchored Sessions**: Each executor run shallow-clones the target repository into an isolated session directory (`runs/<project>/<NNN>_exec_<ticket>_<ts>_<uid>/repo/`), checks out a `feat/ticket-<ticket>` branch, and treats the single clone's `.git` as the transactional Unit-of-Work. Snapshots use the index diff (`git add -A` → `git diff --cached <base_branch> --name-only`), giving a strict causal delta — including untracked files — while protecting context windows from binary pollution and retry bleed. On full success the orchestrator makes one atomic `feat(<ticket>): …` commit (opt-in `--push`).
 6. **Brownfield & Multi-File Support**: The pipeline operates on any external repository via `--repo` and `--ticket`, with `--base-branch` as the diff anchor. Source layout is no longer pinned by CLI flags — the SA/blueprint topology decides source paths (the Developer writes by the contract's full repo-relative paths) and the QA language profile owns test placement. A generated repository topology map is injected into the TechLead and QA contexts so new files land inside existing packages rather than redundant root-level directories, and the TechLead's first `domain_tags` entry declares the target language, dynamically routing stack-specific skill files to the execution agents. QA test generation fans out concurrently via `asyncio.gather` — one isolated test file per production module — bypassing LLM output token ceilings, and returns each complete test file (whole-file assembly, preserving still-valid cases) rather than blind-overwriting the suite.
 7. **Fast-Fail Documentation Guardrail**: A deterministic, zero-LLM-cost middleware runs right after the Developer phase: every newly-created file outside the architecture contract must open with a comment-block justification (language-agnostic lexical check over the first 15 lines). A miss triggers a "free reroute" back to the Developer — bypassing the expensive Reviewer/QA nodes without spending the functional circuit-breaker retry budget. After 2 failed reroutes the engine performs a deterministic Hard Halt, dumping the full FSM state to that run's `reports/incident_report.json` (under `runs/<project>/<NNN>_<plane>_<label>_<ts>_<uid>/`) and exiting safely.
-8. **Autonomous Contract Self-Healing (Arbiter)**: When a cycle is genuinely stuck (a prior fix already failed, `attempt ≥ ARBITER_TRIGGER_ATTEMPT`), an **Arbiter** agent triages the root cause and adds a third routing target beyond the Developer/QA feedback channels — the **contract** itself. For a contract-level defect no downstream agent can fix (a contradictory algorithm, overlapping error conditions with no precedence, or a fix that would violate a stated NFR), it re-derives (amends) the TechLead contract instead of looping to the breaker; otherwise it routes back to Developer/QA or halts. Amendment is bounded conservatively: `environment_id` is pinned (the platform never thrashes), `MAX_CONTRACT_AMENDMENTS` (default 1) caps rewrites, and each amendment grants a bounded retry-budget bonus (`ARBITER_AMENDMENT_RETRY_BONUS`) over the env-tunable `PIPELINE_MAX_RETRIES` ceiling (the Financial Circuit Breaker remains the absolute bound). See [ADR 0016](./docs/adr/0016-arbiter-contract-self-healing.md). Separately, Gemini content-filter blocks (`RECITATION` et al.) are treated as deterministic — fail-fast instead of burning the backoff budget, with one paraphrase-guarded retry for `RECITATION` — and the engine injects canonical baseline files (`LICENSE`/`.gitignore`) into `TASK-01` so the model never reproduces training-data boilerplate that trips the filter.
+8. **Autonomous Contract Self-Healing (Arbiter)**: When a cycle is genuinely stuck (a prior fix already failed, `attempt ≥ ARBITER_TRIGGER_ATTEMPT`), an **Arbiter** agent triages the root cause and adds a third routing target beyond the Developer/QA feedback channels — the **contract** itself. For a contract-level defect no downstream agent can fix (a contradictory algorithm, overlapping error conditions with no precedence, or a fix that would violate a stated NFR), it re-derives (amends) the TechLead contract instead of looping to the breaker; otherwise it routes back to Developer/QA or halts. Amendment is bounded conservatively: `environment_id` is pinned (the platform never thrashes), `MAX_CONTRACT_AMENDMENTS` (default 1) caps rewrites, and each amendment grants a bounded retry-budget bonus (`ARBITER_AMENDMENT_RETRY_BONUS`) over the env-tunable `PIPELINE_MAX_RETRIES` ceiling (the Financial Circuit Breaker remains the absolute bound). See [ADR 0016](./docs/decisions/0016-arbiter-contract-self-healing.md). Separately, Gemini content-filter blocks (`RECITATION` et al.) are treated as deterministic — fail-fast instead of burning the backoff budget, with one paraphrase-guarded retry for `RECITATION` — and the engine injects canonical baseline files (`LICENSE`/`.gitignore`) into `TASK-01` so the model never reproduces training-data boilerplate that trips the filter.
 
 ---
 
@@ -71,31 +85,19 @@ async-agentic-sdlc/
 │           ├── repo/           # Shallow clone of the target repo on branch feat/ticket-<ticket>
 │           ├── logs/           # Per-run audit log
 │           └── reports/        # checkpoint + finops + incident json (kept OUTSIDE the clone)
-├── docs/
-│   ├── adr/                                    # Architecture Decision Records (MADR)
-│   │   ├── 0000-cloud-infra-fsm-research.md    # Cloud Infra & FSM Architecture Research
-│   │   ├── 0001-baseline-sequential-loop.md    # Baseline sequential loop (Trapped Test Sabotage)
-│   │   ├── 0002-async-qa-node-isolation.md     # Async Fork-Join & QA Node Isolation
-│   │   ├── 0003-dual-channel-observability.md  # Observability, Token Tracking & Gemini 2.5 Routing
-│   │   ├── 0004-modularization-sandbox-hardening.md       # Architectural decoupling & modularization
-│   │   ├── 0005-git-driven-state-tracking-qa-fanout.md    # Git-Driven State Tracking & QA Fan-Out
-│   │   ├── 0006-fsm-state-serialization-resume.md         # FSM State Serialization & Resume Mechanism
-│   │   ├── 0007-prompt-schema-layer-separation.md         # Prompt/Schema Layer Separation
-│   │   ├── 0008-git-anchored-sessions-atomic-commit.md    # Git-Anchored Sessions & Atomic Commit
-│   │   ├── 0009-hybrid-skill-routing.md                   # Hybrid Skill Routing (declarative frontmatter)
-│   │   ├── 0010-fast-fail-documentation-guardrail.md      # Fast-Fail Documentation Guardrail & Smart Triage
-│   │   ├── 0011-secure-sandbox-and-finops-telemetry.md    # Secure WSL Sandbox & Real-Time FinOps Circuit Breaker
-│   │   ├── 0012-virtual-separation-monorepo-planes.md     # Virtual Separation: Control/Worker/Shared Planes
-│   │   ├── 0013-structured-test-maintenance-ast-pruning.md # Structured Test Maintenance (AST-aware QA pruning)
-│   │   ├── 0014-language-neutral-qa-whole-file-assembly.md # Language-Neutral QA: whole-file assembly
-│   │   └── 0015-unified-project-run-topology.md           # Unified Project & Run Topology (Nexus⇄Executor bridge)
-│   ├── archive/                                  # Per-iteration release write-ups (iteration_NN/)
-│   ├── docker-on-windows.md    # Active host runtime configuration
-│   └── setup.md                # Active environment configuration
+├── docs/                       # Documentation — start at docs/README.md
+│   ├── README.md               # Docs index / front door (navigation table)
+│   ├── ARCHITECTURE.md         # C4 diagrams: context / container / executor-FSM (Mermaid)
+│   ├── guides/                 # setup.md · docker-on-windows.md (environment bring-up)
+│   ├── decisions/              # Architecture Decision Records (MADR) 0000–0016 + index README
+│   ├── releases/               # Per-iteration release write-ups (iteration_NN/)
+│   └── BACKLOG.md              # Open, deferred fixes (prioritized)
 ├── main.py                     # Root CLI entrypoint: runs src/executor/runner.py:main()
+├── CLAUDE.md                   # Claude Code project governance: CLI economy, dev commands, guardrails
 ├── CHANGELOG.md                # Release history (Keep a Changelog), linked to ADRs
 ├── PRACTICUM.md                # Project manifest & Key Engineering Takeaways
 ├── requirements.txt            # Explicit dependency manifest
+├── LICENSE                     # Apache License 2.0 — the engine's own license
 ├── .gitignore                  # Ignores runs/ — runtime session state stays out of git
 └── README.md                   # System mission briefing & specifications
 ```
@@ -113,7 +115,7 @@ polluting `git status`.
 
 ### Prerequisites
 
-For full environment setup (WSL2, Docker, Python venv, Claude CLI), see [docs/setup.md](./docs/setup.md).
+For full environment setup (WSL2, Docker, Python venv, Claude CLI), see [docs/guides/setup.md](./docs/guides/setup.md).
 
 Ensure your local environment variable contains a valid Gemini credential:
 
@@ -183,7 +185,7 @@ For historical billing reconciliation across days and sessions, the full report 
 npx ccusage
 ```
 
-For the release-by-release history see [CHANGELOG.md](./CHANGELOG.md), the decision records in [docs/adr/](./docs/adr/), and the distilled engineering patterns in [PRACTICUM.md](./PRACTICUM.md).
+For the release-by-release history see [CHANGELOG.md](./CHANGELOG.md), the decision records in [docs/decisions/](./docs/decisions/), and the distilled engineering patterns in [PRACTICUM.md](./PRACTICUM.md).
 
 ---
 
@@ -193,10 +195,16 @@ The repository ships a set of native [Claude Code Agent Skills](https://docs.cla
 
 Run these at the end of an iteration or when a milestone is reached:
 
-* **`/adr-generation`** — Generate Architecture Decision Records. Analyzes recent git diffs to catch systemic architectural shifts and documents them in MADR format into `docs/adr/`.
+* **`/adr-generation`** — Generate Architecture Decision Records. Analyzes recent git diffs to catch systemic architectural shifts and documents them in MADR format into `docs/decisions/`.
 * **`/docs-sync`** — Synchronize factual docs. Parses recent commits to update `CHANGELOG.md` (Keep a Changelog standard) and align `README.md` with new CLI flags / configuration.
 * **`/practicum-update`** — Distill engineering lessons. Reflects on the latest ADR to extract generalized multi-agent patterns into `PRACTICUM.md`.
 * **`/iteration-release`** — One-shot release documentation: runs the three skills above plus an iteration archive, with all cross-links resolved.
 * **`/analyze-run`** — On-demand run diagnostics. Evidence-first root-cause analysis of a failed, looping, or circuit-breaker-halted pipeline run: reads the run's `reports/checkpoint.json` + `logs/sdlc_audit.log` + incident/finops, classifies the cause (content-filter block, agent-fixable bug, contract conflict, environment misconfig, budget breach), and points the fix at `src/`/`prompts/` — never the generated clone.
 
 Non-interactive form: `claude -p "/adr-generation"`.
+
+---
+
+## 📄 License
+
+Released under the [Apache License 2.0](./LICENSE). You are free to use, modify, and distribute this software, including for commercial purposes, provided you retain the copyright/attribution notices and state significant changes; the Apache 2.0 grant also includes an explicit patent license. The software is provided "as is", without warranty.

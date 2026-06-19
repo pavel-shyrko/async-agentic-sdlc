@@ -1,6 +1,6 @@
 # Iteration 16 — Arbiter: Autonomous Contract Self-Healing & Recitation Resilience
 
-> ADR: [0016-arbiter-contract-self-healing](../../adr/0016-arbiter-contract-self-healing.md) ·
+> ADR: [0016-arbiter-contract-self-healing](../../decisions/0016-arbiter-contract-self-healing.md) ·
 > CHANGELOG: [v0.16.0](../../../CHANGELOG.md) · Practicum:
 > [PRACTICUM.md](../../../PRACTICUM.md)
 

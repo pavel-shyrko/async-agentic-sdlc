@@ -1,6 +1,6 @@
 # Iteration 15 — Unified Project & Run Topology (Nexus⇄Executor Sync Bridge)
 
-> ADR: [0015-unified-project-run-topology](../../adr/0015-unified-project-run-topology.md) ·
+> ADR: [0015-unified-project-run-topology](../../decisions/0015-unified-project-run-topology.md) ·
 > CHANGELOG: [v0.15.0](../../../CHANGELOG.md) · Practicum:
 > [PRACTICUM.md](../../../PRACTICUM.md)
 

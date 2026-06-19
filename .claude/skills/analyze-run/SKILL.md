@@ -47,7 +47,7 @@ Map the evidence to one class (decisive — pick the dominant one and say so):
 - **Contract conflict** (not downstream-fixable) — the `contract` itself mandates a contradictory/
   impossible algorithm, overlapping `Raises` with no precedence, or the only fix would violate a stated
   `architectural_constraints` (e.g. break an O(1)/streaming NFR). This is the Arbiter's `contract` route →
-  TechLead amendment (ADR [0016](../../docs/adr/0016-arbiter-contract-self-healing.md)).
+  TechLead amendment (ADR [0016](../../../docs/decisions/0016-arbiter-contract-self-healing.md)).
 - **Environment/runner misconfiguration** — a hard gate FAILED while the Reviewer approved BOTH sides
   (deadlock guard, `runner.py`): not agent-fixable (e.g. sandbox import-path/network).
 - **Financial circuit breaker** — cumulative USD/token budget breached (`enforce_financial_circuit_breaker`).
