@@ -24,6 +24,7 @@ interpreter lacks the dependencies and the venv is WSL-only.
 ## Project Knowledge & Procedures
 * Project knowledge lives in `.claude/rules/*.md` — auto-loaded by Claude Code (path-scoped rules load only when you touch matching files; cross-cutting ones load every session). No manual step needed.
 * Metadata-synchronization procedures are native skills in `.claude/skills/`: `/adr-generation`, `/docs-sync`, `/practicum-update`, and `/iteration-release` (orchestrates the first three).
+* Run diagnostics are a native skill in `.claude/skills/`: `/analyze-run` — evidence-first root-cause analysis of a failed/looping/halted pipeline run (reads `reports/checkpoint.json` + `logs/sdlc_audit.log` + incident/finops), classifies the cause, and points the fix at `src/`/`prompts/` (never the clone). Invoke it whenever asked to diagnose a run, a circuit-breaker halt, a stuck cycle, or a Gemini RECITATION block.
 
 ## Project Architecture Guardrails
 * Never modify runtime prompts inside `prompts/system/` unless explicitly ordered by the Human.

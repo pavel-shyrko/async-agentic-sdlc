@@ -26,4 +26,13 @@ overwrite. `RUNS_BASE` (`PIPELINE_RUNS_BASE`, default `runs`) is the root.
 **Resume routing** (no dir-name parsing): `_run_dir_from_checkpoint` = checkpoint's grandparent;
 `_checkpoint_kind` peeks `kind` in the JSON — `"nexus"` → control plane (`NexusState`), else executor
 (`GlobalPipelineContext`). Old `runs/run_<uuid>/` checkpoints still resume via the path form.
+
+**Git auth for `--run`** (`bootstrap_session` shallow-clones with `GIT_TERMINAL_PROMPT=0`, so a private
+repo that needs credentials can't prompt — it fails fast with `could not read Password … terminal
+prompts disabled`, never hangs). Pass non-interactive credentials:
+- **HTTPS+PAT**: the token is the PASSWORD, so it needs a username — `https://<user>:<token>@github.com/<owner>/<repo>.git` (or `https://x-access-token:<token>@…`). `https://<token>@…` alone FAILS: git reads the token as the username and then prompts for a password.
+- **SSH**: `git@github.com:<owner>/<repo>.git` with a key in WSL.
+- **Cleaner**: cache once (`git config --global credential.helper store` + `~/.git-credentials`) and pass a clean URL.
+- `--repo` is captured into `project.json` ONLY on the first `--idea`/`--run` (when `repo` is null); later tickets reuse it. ⚠ A token embedded in the URL is persisted verbatim into `project.json` and the clone's `.git/config` under `runs/` — prefer the credential-helper for non-throwaway tokens.
+
 Related: [workspace-topology](workspace-topology.md), [debugging-protocol](debugging-protocol.md).

@@ -17,17 +17,27 @@ and any agent-prompt/constraint changes (the new rule + the anti-pattern it prev
 
 ## Tasks
 1. **ADR** — run the `adr-generation` skill: create `docs/adr/NNNN-[slug].md` (next sequence number) in
-   MADR format (Title, Status, Context, Decision, Consequences).
+   MADR format (Title, Status, Context, Decision, Consequences). **If the architectural ADR for this
+   change was already created during implementation** (a large feature often lands its own ADR with the
+   code), do NOT create a duplicate — `adr-generation` aborts when no *new* architectural change remains;
+   identify the existing `docs/adr/NNNN` and use it as this iteration's ADR for all the cross-links below.
 2. **Archive** — create `docs/archive/iteration_[ITERATION_NUMBER]/iteration_[ITERATION_NUMBER]_README.md`
-   with: Problem Statement, Implemented Solutions, Metrics/Logs analysis. Link it to the ADR.
-3. **CHANGELOG + README** — run the `docs-sync` skill: add the release section to `CHANGELOG.md` (linked
-   to the new ADR) and patch `README.md` for any new CLI args, env vars, directory/topology, or
-   execution-graph changes.
-4. **PRACTICUM** — run the `practicum-update` skill: add a "Development Steps" row and a new "Key
-   Engineering Takeaways" bullet capturing the main engineering lesson, pointing the ADR reference at the
-   file created in step 1.
-5. **Verify** — every cross-link resolves (ADR ↔ CHANGELOG ↔ PRACTICUM ↔ archive) and every path used
-   matches the current repository topology.
+   with: Problem Statement, Implemented Solutions, Metrics/Logs analysis (use real numbers — e.g.
+   `git diff --stat <prev-tag-or-commit>` for the footprint, plus any validation-run outcomes). Link it to
+   the ADR (and the ADR/CHANGELOG should link back to it).
+3. **CHANGELOG + README** — run the `docs-sync` skill (follow its full README-alignment checklist): add the
+   release section to `CHANGELOG.md` (linked to the new ADR + the archive) and patch `README.md`. Do the
+   docs-sync **completeness sweep** — a new agent role/skill must appear in EVERY place peers are
+   enumerated (roster, capabilities, structure tree, meta-tools), and every new env knob (not just CLI
+   flags) must be named.
+4. **PRACTICUM** — run the `practicum-update` skill: add one or more new "Key Engineering Takeaways"
+   bullet(s) at the TOP of that section, each capturing a generalizable lesson and linking the iteration's
+   ADR (from step 1). (Only add a "Development Steps" row if that table actually exists in the current
+   `PRACTICUM.md` — the present structure is the Takeaways list, so do not invent a table.)
+5. **Verify** — concretely confirm every cross-link resolves and every path matches the current topology:
+   the ADR, archive, and any referenced rule/skill files EXIST on disk; relative paths from the archive
+   (`../../adr/…`, `../../../CHANGELOG.md`) and the CHANGELOG/README/PRACTICUM (`./docs/adr/…`) point at real
+   files; and the CHANGELOG version heading + ADR slug match. Fix any miss before finishing.
 
 ## Placeholders to customize
 - `[ITERATION_NUMBER]` — numeric iteration identifier.

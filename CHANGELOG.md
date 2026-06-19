@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each release maps to a completed SDLC iteration; the corresponding Architecture
 Decision Record (ADR) is linked from the version heading.
 
+## [v0.16.0] - 2026-06-19 — Arbiter: Autonomous Contract Self-Healing & Recitation Resilience
+
+ADR: [0016-arbiter-contract-self-healing](./docs/adr/0016-arbiter-contract-self-healing.md)
+(extends [0001](./docs/adr/0001-baseline-sequential-loop.md),
+[0003](./docs/adr/0003-dual-channel-observability.md),
+[0006](./docs/adr/0006-fsm-state-serialization-resume.md))
+
+Archive: [iteration_16](./docs/archive/iteration_16/iteration_16_README.md)
+
+### Added
+- **Arbiter agent — autonomous contract self-healing (a third FSM route).** A new `arbiter` role
+  (`ARBITER_MODEL` + `ROLE_MODELS`, `prompts/system/arbiter.md`, `src/executor/agents/arbiter.py`)
+  returns a structured `ArbiterVerdict{root_cause_class, route, reasoning, contract_amendment_directive}`
+  (`src/shared/core/models.py`). On a STUCK cycle (`attempt ≥ ARBITER_TRIGGER_ATTEMPT`, default 2) it
+  triages the failure: `developer`/`qa` fall through to the existing isolated channels, `halt` aborts
+  with an incident, and — the new capability — `contract` re-derives (AMENDS) the TechLead contract via
+  `run_techlead_node(amendment_feedback=…)`. This closes the structural gap where a flawed contract was
+  unfixable (the TechLead ran once, only Developer/QA channels looped → circuit breaker).
+- **Engine-injected repository baseline files** (`src/shared/core/boilerplate.py`): the canonical MIT
+  `LICENSE` (`MIT_LICENSE_TEMPLATE`) and per-environment `.gitignore` (reused from `environments.py`) are
+  now assembled by `build_baseline_block(...)` and appended to `TASK-01` deterministically at ticket
+  materialization (`src/nexus/nexus_runner.py`) — the engine writes them, not the LLM.
+- **`finish_reason_name` + `NON_RETRYABLE_FINISH_REASONS`** (`src/shared/core/observability.py`): the bare
+  classification primitive behind the retry layer's fail-fast decision; `describe_finish_reason` now
+  builds its hint on top of it.
+- **Run-diagnostics + scaffolding meta-tooling:** a `/analyze-run` Claude Code skill (evidence-first
+  root-cause analysis of a failed/looping/halted run), a path-scoped `agent-role-registration` rule (the
+  full checklist for adding a structured agent role), and `run-layout-and-cli` / `run-tests-via-wsl` rule
+  extensions (non-interactive git auth for `--run`; Git-Bash↔WSL path translation).
+
+### Changed
+- **Gemini content-filter blocks are now non-retryable (fail-fast) with a RECITATION paraphrase retry.**
+  `with_api_retry` (`src/shared/utils/api_retry.py`) short-circuits `RECITATION`/`SAFETY`/`BLOCKLIST`/
+  `PROHIBITED_CONTENT`/`SPII` instead of burning the full 2^n backoff budget on a deterministic block.
+  `run_structured_llm` (`src/shared/utils/llm.py`) additionally gives a RECITATION block ONE
+  paraphrase-guarded retry (`RECITATION_GUARD` appended to the messages) — following the finish-reason
+  hint ("rephrase / reduce verbatim quoting") instead of retrying the identical, identically-blocked
+  prompt.
+- **The TPM no longer reproduces canonical boilerplate** (the root recitation trigger). `prompts/system/tpm.md`
+  stops emitting the full literal MIT `LICENSE` and the verbatim `.gitignore`; the prep block now references
+  the engine-provided baseline files. `prompts/system/prompts.py` drops the `{injected_gitignore_templates}`
+  injection (the templates are reused by `boilerplate.py` instead).
+- **Functional retry budget hoisted to a constant + dynamic ceiling.** The bare `max_retries = 3` local in
+  `runner.py` is now `MAX_FUNCTIONAL_RETRIES` (env `PIPELINE_MAX_RETRIES`); the outer cycle is a
+  `while` loop over `MAX_FUNCTIONAL_RETRIES + contract_amendments * AMENDMENT_RETRY_BONUS`, so each
+  autonomous amendment grants a bounded, resume-safe budget bonus. New env knobs: `ARBITER_TRIGGER_ATTEMPT`,
+  `MAX_CONTRACT_AMENDMENTS` (default 1 — conservative), `ARBITER_AMENDMENT_RETRY_BONUS`.
+- **Prompt hardening so the first contract is better and an amendment converges.** `techlead.md` gains an
+  **ERROR PRECEDENCE** rule (overlapping `Raises` MUST declare precedence; never short-circuit before the
+  parser surfaces a more specific error) + an **AMENDMENT MODE** section; `reviewer.md` gains
+  **CONSTRAINT-RESPECTING REPAIR** (a fix that clears a gate by violating a stated NFR is invalid — name
+  the contract conflict so it routes to an amendment); `prompts/skills/engineering_guide.md` adds the
+  drain-the-incremental-parser idiom for error precedence under an O(1)/streaming constraint.
+
+### Fixed
+- **The Nexus TPM phase no longer dies on a Gemini RECITATION block.** The control-plane planning run for a
+  Python "JSON→CSV CLI" idea halted at TPM after 3 identical RECITATION retries; the trigger is now removed
+  at the source (engine-injected `LICENSE`/`.gitignore`) and any residual recitation self-heals via the
+  single paraphrase retry instead of looping.
+- **A flawed TechLead contract no longer loops the executor to the circuit breaker.** The `analyze_headers`
+  ticket (streaming `ijson`) had a contract that mandated raising `MalformedStructureError` on the first
+  parse event — but `{` / `{"a": 1` are both a non-array root AND invalid JSON, with no error precedence,
+  so every cycle reproduced the same gate failure until "Retries exhausted." The Arbiter now routes such a
+  contract conflict to an amendment, and the precedence / drain-parser prompt hardening lets the Developer
+  converge on the correct verify-syntax-before-classifying-structure implementation.
+
+### Security
+- **Documented non-interactive git auth for `--run`** ([run-layout-and-cli](.claude/rules/run-layout-and-cli.md)):
+  the shallow clone runs with `GIT_TERMINAL_PROMPT=0`, so a private HTTPS repo needs credentials supplied as
+  `https://<user>:<token>@…` (token = password) or SSH/credential-helper. Operator guidance flags that a PAT
+  embedded in the URL is persisted verbatim into `project.json` and the clone's `.git/config` under `runs/`
+  — prefer the credential-helper for non-throwaway tokens.
+
 ## [v0.15.0] - 2026-06-18 — Unified Project & Run Topology: the Nexus⇄Executor Sync Bridge
 
 ADR: [0015-unified-project-run-topology](./docs/adr/0015-unified-project-run-topology.md)
