@@ -211,6 +211,9 @@ python3 main.py --idea "Build a CLI that converts JSON to CSV" --repo <url|path>
 This writes `runs/<slug>/<NNN>_nexus_plan_<ts>_<uid>/artifacts/{epic.md, blueprint.md, TASK-01.md, …}`.
 Open and skim those artifacts before executing.
 
+> **Plan + run in one shot:** add **`--auto-execute`** to the `--idea` command (requires `--repo`) and the
+> engine runs the Executor for the first ticket automatically once planning completes — no separate `--run`.
+
 **2. Execute a ticket** — run the Executor FSM for one generated ticket under the same project:
 
 ```bash

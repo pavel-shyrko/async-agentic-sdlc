@@ -18,7 +18,7 @@ Every run dir also has `logs/sdlc_audit.log` + `reports/` (`checkpoint.json`, `f
 overwrite. `RUNS_BASE` (`PIPELINE_RUNS_BASE`, default `runs`) is the root.
 
 **CLI verbs** (`parse_args` / `main` in `src/executor/runner.py`):
-- `--idea "..." [--repo R]` → NEW project, runs Nexus planning (`001_nexus_plan`); `--repo` captured into project.json.
+- `--idea "..." [--repo R] [--auto-execute]` → NEW project, runs Nexus planning (`001_nexus_plan`); `--repo` captured into project.json. With `--auto-execute` (E1) the engine then dispatches the Executor for the FIRST planned ticket in the same invocation (requires `--repo`; `check_environment` runs up-front to fail fast). The dispatch lives in `main()` (worker/entry layer) via `prepare_ticket_run` + `run_executor` + `get_tasks_for_nexus_run` — Nexus never imports the executor plane. A repo-less project / no tickets is a clean exit-0 skip, not a failure.
 - `--run <project> -f <ticket>` → executor for that ticket; repo + base branch from project.json; ticket body resolved from the latest nexus run's `artifacts/<ticket>.md`.
 - `--resume <project> <NNN>` → resume run #NNN; `--resume <project>` (no number) → continue the latest Nexus run; `--resume <path.json>` → legacy explicit checkpoint.
 - Legacy direct: `--repo --ticket [-f file] [desc]` → grouped under a ticket-slug project.

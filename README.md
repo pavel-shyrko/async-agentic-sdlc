@@ -157,6 +157,10 @@ python3 main.py --idea "CLI that converts JSON to CSV with a selectable delimite
 
 # Execute one generated ticket; it runs under the SAME project umbrella, repo taken from project.json.
 python3 main.py --run cli-that-converts-json-to-csv -f TASK-01
+
+# Or plan AND auto-run the first ticket in one shot (E1). --repo is required so there is a clone target.
+python3 main.py --idea "CLI that converts JSON to CSV with a selectable delimiter" \
+    --repo git@github.com:acme/widgets.git --auto-execute
 ```
 
 Each run is isolated under `runs/<project>/<NNN>_<plane>_<label>_<ts>_<uid>/`: an executor run
