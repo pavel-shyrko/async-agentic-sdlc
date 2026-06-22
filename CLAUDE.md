@@ -14,7 +14,7 @@ Entrypoint is `main.py` (→ `src/executor/runner.py` `main()`). There is no `or
 toolchain (orchestrator, tests, bandit) runs through **WSL + the project `venv/`** — the Windows
 interpreter lacks the dependencies and the venv is WSL-only.
 
-* **New project (Nexus planning)**: `python3 main.py --idea "<idea>" [--repo <url|path>]`
+* **New project (Nexus planning)**: `python3 main.py --idea "<idea>" [--repo <url|path>] [--auto-execute]`  (`--auto-execute` also runs the Executor for the first ticket; requires `--repo`)
 * **Execute a ticket**: `python3 main.py --run <project> -f TASK-01`
 * **Resume a run**: `python3 main.py --resume <project> [NNN]`  (slug alone → latest Nexus run)
 * **Legacy direct run**: `python3 main.py --repo <url|path> --ticket <ID> -f <ticket_path>`

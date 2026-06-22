@@ -32,7 +32,7 @@ Full docs live under **[docs/](./docs/README.md)** (start there). Highlights:
 
 * **[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)** — C4 diagrams (System Context, Containers, Executor FSM) + end-to-end sequence, in Mermaid.
 * **[docs/guides/](./docs/guides/setup.md)** — environment setup (WSL2, Docker, venv, Gemini key).
-* **[docs/decisions/](./docs/decisions/README.md)** — the ADR log (0000–0016), indexed by theme.
+* **[docs/decisions/](./docs/decisions/README.md)** — the ADR log (0000–0017), indexed by theme.
 * **[CHANGELOG.md](./CHANGELOG.md)** · **[PRACTICUM.md](./PRACTICUM.md)** · **[docs/BACKLOG.md](./docs/BACKLOG.md)** — release history, distilled lessons, open work.
 
 ---
@@ -64,14 +64,14 @@ async-agentic-sdlc/
 │   ├── nexus/                  # Control Plane — idea→plan: po.py / sa.py / tpm.py agents,
 │   │                           #   nexus_runner.py (run_nexus) + state.py (NexusState checkpoint)
 │   ├── executor/               # Worker Plane — runs one SDLC session
-│   │   ├── runner.py           # FSM driver + Nexus⇄executor bridge / resume routing
+│   │   ├── runner.py           # main() dispatcher + run_executor FSM; --auto-execute bridge / resume routing
 │   │   ├── agents/             # TechLead, Developer, QA, Reviewer, TechWriter, Arbiter logic
 │   │   └── nodes/              # FSM gates (build/test compile gates, SAST)
 │   └── shared/                 # Shared Plane — common foundations reused across planes
 │       ├── core/               # Pydantic models, observability, env config, run topology, prompt loader, baseline files
 │       └── utils/              # Subprocess, git, and workspace-path-safe helpers
 ├── prompts/                    # Runtime agent instructions (decoupled from src/ logic)
-│   ├── system/                 # Per-role system prompts (po, sa, tpm, techlead, developer, qa, reviewer, techwriter)
+│   ├── system/                 # Per-role system prompts (po, sa, tpm, techlead, developer, qa, reviewer, techwriter, arbiter)
 │   └── skills/                 # Reusable prompt fragments injected into agents (engineering_guide, strict_validation, deterministic_mutation)
 ├── tests/                      # Engine tests, WSL-only (see docs/guides/setup.md)
 │   ├── framework/              # Unit tests for the orchestrator engine itself
@@ -97,7 +97,7 @@ async-agentic-sdlc/
 │   ├── README.md               # Docs index / front door (navigation table)
 │   ├── ARCHITECTURE.md         # C4 diagrams: context / container / executor-FSM (Mermaid)
 │   ├── guides/                 # setup.md · docker-on-windows.md (environment bring-up)
-│   ├── decisions/              # Architecture Decision Records (MADR) 0000–0016 + index README
+│   ├── decisions/              # Architecture Decision Records (MADR) 0000–0017 + index README
 │   ├── releases/               # Per-iteration release write-ups (iteration_NN/)
 │   └── BACKLOG.md              # Capability roadmap (E1–E4) + open defects & refinements
 ├── main.py                     # Root CLI entrypoint: runs src/executor/runner.py:main()
