@@ -46,8 +46,9 @@ flowchart TB
 
 **Key:**
 - **Human Operator** drives everything through one CLI (`main.py` → `src/executor/runner.py` `main()`):
-  `--idea` plans a new project (add `--auto-execute` to also run the Executor for the first ticket in the
-  same invocation), `--run <project> -f <ticket>` executes a ticket, `--resume` recovers.
+  `--idea` plans a new project (add `--auto-execute` to then drive the Executor over **all** planned tickets
+  to `main` in order, in the same invocation — E3), `--run <project> -f <ticket>` executes one ticket,
+  `--resume` recovers.
 - **Google Gemini API** — every *structured* agent (forced Pydantic output via `instructor`):
   PO/SA/TPM (planning) and TechLead/QA/Reviewer/TechWriter/Arbiter (execution).
 - **Claude Code CLI** — the *Developer* agent only; agentic, edits files directly in the run's clone.
@@ -87,7 +88,7 @@ flowchart TB
     human --> cli
     cli -->|"--idea"| nexus
     cli -->|"--run / --resume"| executor
-    cli -.->|"--idea --auto-execute:<br/>dispatch 1st ticket<br/>after planning"| executor
+    cli -.->|"--idea --auto-execute:<br/>drive ALL tickets to main<br/>after planning (run_batch)"| executor
 
     nexus --> shared
     executor --> shared
@@ -221,21 +222,24 @@ sequenceDiagram
     N->>FS: artifacts/{epic,blueprint,TASK-*}.md + checkpoint
     N-->>H: planned tickets
 
-    Note over H,X: --run <project> -f TASK-01<br/>(or auto-dispatched for the first ticket by --auto-execute)
-    H->>X: execute ticket
-    X->>R: shallow-clone → feat/ticket-TASK-01
-    X->>G: TechLead → contract
-    loop until gates pass or budget exhausted
-        X->>G: QA (tests) · Reviewer (verdict) · [Arbiter]
-        X->>C: Developer (edit repo/)
-        X->>X: Docker gates (build/test/SAST)
+    Note over H,X: --run <project> -f TASK-01 (one ticket)<br/>OR --auto-execute drives ALL tickets (run_batch, E3)
+    loop each planned ticket → main, in TPM order (--auto-execute)
+        H->>X: execute ticket
+        X->>R: shallow-clone latest main → feat/ticket-<id>
+        X->>G: TechLead → contract
+        loop until gates pass or budget exhausted
+            X->>G: QA (tests) · Reviewer (verdict) · [Arbiter]
+            X->>C: Developer (edit repo/)
+            X->>X: Docker gates (build/test/SAST)
+        end
+        X->>G: TechWriter (living ADR)
+        X->>R: atomic commit (+ optional push)
+        opt --auto-merge (implied by --auto-execute)
+            X->>R: open PR → approve (reviewer token) → squash-merge into base
+        end
+        X->>FS: batch_state.json (completed += ticket)
     end
-    X->>G: TechWriter (living ADR)
-    X->>R: atomic commit (+ optional push)
-    opt --auto-merge (E2)
-        X->>R: open PR → approve (reviewer token) → squash-merge into base
-    end
-    X-->>H: ✅ committed / merged + FinOps total
+    X-->>H: ✅ all tickets merged + FinOps total
 ```
 
 ---
@@ -247,7 +251,7 @@ for the full module map and [agent-contracts](../.claude/rules/agent-contracts.m
 
 | Plane | Component | File | Responsibility |
 |---|---|---|---|
-| Entry | CLI / router | `main.py` → `src/executor/runner.py` `main()` | Parse args; route to Nexus or Executor; `--resume` dispatch; on `--idea --auto-execute`, dispatch the first ticket via `prepare_ticket_run` + `run_executor` (`get_tasks_for_nexus_run` for order). |
+| Entry | CLI / router | `main.py` → `src/executor/runner.py` `main()` | Parse args; route to Nexus or Executor; `--resume` dispatch (incl. batch re-entry); on `--idea --auto-execute`, drive ALL tickets to `main` via `run_batch` (`prepare_ticket_run` + `run_executor` per ticket, `get_tasks_for_nexus_run` for order, `BatchState` checkpoint). |
 | Nexus | PO / SA / TPM | `src/nexus/{po,sa,tpm}.py` | Idea → Epic → Blueprint → task tickets (structured Gemini). |
 | Nexus | Runner / State | `src/nexus/nexus_runner.py`, `state.py` | Drive PO→SA→TPM; `NexusState` checkpoint + resume. |
 | Executor | FSM driver | `src/executor/runner.py` | Outer cycle, reroutes, breaker, routing, commit. |
@@ -258,7 +262,7 @@ for the full module map and [agent-contracts](../.claude/rules/agent-contracts.m
 | Executor | Arbiter | `src/executor/agents/arbiter.py` | Triage stuck cycle → developer/qa/contract/halt. |
 | Executor | TechWriter | `src/executor/agents/techwriter.py` | Maintain the living ADR (`docs/architecture_state.md` in the clone). |
 | Executor | Gates | `src/executor/nodes/gates.py` | Build / unit-test / SAST in the sandbox. |
-| Shared | Models | `src/shared/core/models.py` | `GlobalPipelineContext`, `TechLeadContract`, `ReviewReport`, `ArbiterVerdict`, telemetry. |
+| Shared | Models | `src/shared/core/models.py` | `GlobalPipelineContext`, `TechLeadContract`, `ReviewReport`, `ArbiterVerdict`, `BatchState` (E3 batch checkpoint), telemetry. |
 | Shared | Config | `src/shared/core/config.py` | `ROLE_MODELS`, budgets, pricing, FSM constants. |
 | Shared | Observability | `src/shared/core/observability.py` | Logging, token/FinOps telemetry, finish-reason diagnostics. |
 | Shared | Run layout | `src/shared/core/runs.py` | `Projects` store + `allocate_run_dir` (run-layout SSOT). |
@@ -270,6 +274,7 @@ for the full module map and [agent-contracts](../.claude/rules/agent-contracts.m
 
 ---
 
-*Diagrams reflect the engine as of the auto-merge iteration ([CHANGELOG](../CHANGELOG.md) v0.18.0 —
-`--auto-merge` loop closure, ADR [0018](decisions/0018-auto-merge-pr-loop-closure.md)). For the "why" behind
-each decision see [decisions/](decisions/README.md); for what's still open see [BACKLOG.md](BACKLOG.md).*
+*Diagrams reflect the engine as of the cyclical multi-ticket iteration ([CHANGELOG](../CHANGELOG.md) v0.19.0 —
+`--auto-execute` drives all tickets to `main`, ADR [0019](decisions/0019-cyclical-multi-ticket-orchestration.md)).
+For the "why" behind each decision see [decisions/](decisions/README.md); for what's still open see
+[BACKLOG.md](BACKLOG.md).*

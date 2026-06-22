@@ -17,6 +17,11 @@ flaw, then recommend a fix in `src/`/`prompts/` — NEVER edit the generated clo
   (`<NNN>_exec_<ticket>_…` for executor, `<NNN>_nexus_plan_…` for control plane); the highest `<NNN>` is
   newest. If given only pasted log output, work from it but prefer reading the artifacts when a path is
   derivable. Layout SSOT: [run-layout-and-cli](../../rules/run-layout-and-cli.md).
+- **Multi-ticket batch (`--auto-execute`, E3):** read the `nexus_plan` run's `reports/batch_state.json`
+  first — `failed` names the ticket that stopped the batch (analyze *that* ticket's `<NNN>_exec_<failed>_…`
+  run), and `completed` confirms the merged ones. A batch with `failed: null` and a `🏁 Batch complete` line
+  is a clean success (the per-ticket cost is *each* run's GRAND TOTAL, not a batch total — there is no
+  app-wide budget yet, BACKLOG E5).
 
 ## Step 2 — Gather state (in this order)
 1. **Checkpoint** — `reports/checkpoint.json`. Executor (`GlobalPipelineContext`): `current_attempt`,

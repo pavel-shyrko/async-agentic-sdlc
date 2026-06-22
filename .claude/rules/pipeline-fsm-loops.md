@@ -6,10 +6,12 @@ paths:
 # Executor FSM: cycle, loops, channels, termination
 
 SSOT: `src/executor/runner.py` `run_executor()` — the per-ticket FSM (bootstrap/resume → TechLead → the
-self-heal cycle → finalize). `main()` is now a thin dispatcher that resolves the run and calls it (also
-the bridge for `--idea --auto-execute`, ADR 0017). The control-plane (PO→SA→TPM) is linear with no loops;
-all cycling lives here. Related: [repo-module-map](repo-module-map.md), [agent-contracts](agent-contracts.md),
-[config-constant-convention](config-constant-convention.md).
+self-heal cycle → finalize). `main()` is now a thin dispatcher that resolves the run and calls it. For
+`--idea --auto-execute` (E3, ADR 0019) the bridge is **`run_batch`**, an outer loop *above* `run_executor`:
+it drives ALL planned tickets to `main` in TPM order (one merged ticket at a time, `--auto-merge` implied),
+checkpoints progress to `batch_state.json`, and stops on the first `PipelineHalt`. The control-plane
+(PO→SA→TPM) is linear with no loops; all cycling lives here. Related: [repo-module-map](repo-module-map.md),
+[agent-contracts](agent-contracts.md), [config-constant-convention](config-constant-convention.md).
 
 ## Outer cycle
 `while ctx.current_attempt <= MAX_FUNCTIONAL_RETRIES + ctx.contract_amendments * AMENDMENT_RETRY_BONUS` —
@@ -56,5 +58,11 @@ CLAUDE.md-vs-prompts boundary in [feedback-context-isolation](feedback-context-i
 - **Hard-halt** — misplaced contract file at cap, persistently undocumented new file, or persistent environmental build error.
 - **Deadlock guard** — gate FAILED but Reviewer approved BOTH code and tests (no agent-fixable defect) → fail fast instead of looping to the breaker.
 
-Abort writes `reports/incident_report.json` and `sys.exit(1)`; it does NOT `git reset` the staged run
-clone (resume hygiene gap — docs/BACKLOG.md #23). Debug entry: [debugging-protocol](debugging-protocol.md).
+Abort (`_abort_with_incident`) writes `reports/incident_report.json` + FinOps, then **raises
+`PipelineHalt`** (E3, ADR 0019) — NOT a bare `sys.exit(1)`. A single-ticket run lets it bubble to the
+`main.py` entrypoint guard (`except PipelineHalt: sys.exit(1)`), so the exit code is unchanged; a `run_batch`
+run **catches** it to record the `failed` ticket in `batch_state.json` and stop the batch (then exit 1).
+Only FSM halts become `PipelineHalt`; infra `sys.exit(1)`s (`_run_checked` clone/push, the `finalize_pr`
+merge failure above) stay `SystemExit` and are NOT caught by the batch (they kill the process; `--resume`
+recovers via the not-completed check). Abort does NOT `git reset` the staged run clone (resume hygiene gap —
+docs/BACKLOG.md #23). Debug entry: [debugging-protocol](debugging-protocol.md).

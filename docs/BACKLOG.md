@@ -24,6 +24,11 @@ Two parts:
 > and regrouped the defect items by theme (numbers unchanged).
 >
 > Updated 2026-06-22: **E1 shipped** (`--auto-execute`, v0.17.0 / ADR 0017) — next in the loop is **E2**.
+> Updated 2026-06-22: **E2 + E3 shipped** (`--auto-merge` v0.18.0 / ADR 0018; cyclical multi-ticket
+> orchestration via `--auto-execute` → all tickets to `main`, ADR 0019). New epic **E5** (application-wide
+> FinOps budget) added from the E3 4-ticket validation run — the financial breaker is still per-ticket, so
+> a batch can overspend `N×` the intended ceiling; the fix is one app budget threaded as the remaining
+> limit into each cycle.
 
 ---
 
@@ -40,12 +45,14 @@ branch that is **never merged**.
 ```
 E1 ✅ Nexus auto-dispatches Executor (one ticket)   — DONE (v0.17.0 / ADR 0017)
       └─► E2 ✅ Close the loop to main (auto-approved PR + merge)  — DONE (v0.18.0 / ADR 0018)
-              └─► E3  Cyclical multi-ticket orchestration (all tasks, each building on the last)
-                      └─► E4  DevOps / deployment   (scope only — decision deferred)
+              └─► E3 ✅ Cyclical multi-ticket orchestration (all tasks, each building on the last)  — DONE (v0.19.0 / ADR 0019)
+                      ├─► E4  DevOps / deployment   (scope only — decision deferred)
+                      └─► E5  Application-wide FinOps budget (one ceiling, remaining-budget threaded per cycle)
 ```
 
 E3 depends on E2 for a hard structural reason (see E3): each ticket clones `main` **fresh**, so TASK-02 only
-sees TASK-01 if TASK-01 has already been merged to `main`.
+sees TASK-01 if TASK-01 has already been merged to `main`. E4 and E5 both build on E3's batch loop and are
+independent of each other.
 
 ---
 
@@ -131,7 +138,17 @@ auto-approve + merge** — full-autonomy MVP, switchable to human-review later.)
 **Acceptance:** a successful ticket yields a merged PR on `base_branch`; a failed/halted ticket leaves no PR
 or merge; re-running or resuming is idempotent (no duplicate PRs).
 
-## E3. [EPIC] Cyclical multi-ticket orchestration
+## E3. [✅ DONE — v0.19.0 / ADR 0019] Cyclical multi-ticket orchestration
+
+> **Delivered** ([ADR 0019](decisions/0019-cyclical-multi-ticket-orchestration.md),
+> [iteration 19](releases/iteration_19/iteration_19_README.md)): `--auto-execute` now drives the Executor
+> over ALL planned tickets to `main` in TPM order via **`run_batch`** in `main()` (not the originally-sketched
+> `execute_one_ticket(..., auto_merge=True)` — `run_batch` loops the existing `prepare_ticket_run` +
+> `run_executor` directly). A catchable **`PipelineHalt`** replaced `_abort_with_incident`'s `sys.exit(1)` so a
+> mid-batch halt records `failed` in the **`BatchState`** checkpoint (`reports/batch_state.json`) and stops
+> cleanly; a bare `--resume <project>` re-enters the batch, skipping merged tickets. `--auto-execute` now
+> implies `--auto-merge`. Validated end-to-end on `cli-python-json-csv` — 4 tickets → `main`, $1.862 total,
+> zero incidents. **Remaining open question became its own epic: E5 (application-wide budget).**
 
 **Goal:** Nexus drives the Executor over **all** generated tasks in order — `TASK-01 → merge → TASK-02 → …` —
 so each ticket builds on the previously merged state, ending with the full app on `main`. (User-requested
@@ -151,9 +168,9 @@ let `--resume` continue from the failed ticket).
 **Dependencies:** **E1 + E2** (hard).
 
 **Risks / open questions:** a mid-batch halt strands later tickets (resume story must be solid); per-ticket
-FinOps vs a batch-wide budget ceiling; inter-ticket ordering/dependencies are implicit via shared `main` (no
-explicit DAG between tickets today); ties to **#20** (env_id must propagate cleanly per ticket) and **#26**
-(per-ticket retry budget).
+FinOps vs an application-wide budget (now its own epic **E5**); inter-ticket ordering/dependencies are
+implicit via shared `main` (no explicit DAG between tickets today); ties to **#20** (env_id must propagate
+cleanly per ticket) and **#26** (per-ticket retry budget).
 
 **Acceptance:** `--idea "…"` with auto-execute + auto-merge drives every task to `main` in order; a halt stops
 the batch cleanly with an incident, and `--resume` continues from the failed ticket without redoing merged
@@ -191,6 +208,56 @@ Plus open sub-decisions: the new `devops` agent role (model/prompt/output-model/
 
 **Acceptance:** epic captured with a clear decision matrix and the touch-points enumerated; **no
 implementation** until the mechanism is chosen.
+
+## E5. [EPIC] Application-wide FinOps budget (one ceiling, remaining-budget threaded per cycle)
+
+**Goal:** a single budget governs the **whole application build** (idea → all tickets → `main`), not each
+ticket in isolation. The operator sets one ceiling (e.g. `PIPELINE_APP_BUDGET_USD`); the engine spends it
+across the batch, passing the **remaining unused budget as the limit into each next cycle/ticket**, and
+halts the batch cleanly when the app budget is exhausted. (Surfaced by the E3 validation run: the cost of
+an autonomous `--idea` run should be bounded for the *application*, which is what the operator actually
+pays for — a per-ticket cap does not bound the thing being built.)
+
+**Current state:**
+- The financial circuit breaker (`enforce_financial_circuit_breaker`, [runner.py](../src/executor/runner.py))
+  gates each ticket's OWN `GlobalPipelineContext.telemetry` against the fixed `PIPELINE_BUDGET_USD` /
+  `PIPELINE_BUDGET_TOKENS` ([config.py](../src/shared/core/config.py)) — a **per-ticket** ceiling read from
+  module constants, not a parameter.
+- E3's `run_batch` runs N tickets, each a fresh `run_executor` whose telemetry starts at zero; there is no
+  cross-ticket spend accounting, so a batch can spend up to `N × PIPELINE_BUDGET_USD` before any single
+  ticket trips. `BatchState` tracks `completed`/`failed` only — no `spent_*`.
+- **Observed (E3 4-ticket validation, `cli-python-json-csv`):** $0.4202 + $0.4100 + $0.6450 + $0.3864 =
+  **$1.862** total, yet each ticket measured only against its own $10 budget — the batch never saw a
+  cumulative figure.
+
+**Design (seam + approach):**
+- New app-wide constants `PIPELINE_APP_BUDGET_USD` / `PIPELINE_APP_BUDGET_TOKENS` (env-overridable
+  UPPER_CASE, [config-constant-convention](../.claude/rules/config-constant-convention.md)).
+- Accumulate each finished ticket's `telemetry.total_cost_usd` / `total_tokens` into **`BatchState`** (new
+  persisted `spent_usd` / `spent_tokens` fields, so `--resume` keeps the running total across restarts).
+- Before dispatching the next ticket, compute `remaining = app_budget − spent` and **thread it into
+  `run_executor` as that ticket's effective ceiling** — the breaker checks against the *remaining* app
+  budget, not a fixed per-ticket constant. When `remaining` ≤ a floor, stop the batch cleanly (record a
+  budget marker, write the batch state, exit 1) before spending more.
+- This requires `enforce_financial_circuit_breaker` / `run_executor` to take the effective ceiling as a
+  **parameter** rather than reading module constants — the core signature change of this epic.
+
+**Dependencies:** **E3** (the batch loop + `BatchState`).
+
+**Risks / open questions:**
+- **Single-ticket paths** (`--run`, legacy direct) must still work — their "remaining" is just the full app
+  budget (or the legacy per-ticket value); decide whether `PIPELINE_BUDGET_USD` survives as an inner
+  per-ticket sub-cap or is subsumed by the threaded remaining-budget.
+- **Starvation:** one expensive early ticket consumes the shared pool and can starve later tickets (by
+  design, but maybe a per-ticket floor/reserve so the batch can't strand the tail).
+- **Retry-ceiling interaction:** a ticket near the budget edge effectively gets fewer cycles — make the
+  fail-fast legible in the incident.
+- **Resume correctness:** `spent_*` must reload so the remaining budget is exact across a `--resume`.
+
+**Acceptance:** one `PIPELINE_APP_BUDGET_USD` governs an entire `--idea --auto-execute` run; each ticket
+runs against the remaining unused budget; the batch halts cleanly with an incident when the app budget is
+exhausted, and `--resume` continues with the correct remaining total. A batch can no longer overspend `N×`
+the intended ceiling.
 
 ---
 

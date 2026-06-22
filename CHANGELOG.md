@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each release maps to a completed SDLC iteration; the corresponding Architecture
 Decision Record (ADR) is linked from the version heading.
 
+## [v0.19.0] - 2026-06-22 — Cyclical Multi-Ticket Orchestration: Drive Every Ticket to `main` (`--auto-execute`, E3)
+
+ADR: [0019-cyclical-multi-ticket-orchestration](./docs/decisions/0019-cyclical-multi-ticket-orchestration.md)
+(extends [0012](./docs/decisions/0012-virtual-separation-monorepo-planes.md),
+[0017](./docs/decisions/0017-nexus-executor-auto-dispatch.md),
+[0018](./docs/decisions/0018-auto-merge-pr-loop-closure.md))
+
+Archive: [iteration_19](./docs/releases/iteration_19/iteration_19_README.md)
+
+### Added
+- **`--auto-execute` drives ALL planned tickets to `main` (E3).** Extended from the E1 first-ticket-only
+  dispatch: after planning, the engine now runs the Executor over **every** ticket in TPM order —
+  `TASK-01 → merge → TASK-02 → …` — so the full application lands on `main` from a single `--idea`
+  invocation. Each ticket clones `main` fresh, so `--auto-execute` now **implies `--auto-merge`** (hence
+  `--push`): a batch is only coherent if each ticket merges before the next clones it.
+- **`run_batch` — the batch loop** in `main()` (the entry/worker layer; Nexus still never imports the
+  executor, ADR 0012). Drives the tickets in order, skipping any already merged, and applies an explicit
+  **failure policy**: stop the batch on the first unrecoverable halt, write the per-ticket incident, and
+  exit 1.
+- **`BatchState` — a resumable batch checkpoint** (`src/shared/core/models.py`, `kind="batch"`):
+  `{project_slug, nexus_run, tickets, completed, failed}`, persisted as `reports/batch_state.json` beside
+  the Nexus planning checkpoint. A bare `--resume <project>` with this sidecar **re-enters the batch**,
+  skipping merged tickets and re-running the failed one fresh against the now-updated `main`.
+
+### Changed
+- **`PipelineHalt` replaces the abort `sys.exit(1)`.** `_abort_with_incident` now *raises* a catchable
+  `PipelineHalt` (after writing the incident + FinOps) instead of exiting the process; `main.py` converts an
+  uncaught one to exit 1, so single-ticket paths behave exactly as before, while the batch loop catches it
+  to record state and stop cleanly. Six FSM-halt unit tests were updated from `assertRaises(SystemExit)` to
+  `assertRaises(PipelineHalt)` to match the new contract.
+- **Docs & meta-rules synced** — `docs/ARCHITECTURE.md` (batch loop in the sequence; `batch_state.json` in
+  the run layout); `.claude/rules/{run-layout-and-cli,pipeline-fsm-loops,repo-module-map}.md` (the new
+  `--auto-execute` batch semantics + resume, `PipelineHalt`, `run_batch`/`BatchState`); `docs/BACKLOG.md`
+  (E3 → DONE; new epic **E5** application-wide FinOps budget).
+
 ## [v0.18.0] - 2026-06-22 — Close the Loop to `main` via an Auto-Merged PR (`--auto-merge`, E2)
 
 ADR: [0018-auto-merge-pr-loop-closure](./docs/decisions/0018-auto-merge-pr-loop-closure.md)

@@ -5,7 +5,7 @@ dispatcher that resolves the run and calls `run_executor` (with `--idea --auto-e
 first ticket, ADR 0017). Three planes under `src/` (ADR 0012 virtual separation):
 
 **`src/shared/core/`** — engine SSOTs:
-- `models.py` — `RUNS_BASE`, `WorkspacePaths`, `PipelineTelemetry`, `GlobalPipelineContext` (`save_checkpoint`/`load_checkpoint`).
+- `models.py` — `RUNS_BASE`, `WorkspacePaths`, `PipelineTelemetry`, `GlobalPipelineContext` (`save_checkpoint`/`load_checkpoint`), `BatchState` (E3 batch checkpoint, `kind="batch"` → `reports/batch_state.json`).
 - `config.py` — `ROLE_MODELS` (role→(model, label)), `PIPELINE_BUDGET_USD/TOKENS`, `MODEL_PRICING_MATRIX`, `estimate_gemini_cost_usd`, `instructor_client` (built with a `GEMINI_REQUEST_TIMEOUT` `http_options` ceiling — every structured call is wall-clock-bounded), `check_environment(require_forge=…)` (with `--auto-merge` also requires `gh` + `GITHUB_TOKEN`).
 - `observability.py` — `log`, `reconfigure_logging`, `log_token_usage` (telemetry-first), `log_finops_summary`, `describe_finish_reason`.
 - `runs.py` — `Projects` store + `allocate_run_dir` + `slugify` (run-layout SSOT; see [run-layout-and-cli](run-layout-and-cli.md)).
@@ -19,7 +19,10 @@ first ticket, ADR 0017). Three planes under `src/` (ADR 0012 virtual separation)
 
 **`src/executor/`** (worker plane) — `runner.py` (`main()` dispatcher + `run_executor` per-ticket FSM +
 `prepare_ticket_run` cfg-wiring/allocation, shared by `--run`/`--auto-execute` + `finalize_pr` — the E2
-success-path PR step (open→approve→merge via `forge`, behind `--auto-merge`)), `nodes/gates.py`
+success-path PR step (open→approve→merge via `forge`, behind `--auto-merge`) + `run_batch` /
+`_load_or_init_batch` — the E3 multi-ticket loop driving ALL tickets to `main` (with `--auto-execute`,
+which now implies `--auto-merge`) + `PipelineHalt` — the catchable FSM-halt exception `_abort_with_incident`
+raises (so the batch records `failed` and stops; `main.py` maps an uncaught one to exit 1)), `nodes/gates.py`
 (build/test/SAST gates + `build_failure_is_environmental`),
 `agents/{techlead,developer,qa,reviewer,techwriter,arbiter}.py`.
 

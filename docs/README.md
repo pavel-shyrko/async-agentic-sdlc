@@ -8,7 +8,7 @@ decisions, or release history as needed.
 |---|---|
 | Understand **what the system is and how it's built** | [ARCHITECTURE.md](ARCHITECTURE.md) — C4 context / container / FSM diagrams (Mermaid) |
 | **Run it locally** | [guides/setup.md](guides/setup.md) → [guides/docker-on-windows.md](guides/docker-on-windows.md) |
-| Know **why** a design choice was made | [decisions/](decisions/README.md) — the ADR log (0000–0018) |
+| Know **why** a design choice was made | [decisions/](decisions/README.md) — the ADR log (0000–0019) |
 | See **what changed each release** | [../CHANGELOG.md](../CHANGELOG.md) + [releases/](releases/) write-ups |
 | Find the **distilled engineering lessons** | [../PRACTICUM.md](../PRACTICUM.md) |
 | See **what's still open** | [BACKLOG.md](BACKLOG.md) |
@@ -22,9 +22,9 @@ docs/
     docker-on-windows.md
   decisions/            # Architecture Decision Records (MADR) + index
     README.md
-    0000-…md … 0018-…md
+    0000-…md … 0019-…md
   releases/             # per-iteration release write-ups
-    iteration_15/ … iteration_18/
+    iteration_15/ … iteration_19/
   BACKLOG.md            # open, deferred fixes (prioritized)
 ```
 
