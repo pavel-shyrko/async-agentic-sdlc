@@ -1254,6 +1254,24 @@ class FinalizeTransactionTests(unittest.IsolatedAsyncioTestCase):
             joined = " ".join(str(a) for a in commit_cmd)
             self.assertNotIn("CURRENT TASK", joined)
 
+    async def test_null_byte_in_subject_is_sanitized_before_commit(self) -> None:
+        # Twin of the PR-body crash: a NUL in the first line would make `git commit -m` execvp raise.
+        # _run_checked sanitizes every arg — assert no commit argument carries a NUL.
+        with TemporaryDirectory() as td:
+            ctx = self._ctx(Path(td))
+            ctx.pr_description = "add two\x00 ints"
+            proc = mock.MagicMock()
+            proc.returncode = 0
+            proc.communicate = AsyncMock(return_value=(b"", b""))
+            with (
+                mock.patch.object(orchestrator, "get_git_root", new=AsyncMock(return_value="/repo")),
+                mock.patch.object(orchestrator, "_has_staged_changes", new=AsyncMock(return_value=True)),
+                mock.patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)) as exec_mock,
+            ):
+                await orchestrator.finalize_transaction(ctx, push=False)
+            for arg in exec_mock.call_args_list[0].args:
+                self.assertNotIn("\x00", str(arg))
+
     async def test_skips_commit_when_index_clean(self) -> None:
         # Arrange — empty-commit guard trips.
         with TemporaryDirectory() as td:

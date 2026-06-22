@@ -4,6 +4,7 @@ import shutil
 import instructor
 from decimal import Decimal
 from google import genai
+from google.genai import types
 from google.genai.errors import ClientError
 
 from src.shared.core.observability import log

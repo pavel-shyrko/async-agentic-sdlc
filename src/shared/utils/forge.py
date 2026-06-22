@@ -17,6 +17,7 @@ import json
 import asyncio
 
 from src.shared.core.observability import log
+from src.shared.utils.subprocess_helpers import sanitize_for_argv
 
 # Network ceiling for `gh` calls — same default as GIT_NETWORK_TIMEOUT, independently tunable.
 GH_NETWORK_TIMEOUT = int(os.environ.get("GH_NETWORK_TIMEOUT", "300"))
@@ -49,8 +50,11 @@ async def _run_gh(args: list[str], repo_dir, *, env_extra: dict | None = None,
     env["GH_PROMPT_DISABLED"] = "1"      # no interactive prompt -> fail fast, never hang
     if env_extra:
         env.update(env_extra)
+    # Strip control chars (notably NUL) from every arg — a corrupted glyph in agent-authored PR
+    # title/body would otherwise make execvp raise "embedded null byte".
+    safe_args = [sanitize_for_argv(a) for a in args]
     proc = await asyncio.create_subprocess_exec(
-        "gh", *args, cwd=str(repo_dir),
+        "gh", *safe_args, cwd=str(repo_dir),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
     )
     try:

@@ -52,6 +52,19 @@ class OpenPrTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ex.call_count, 2)
         self.assertIn("create", ex.call_args_list[1].args)
 
+    async def test_null_byte_in_body_does_not_crash_argv(self) -> None:
+        # Regression: a corrupted glyph ("©"→NUL) in the agent-authored PR body must NOT reach execvp
+        # (which raises "embedded null byte"). _run_gh sanitizes every arg — assert the argv is NUL-free.
+        procs = [_proc(1, stderr=b"no pull requests found"),
+                 _proc(0, stdout=b"https://github.com/o/r/pull/9")]
+        with mock.patch("asyncio.create_subprocess_exec", new=AsyncMock(side_effect=procs)) as ex:
+            ref = await forge.open_pr("/repo", "feat/ticket-T1", "main",
+                                      "feat(T1): ok", "## License\nMIT \x00 2026\n")
+        self.assertEqual(ref, "https://github.com/o/r/pull/9")
+        for call in ex.call_args_list:
+            for arg in call.args:
+                self.assertNotIn("\x00", str(arg))
+
     async def test_skips_when_already_merged(self) -> None:
         view = _proc(0, stdout=json.dumps(
             {"number": 7, "state": "MERGED", "baseRefName": "main", "url": "u"}).encode())

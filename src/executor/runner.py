@@ -20,6 +20,7 @@ from src.shared.core.environments import is_test_file, get_qa_profile
 from src.shared.core.prompts import generate_repo_map
 from src.shared.utils.git_helpers import get_git_root, get_pipeline_snapshot_files
 from src.shared.utils.redaction import redact
+from src.shared.utils.subprocess_helpers import sanitize_for_argv
 from src.executor.agents.techlead import run_techlead_node
 from src.executor.agents.qa import run_qa_agent_node
 from src.executor.agents.developer import run_developer_node
@@ -161,8 +162,11 @@ async def _run_checked(cmd: list[str], action: str, timeout: float | None = None
     """
     env = os.environ.copy()            # copy, never a bare dict — preserves PATH/SystemRoot
     env["GIT_TERMINAL_PROMPT"] = "0"   # no interactive credential prompt -> fail fast, never hang
+    # Strip control chars (notably NUL) from every arg — a corrupted glyph in an agent-authored commit
+    # subject would otherwise make execvp raise "embedded null byte".
+    safe_cmd = [sanitize_for_argv(c) for c in cmd]
     proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
+        *safe_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
     )
     try:
         _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)

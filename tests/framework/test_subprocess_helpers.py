@@ -16,8 +16,30 @@ from src.shared.utils.subprocess_helpers import (
     _assert_within_root,
     parse_claude_usage,
     run_claude_cli,
+    sanitize_for_argv,
     stream_subprocess_output,
 )
+
+
+class SanitizeForArgvTests(unittest.TestCase):
+    """sanitize_for_argv strips control chars that crash/garble a subprocess argv, keeping whitespace."""
+
+    def test_strips_embedded_null(self) -> None:
+        # The exact crash: a "©" mangled to NUL in a ticket's License line.
+        self.assertEqual(sanitize_for_argv("MIT \x00 2026"), "MIT  2026")
+        self.assertNotIn("\x00", sanitize_for_argv("a\x00b"))
+
+    def test_preserves_whitespace_and_unicode(self) -> None:
+        body = "line1\nline2\twith tab\r\n## License\nMIT © 2026"
+        out = sanitize_for_argv(body)
+        self.assertEqual(out, body)            # \n \t \r and a REAL © are untouched
+        self.assertIn("©", out)
+
+    def test_strips_other_c0_controls_and_del(self) -> None:
+        self.assertEqual(sanitize_for_argv("a\x07b\x1f\x7fc"), "abc")
+
+    def test_clean_string_unchanged(self) -> None:
+        self.assertEqual(sanitize_for_argv("feat(TASK-01): plain subject"), "feat(TASK-01): plain subject")
 
 
 class _MutedLogMixin:

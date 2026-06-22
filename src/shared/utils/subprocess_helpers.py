@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import asyncio
 from decimal import Decimal
@@ -7,6 +8,24 @@ import subprocess  # nosec B404
 
 from src.shared.core.config import CLAUDE_CLI_BIN
 from src.shared.core.observability import log
+
+# ==========================================
+# ARGV SANITIZATION
+# ==========================================
+# C0 control chars (+ DEL) minus the whitespace we want to keep (\t \n \r). POSIX execvp rejects ANY
+# argv element containing a NUL, and agent-authored text (ticket bodies, commit subjects, PR bodies) can
+# carry corrupted glyphs — e.g. a "©" mangled to "\x00" — so every string crossing into a subprocess
+# argv is normalized through this SSOT before exec.
+_ARGV_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def sanitize_for_argv(s: str) -> str:
+    """Strip control characters that are unsafe/noise in a process argument, keeping ``\\t``/``\\n``/``\\r``.
+
+    Removes ``\\x00`` (which makes ``execvp`` raise ``ValueError: embedded null byte``) and the other C0
+    controls + DEL, while preserving tabs/newlines so a multi-line PR body or commit message stays intact.
+    """
+    return _ARGV_CTRL_RE.sub("", s)
 
 # ==========================================
 # ASYNC STREAM CONSUMER UTILITY
