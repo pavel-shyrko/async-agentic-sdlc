@@ -28,6 +28,38 @@ def _safe_ticket_id(ticket_id: str, index: int) -> str:
     return slug or f"TASK-{index:02d}"
 
 
+def _natural_sort_key(stem: str):
+    """Sort key that orders by a trailing integer when present (so TASK-2 precedes TASK-10), and
+    pushes stems with no trailing number to the end (sorted by name). The leading 0/1 group flag means
+    int-keyed and name-keyed stems are never compared against each other."""
+    m = re.search(r"(\d+)$", stem)
+    return (0, int(m.group(1))) if m else (1, stem)
+
+
+def get_tasks_for_nexus_run(run_dir: Path) -> list[str]:
+    """Return the planned ticket ids for a Nexus run, in true TPM order.
+
+    Primary (authoritative): read the run's ``reports/checkpoint.json`` and map ``NexusState.tasks``
+    PRESERVING list order — the list already encodes TPM order, so no sorting is applied (and arbitrary
+    model-authored ids are handled correctly). Fallback when no/unreadable checkpoint: enumerate
+    ``artifacts/*.md`` (minus epic/blueprint) with a NATURAL numeric sort so ``TASK-2`` precedes
+    ``TASK-10`` rather than the other way round. Returns ``[]`` when there is nothing to run.
+    """
+    run_dir = Path(run_dir)
+    checkpoint = run_dir / "reports" / "checkpoint.json"
+    if checkpoint.exists():
+        try:
+            state = NexusState.load_checkpoint(checkpoint)
+            return [_safe_ticket_id(t.get("ticket_id", ""), i) for i, t in enumerate(state.tasks, start=1)]
+        except Exception as e:  # unreadable/garbage checkpoint → fall back to the on-disk artifacts
+            log.debug(f"get_tasks_for_nexus_run: checkpoint unreadable ({e}); scanning artifacts/.")
+    artifacts_dir = run_dir / "artifacts"
+    if not artifacts_dir.is_dir():
+        return []
+    stems = [p.stem for p in artifacts_dir.glob("*.md") if p.stem not in ("epic", "blueprint")]
+    return sorted(stems, key=_natural_sort_key)
+
+
 async def run_nexus(
     raw_idea: str | None = None, *, run_dir: Path | None = None, resume: Path | None = None,
 ) -> Path:

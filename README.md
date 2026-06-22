@@ -32,7 +32,7 @@ Full docs live under **[docs/](./docs/README.md)** (start there). Highlights:
 
 * **[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)** — C4 diagrams (System Context, Containers, Executor FSM) + end-to-end sequence, in Mermaid.
 * **[docs/guides/](./docs/guides/setup.md)** — environment setup (WSL2, Docker, venv, Gemini key).
-* **[docs/decisions/](./docs/decisions/README.md)** — the ADR log (0000–0016), indexed by theme.
+* **[docs/decisions/](./docs/decisions/README.md)** — the ADR log (0000–0017), indexed by theme.
 * **[CHANGELOG.md](./CHANGELOG.md)** · **[PRACTICUM.md](./PRACTICUM.md)** · **[docs/BACKLOG.md](./docs/BACKLOG.md)** — release history, distilled lessons, open work.
 
 ---
@@ -64,16 +64,24 @@ async-agentic-sdlc/
 │   ├── nexus/                  # Control Plane — idea→plan: po.py / sa.py / tpm.py agents,
 │   │                           #   nexus_runner.py (run_nexus) + state.py (NexusState checkpoint)
 │   ├── executor/               # Worker Plane — runs one SDLC session
-│   │   ├── runner.py           # FSM driver + Nexus⇄executor bridge / resume routing
+│   │   ├── runner.py           # main() dispatcher + run_executor FSM; --auto-execute bridge / resume routing
 │   │   ├── agents/             # TechLead, Developer, QA, Reviewer, TechWriter, Arbiter logic
 │   │   └── nodes/              # FSM gates (build/test compile gates, SAST)
 │   └── shared/                 # Shared Plane — common foundations reused across planes
-│       ├── core/               # Pydantic models, observability, env config, prompt loader, baseline files
-│       └── utils/              # Subprocess + workspace-path-safe helpers
+│       ├── core/               # Pydantic models, observability, env config, run topology, prompt loader, baseline files
+│       └── utils/              # Subprocess, git, and workspace-path-safe helpers
 ├── prompts/                    # Runtime agent instructions (decoupled from src/ logic)
-│   ├── system/                 # Per-role system prompts (po, sa, tpm, techlead, developer, qa, reviewer, techwriter)
+│   ├── system/                 # Per-role system prompts (po, sa, tpm, techlead, developer, qa, reviewer, techwriter, arbiter)
 │   └── skills/                 # Reusable prompt fragments injected into agents (engineering_guide, strict_validation, deterministic_mutation)
-├── tickets/                    # Sample requirement tickets consumed via -f / --file
+├── tests/                      # Engine tests, WSL-only (see docs/guides/setup.md)
+│   ├── framework/              # Unit tests for the orchestrator engine itself
+│   └── integration/            # Cross-module / end-to-end tests
+├── docker/                     # Sandbox image Dockerfiles (python/go/node/dotnet) + semgrep SAST image
+├── scripts/                    # build_sandbox_images.sh — builds the sandbox + SAST images
+├── .claude/                    # Claude Code metadata (AI-assisted maintenance)
+│   ├── skills/                 # Native Agent Skills (/adr-generation, /docs-sync, /analyze-run, …)
+│   └── rules/                  # Path-scoped project knowledge auto-loaded by Claude Code
+├── .github/                    # CI workflows (workflows/ci.yml)
 ├── runs/                       # Volatile per-run sessions (created dynamically, ignored by git)
 │   └── <project>/              # One umbrella per idea (Nexus) or ticket (direct executor run)
 │       ├── project.json        # Umbrella manifest (idea, target repo, base branch) reused by every run
@@ -89,15 +97,16 @@ async-agentic-sdlc/
 │   ├── README.md               # Docs index / front door (navigation table)
 │   ├── ARCHITECTURE.md         # C4 diagrams: context / container / executor-FSM (Mermaid)
 │   ├── guides/                 # setup.md · docker-on-windows.md (environment bring-up)
-│   ├── decisions/              # Architecture Decision Records (MADR) 0000–0016 + index README
+│   ├── decisions/              # Architecture Decision Records (MADR) 0000–0017 + index README
 │   ├── releases/               # Per-iteration release write-ups (iteration_NN/)
-│   └── BACKLOG.md              # Open, deferred fixes (prioritized)
+│   └── BACKLOG.md              # Capability roadmap (E1–E4) + open defects & refinements
 ├── main.py                     # Root CLI entrypoint: runs src/executor/runner.py:main()
 ├── CLAUDE.md                   # Claude Code project governance: CLI economy, dev commands, guardrails
 ├── CHANGELOG.md                # Release history (Keep a Changelog), linked to ADRs
 ├── PRACTICUM.md                # Project manifest & Key Engineering Takeaways
 ├── requirements.txt            # Explicit dependency manifest
 ├── LICENSE                     # Apache License 2.0 — the engine's own license
+├── .dockerignore               # Trims the Docker build context (excludes runs/, venv/, …)
 ├── .gitignore                  # Ignores runs/ — runtime session state stays out of git
 └── README.md                   # System mission briefing & specifications
 ```
@@ -135,7 +144,7 @@ python3 main.py --repo https://github.com/acme/widgets.git --ticket WID-42 \
 # Task body from a file, with a base-branch anchor. Source/test layout is contract-/profile-driven
 # (the blueprint topology decides source paths; the QA language profile decides test placement).
 python3 main.py --repo /path/to/local/repo --ticket WID-43 \
-    -f tickets/003_multi_file_geometry.md --base-branch main
+    -f path/to/ticket.md --base-branch main
 
 # Push the feature branch (feat/ticket-<ticket>) to origin after the atomic success commit.
 python3 main.py --repo git@github.com:acme/widgets.git --ticket WID-44 "..." --push
@@ -157,6 +166,10 @@ python3 main.py --idea "CLI that converts JSON to CSV with a selectable delimite
 
 # Execute one generated ticket; it runs under the SAME project umbrella, repo taken from project.json.
 python3 main.py --run cli-that-converts-json-to-csv -f TASK-01
+
+# Or plan AND auto-run the first ticket in one shot (E1). --repo is required so there is a clone target.
+python3 main.py --idea "CLI that converts JSON to CSV with a selectable delimiter" \
+    --repo git@github.com:acme/widgets.git --auto-execute
 ```
 
 Each run is isolated under `runs/<project>/<NNN>_<plane>_<label>_<ts>_<uid>/`: an executor run

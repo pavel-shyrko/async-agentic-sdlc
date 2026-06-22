@@ -26,13 +26,15 @@ and any agent-prompt/constraint changes (the new rule + the anti-pattern it prev
    `git diff --stat <prev-tag-or-commit>` for the footprint, plus any validation-run outcomes). Link it to
    the ADR (and the ADR/CHANGELOG should link back to it).
 3. **CHANGELOG + README + ARCHITECTURE** — run the `docs-sync` skill (follow its full checklist): add the
-   release section to `CHANGELOG.md` (linked to the new ADR + the archive) and patch `README.md`. Do the
-   docs-sync **completeness sweep** — a new agent role/skill must appear in EVERY place peers are
-   enumerated (roster, capabilities, structure tree, meta-tools), and every new env knob (not just CLI
-   flags) must be named. **If this iteration changed structure** (a new/removed agent role, an FSM
-   state/route, an external system, or a plane/container/store), docs-sync's **Architecture Diagram Sync**
-   step also updates the C4 diagrams + component table in `docs/ARCHITECTURE.md` — skip it only for pure
-   behavior/bugfix iterations.
+   release section to `CHANGELOG.md` (linked to the new ADR + the archive) and patch `README.md`. Then run
+   docs-sync's **Peer-enumeration drift sweep** (its Protocol step 5) — the mechanical sibling-grep over
+   agents, the `prompts/system/` list, the ADR `0000–NNNN` range, version/iteration stamps, env knobs, and
+   skills. **Re-verify the FULL peer-sets, not just what this iteration added** — these enumerations carry
+   drift from PRIOR releases (a role added two releases ago can still be missing from one doc), and a
+   release is the moment to catch it. **If this iteration changed structure** (a new/removed agent role, an
+   FSM state/route, an external system, or a plane/container/store), docs-sync's **Architecture Diagram
+   Sync** step also updates the C4 diagrams + component table in `docs/ARCHITECTURE.md` — skip it only for
+   pure behavior/bugfix iterations.
 4. **PRACTICUM** — run the `practicum-update` skill: add one or more new "Key Engineering Takeaways"
    bullet(s) at the TOP of that section, each capturing a generalizable lesson and linking the iteration's
    ADR (from step 1). (Only add a "Development Steps" row if that table actually exists in the current
@@ -40,7 +42,11 @@ and any agent-prompt/constraint changes (the new rule + the anti-pattern it prev
 5. **Verify** — concretely confirm every cross-link resolves and every path matches the current topology:
    the ADR, archive, and any referenced rule/skill files EXIST on disk; relative paths from the archive
    (`../../decisions/…`, `../../../CHANGELOG.md`) and the CHANGELOG/README/PRACTICUM (`./docs/decisions/…`) point at real
-   files; and the CHANGELOG version heading + ADR slug match. Fix any miss before finishing.
+   files; and the CHANGELOG version heading + ADR slug match. Then run the drift-sweep grep checks
+   mechanically (don't eyeball): the highest `docs/decisions/NNNN` equals the upper bound of every
+   `0000–NNNN` range string; no stale prior-version stamp (`v<old>`) remains in any doc that means "current
+   state"; the agent/prompt/skill peer-sets resolve to identical file-hit sets (per docs-sync step 5); and
+   `ls src/*/agents/*.py` + `ls prompts/system/` match what the README enumerates. Fix any miss before finishing.
 
 ## Placeholders to customize
 - `[ITERATION_NUMBER]` — numeric iteration identifier.

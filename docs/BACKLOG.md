@@ -22,6 +22,8 @@ Two parts:
 >
 > Updated 2026-06-19: added **Part I — Capability Roadmap** (`E1`–`E4`, closing the idea→main→deploy loop)
 > and regrouped the defect items by theme (numbers unchanged).
+>
+> Updated 2026-06-22: **E1 shipped** (`--auto-execute`, v0.17.0 / ADR 0017) — next in the loop is **E2**.
 
 ---
 
@@ -36,7 +38,7 @@ branch that is **never merged**.
 **Dependency order (build in this sequence):**
 
 ```
-E1  Nexus auto-dispatches Executor (one ticket)
+E1 ✅ Nexus auto-dispatches Executor (one ticket)   — DONE (v0.17.0 / ADR 0017)
       └─► E2  Close the loop to main (auto-approved PR + merge)
               └─► E3  Cyclical multi-ticket orchestration (all tasks, each building on the last)
                       └─► E4  DevOps / deployment   (scope only — decision deferred)
@@ -47,7 +49,19 @@ sees TASK-01 if TASK-01 has already been merged to `main`.
 
 ---
 
-## E1. [EPIC] Nexus auto-dispatches the Executor (single ticket)
+## E1. [✅ DONE — v0.17.0 / ADR 0017] Nexus auto-dispatches the Executor (single ticket)
+
+> **Delivered** ([ADR 0017](decisions/0017-nexus-executor-auto-dispatch.md),
+> [iteration 17](releases/iteration_17/iteration_17_README.md)): `--auto-execute` on the `--idea` path now
+> plans then runs the Executor for the first ticket in one invocation. The inlined FSM body was extracted
+> **verbatim** into `run_executor(cfg, run_dir, resume_checkpoint) -> bool` (not the originally-proposed
+> `run_executor_fsm_loop`/`execute_one_ticket` split — a single callable proved sufficient), the shared
+> ticket setup into `prepare_ticket_run(...)`, and task enumeration into
+> `get_tasks_for_nexus_run(run_dir) -> list[str]` (ticket-id strings in checkpoint/TPM order, **not** the
+> `list[dict]` first sketched). Dispatch lives in `main()`; Nexus never imports the executor (ADR 0012
+> held). The dropped `--push` on `--idea` was fixed in passing. Validated end-to-end on
+> `cli-python-json-csv` (plan 4 tickets → TASK-01 built/committed/pushed, $0.2249). **Remaining for the
+> loop: E2 (merge to `main`) + E3 (iterate all tickets, non-exiting halts).**
 
 **Goal:** after planning, the engine automatically runs the Executor for `TASK-01` — no manual second
 command. (User-requested feature 1: "nexus запускал executor с задачей 1".)

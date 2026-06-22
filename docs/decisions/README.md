@@ -52,3 +52,8 @@ with the `/adr-generation` skill (next free sequence number).
 | ADR | Decision |
 |---|---|
 | [0016](0016-arbiter-contract-self-healing.md) | Arbiter agent — autonomous contract self-healing (a third FSM route); fail-fast RECITATION + engine-injected baseline files. |
+
+## Orchestration & Entrypoint
+| ADR | Decision |
+|---|---|
+| [0017](0017-nexus-executor-auto-dispatch.md) | `--auto-execute`: plan then auto-dispatch the Executor for the first ticket; extract `run_executor` / `prepare_ticket_run` (E1). |

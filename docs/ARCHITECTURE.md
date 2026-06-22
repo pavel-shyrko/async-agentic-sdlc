@@ -28,7 +28,7 @@ flowchart TB
     docker["🐳 Docker Engine<br/>sandboxed build / test / SAST"]
     github["🔗 Git / GitHub remote<br/>+ target repository"]
 
-    human -->|"--idea / --run / --resume (CLI)"| engine
+    human -->|"--idea [--auto-execute] / --run / --resume (CLI)"| engine
     engine -->|"epic, blueprint, tickets;<br/>logs, FinOps, atomic commit"| human
 
     engine -->|"prompts → structured JSON<br/>(PO/SA/TPM, TechLead, QA,<br/>Reviewer, TechWriter, Arbiter)"| gemini
@@ -46,7 +46,8 @@ flowchart TB
 
 **Key:**
 - **Human Operator** drives everything through one CLI (`main.py` → `src/executor/runner.py` `main()`):
-  `--idea` plans a new project, `--run <project> -f <ticket>` executes a ticket, `--resume` recovers.
+  `--idea` plans a new project (add `--auto-execute` to also run the Executor for the first ticket in the
+  same invocation), `--run <project> -f <ticket>` executes a ticket, `--resume` recovers.
 - **Google Gemini API** — every *structured* agent (forced Pydantic output via `instructor`):
   PO/SA/TPM (planning) and TechLead/QA/Reviewer/TechWriter/Arbiter (execution).
 - **Claude Code CLI** — the *Developer* agent only; agentic, edits files directly in the run's clone.
@@ -84,6 +85,7 @@ flowchart TB
     human --> cli
     cli -->|"--idea"| nexus
     cli -->|"--run / --resume"| executor
+    cli -.->|"--idea --auto-execute:<br/>dispatch 1st ticket<br/>after planning"| executor
 
     nexus --> shared
     executor --> shared
@@ -110,8 +112,11 @@ flowchart TB
 - **Nexus control plane** (`src/nexus/`) — linear, no loops, no Docker/git: `run_nexus` drives PO → SA →
   TPM, writing `artifacts/{epic.md, blueprint.md, TASK-*.md}` + a `NexusState` checkpoint. Needs only the
   Gemini key.
-- **Executor worker plane** (`src/executor/`) — `runner.py` is the FSM driver; `agents/` holds the six
-  execution agents; `nodes/gates.py` runs build/test/SAST. Full git + Docker isolation per run.
+- **Executor worker plane** (`src/executor/`) — `run_executor` in `runner.py` is the per-ticket FSM driver
+  (`main()` calls it for `--run`/`--resume`, and dispatches it for the first planned ticket on
+  `--idea --auto-execute`, ADR 0017 — the bridge stays in the entry layer, never a Nexus→Executor import);
+  `agents/` holds the six execution agents; `nodes/gates.py` runs build/test/SAST. Full git + Docker
+  isolation per run.
 - **Shared plane** (`src/shared/`) — the engine SSOTs both planes import: `core/` (`models.py`,
   `config.py` incl. `ROLE_MODELS`, `observability.py`, `runs.py`, `docker_adapter.py`, `environments.py`,
   `prompts.py`) and `utils/` (`llm.py`, `api_retry.py`, `git_helpers.py`, `subprocess_helpers.py`,
@@ -209,12 +214,13 @@ sequenceDiagram
     participant C as Claude CLI
     participant R as Git/GitHub
 
-    H->>N: main.py --idea "<idea>"
+    H->>N: main.py --idea "<idea>" [--auto-execute]
     N->>G: PO→SA→TPM (structured)
     N->>FS: artifacts/{epic,blueprint,TASK-*}.md + checkpoint
     N-->>H: planned tickets
 
-    H->>X: main.py --run <project> -f TASK-01
+    Note over H,X: --run <project> -f TASK-01<br/>(or auto-dispatched for the first ticket by --auto-execute)
+    H->>X: execute ticket
     X->>R: shallow-clone → feat/ticket-TASK-01
     X->>G: TechLead → contract
     loop until gates pass or budget exhausted
@@ -236,7 +242,7 @@ for the full module map and [agent-contracts](../.claude/rules/agent-contracts.m
 
 | Plane | Component | File | Responsibility |
 |---|---|---|---|
-| Entry | CLI / router | `main.py` → `src/executor/runner.py` `main()` | Parse args; route to Nexus or Executor; `--resume` dispatch. |
+| Entry | CLI / router | `main.py` → `src/executor/runner.py` `main()` | Parse args; route to Nexus or Executor; `--resume` dispatch; on `--idea --auto-execute`, dispatch the first ticket via `prepare_ticket_run` + `run_executor` (`get_tasks_for_nexus_run` for order). |
 | Nexus | PO / SA / TPM | `src/nexus/{po,sa,tpm}.py` | Idea → Epic → Blueprint → task tickets (structured Gemini). |
 | Nexus | Runner / State | `src/nexus/nexus_runner.py`, `state.py` | Drive PO→SA→TPM; `NexusState` checkpoint + resume. |
 | Executor | FSM driver | `src/executor/runner.py` | Outer cycle, reroutes, breaker, routing, commit. |
@@ -258,6 +264,6 @@ for the full module map and [agent-contracts](../.claude/rules/agent-contracts.m
 
 ---
 
-*Diagrams reflect the engine as of the Arbiter iteration ([CHANGELOG](../CHANGELOG.md) v0.16.0). For the
-"why" behind each decision see [decisions/](decisions/README.md); for what's still open see
-[BACKLOG.md](BACKLOG.md).*
+*Diagrams reflect the engine as of the auto-dispatch iteration ([CHANGELOG](../CHANGELOG.md) v0.17.0 —
+`--auto-execute`, ADR [0017](decisions/0017-nexus-executor-auto-dispatch.md)). For the "why" behind each
+decision see [decisions/](decisions/README.md); for what's still open see [BACKLOG.md](BACKLOG.md).*

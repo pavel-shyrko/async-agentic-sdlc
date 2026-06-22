@@ -46,6 +46,7 @@ class RunConfig:
     run_project: str | None = None    # --run <project>: execute a ticket under an existing project
     resume_project: str | None = None  # --resume <project> [N]: resume by project (+ optional run number)
     resume_number: str | None = None   # the optional NNN for --resume <project> <N>
+    auto_execute: bool = False  # --idea --auto-execute: after planning, run the Executor for the first ticket
 
 
 def parse_args() -> RunConfig:
@@ -66,15 +67,19 @@ def parse_args() -> RunConfig:
     parser.add_argument("--reset-attempts", action="store_true", help="Reset circuit breaker counter on resume.")
     parser.add_argument("--push", action="store_true", help="Push the feature branch to origin after the atomic success commit.")
     parser.add_argument("--idea", help="Raw idea → start a NEW project and run the Nexus planning pipeline.")
+    parser.add_argument("--auto-execute", action="store_true",
+                        help="With --idea: after planning, automatically run the Executor for the first ticket "
+                             "(requires --repo so there is a target to clone).")
 
     args = parser.parse_args()
 
     # Nexus Control Plane: an idea starts a new project (planning run). --repo (optional) is captured
-    # into the project so later `--run` ticket executions reuse it.
+    # into the project so later `--run` ticket executions reuse it. With --auto-execute the engine
+    # dispatches the Executor for the first ticket once planning completes (E1).
     if args.idea:
         return RunConfig(
             description=None, base_branch=args.base_branch, resume=None, reset_attempts=False,
-            idea=args.idea, repo=args.repo,
+            idea=args.idea, repo=args.repo, push=args.push, auto_execute=args.auto_execute,
         )
 
     # Execute a ticket under an existing project: --run <project> -f <ticket>.
@@ -673,6 +678,26 @@ def _resolve_ticket_file(projects: Projects, slug: str, ticket: str) -> Path | N
     return cand if cand.exists() else None
 
 
+def prepare_ticket_run(projects: Projects, project, cfg: RunConfig, ticket_id: str) -> Path | None:
+    """Wire ``cfg`` for one project ticket and allocate its executor run dir.
+
+    Sets ``cfg.repo`` (from the project when not overridden), ``base_branch``, ``ticket``, ``file`` and
+    ``description`` (the ticket BODY, like a normal ``-f`` run — ``cfg.file`` is kept so the sibling
+    ``blueprint.md`` is routed into the TechLead brief). Returns ``None`` WITHOUT allocating when the
+    ticket markdown can't be resolved in the project's latest Nexus run. Shared by ``--run`` and
+    ``--idea --auto-execute``.
+    """
+    cfg.repo = cfg.repo or project.repo
+    cfg.base_branch = project.base_branch
+    cfg.ticket = ticket_id
+    ticket_file = _resolve_ticket_file(projects, project.slug, ticket_id)
+    if ticket_file is None:
+        return None
+    cfg.file = str(ticket_file)
+    cfg.description = ticket_file.read_text(encoding="utf-8")
+    return projects.allocate(project.slug, "exec", ticket_id)
+
+
 async def main():
     cfg = parse_args()
     projects = Projects(RUNS_BASE)
@@ -681,13 +706,37 @@ async def main():
     # later --run ticket executions). Branch BEFORE check_environment so the docker/claude/bandit
     # requirements never block the lightweight control plane. ----
     if cfg.idea:
-        from src.nexus.nexus_runner import run_nexus
+        from src.nexus.nexus_runner import run_nexus, get_tasks_for_nexus_run
+        # Fail fast: when we WILL auto-execute, the executor's docker/claude/bandit deps must be present
+        # before we spend planning tokens. Plain planning skips this (control plane needs only Gemini).
+        if cfg.auto_execute:
+            check_environment()
         project = projects.create(cfg.idea, idea=cfg.idea, repo=cfg.repo, base_branch=cfg.base_branch)
-        run_dir = projects.allocate(project.slug, "nexus", "plan")
-        reconfigure_logging(run_dir / "logs")
-        log.info(f"🗂️  Project '{project.slug}' (new) → {run_dir.name}")
-        out = await run_nexus(cfg.idea, run_dir=run_dir)
+        nexus_run_dir = projects.allocate(project.slug, "nexus", "plan")
+        reconfigure_logging(nexus_run_dir / "logs")
+        log.info(f"🗂️  Project '{project.slug}' (new) → {nexus_run_dir.name}")
+        out = await run_nexus(cfg.idea, run_dir=nexus_run_dir)
         log.info(f"✅ Nexus complete → {out.resolve()}")
+
+        # E1 — auto-dispatch the Executor for the FIRST planned ticket. Planning has SUCCEEDED, so every
+        # skip below is a clean exit (nothing to execute ≠ failure); only a real executor halt exits 1.
+        if not cfg.auto_execute:
+            return
+        if not project.repo:
+            log.warning(f"⏭️  --auto-execute skipped: project '{project.slug}' has no --repo to clone. "
+                        f"Planning output is ready — run `--run {project.slug} -f <ticket>` with a repo.")
+            return
+        tickets = get_tasks_for_nexus_run(nexus_run_dir)
+        if not tickets:
+            log.warning("⏭️  --auto-execute skipped: the Nexus run produced no tickets.")
+            return
+        log.info(f"🤖 --auto-execute: dispatching the Executor for the first ticket '{tickets[0]}' "
+                 f"(of {len(tickets)} planned).")
+        run_dir = prepare_ticket_run(projects, project, cfg, tickets[0])
+        if run_dir is None:
+            log.warning(f"⏭️  --auto-execute skipped: ticket '{tickets[0]}' not found in the Nexus artifacts.")
+            return
+        await run_executor(cfg, run_dir)
         return
 
     # ---- Resolve a resume target → (run_dir, checkpoint). Either a project slug (+ optional run
@@ -728,25 +777,27 @@ async def main():
                 log.error(f"🚨 Unknown project '{cfg.run_project}' — run --idea first to create it.")
                 sys.exit(1)
             project = projects.load(cfg.run_project)
-            cfg.repo = cfg.repo or project.repo
-            cfg.base_branch = project.base_branch
-            if not cfg.repo:
+            if not (cfg.repo or project.repo):
                 log.error(f"🚨 Project '{project.slug}' has no repo recorded — pass --repo once on a --run.")
                 sys.exit(1)
-            ticket_file = _resolve_ticket_file(projects, project.slug, cfg.ticket)
-            if ticket_file is None:
+            run_dir = prepare_ticket_run(projects, project, cfg, cfg.ticket)
+            if run_dir is None:
                 log.error(f"🚨 Ticket '{cfg.ticket}' not found in project '{project.slug}' Nexus artifacts.")
                 sys.exit(1)
-            # Feed the ticket BODY as the task description (like a normal -f run) and keep cfg.file so the
-            # sibling blueprint.md (same artifacts/ dir) is routed into the TechLead brief below.
-            cfg.file = str(ticket_file)
-            cfg.description = ticket_file.read_text(encoding="utf-8")
-            run_dir = projects.allocate(project.slug, "exec", cfg.ticket)
         else:
             # Fresh DIRECT run: group it under a project keyed by the ticket slug (reused on re-runs).
             project = projects.get_or_create(cfg.ticket, repo=cfg.repo, base_branch=cfg.base_branch)
             run_dir = projects.allocate(project.slug, "exec", cfg.ticket)
 
+    await run_executor(cfg, run_dir, resume_checkpoint)
+
+
+async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | None = None) -> bool:
+    """Execute ONE ticket end-to-end in a prepared run dir: bootstrap (or resume) → TechLead → the FSM
+    self-heal cycle → atomic success commit. Returns ``True`` on full success; a halt writes an incident
+    report and exits the process (``sys.exit(1)`` via ``_abort_with_incident``). Shared by the direct
+    ``--run``/resume paths and ``--idea --auto-execute`` (E1).
+    """
     # Re-anchor the audit trail to THIS run's logs/ dir before any other log line is emitted.
     # Append mode keeps a resumed run's timeline linear in the SAME file instead of splitting it.
     reconfigure_logging(run_dir / "logs")
@@ -1160,7 +1211,7 @@ async def main():
             await finalize_transaction(ctx, push=cfg.push)
             write_finops_report(ctx)
             log_finops_summary(ctx)
-            return
+            return True
 
     # Escalation on Circuit Breaker open
     _abort_with_incident(ctx, "\n🚨 CIRCUIT BREAKER OPEN: Retries exhausted.")

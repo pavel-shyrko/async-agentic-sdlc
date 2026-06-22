@@ -895,6 +895,128 @@ class ArbiterRoutingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(ctx.contract_amendments, 1)
 
 
+class IdeaAutoExecuteDispatchTests(unittest.IsolatedAsyncioTestCase):
+    """E1: `--idea --auto-execute` plans then dispatches the Executor for the FIRST ticket; plain
+    `--idea` stops after planning; a repo-less project (or no tickets) skips execution cleanly (exit 0)."""
+
+    def _projects(self, td, repo="some-repo"):
+        nexus_dir = Path(td) / "001_nexus_plan"
+        exec_dir = Path(td) / "002_exec"
+        project = mock.MagicMock()
+        project.slug = "p"
+        project.repo = repo
+        project.base_branch = "main"
+        projects = mock.MagicMock()
+        projects.create.return_value = project
+        projects.allocate.side_effect = [nexus_dir, exec_dir]
+        return projects, project, nexus_dir, exec_dir
+
+    def _idea_cfg(self, auto_execute: bool, repo="some-repo"):
+        return orchestrator.RunConfig(
+            description=None, base_branch="main", resume=None, reset_attempts=False,
+            idea="an idea", repo=repo, auto_execute=auto_execute,
+        )
+
+    async def test_auto_execute_dispatches_first_ticket(self) -> None:
+        with TemporaryDirectory() as td:
+            projects, project, nexus_dir, exec_dir = self._projects(td)
+            ticket_file = Path(td) / "TASK-01.md"
+            ticket_file.write_text("ticket body", encoding="utf-8")
+            run_executor = AsyncMock(return_value=True)
+            with (
+                mock.patch.object(orchestrator, "parse_args", return_value=self._idea_cfg(True)),
+                mock.patch.object(orchestrator, "Projects", return_value=projects),
+                mock.patch.object(orchestrator, "check_environment"),
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "_resolve_ticket_file", return_value=ticket_file),
+                mock.patch.object(orchestrator, "run_executor", new=run_executor),
+                mock.patch("src.nexus.nexus_runner.run_nexus", new=AsyncMock(return_value=nexus_dir)),
+                mock.patch("src.nexus.nexus_runner.get_tasks_for_nexus_run",
+                           return_value=["TASK-01", "TASK-02"]),
+            ):
+                await orchestrator.main()
+
+            run_executor.assert_awaited_once()
+            cfg_arg, run_dir_arg = run_executor.await_args.args[0], run_executor.await_args.args[1]
+            self.assertEqual(run_dir_arg, exec_dir)
+            # prepare_ticket_run wired cfg for the FIRST ticket only.
+            self.assertEqual(cfg_arg.ticket, "TASK-01")
+            self.assertEqual(cfg_arg.description, "ticket body")
+
+    async def test_plain_idea_does_not_dispatch_executor(self) -> None:
+        with TemporaryDirectory() as td:
+            projects, project, nexus_dir, _exec = self._projects(td)
+            run_executor = AsyncMock()
+            with (
+                mock.patch.object(orchestrator, "parse_args", return_value=self._idea_cfg(False)),
+                mock.patch.object(orchestrator, "Projects", return_value=projects),
+                mock.patch.object(orchestrator, "check_environment") as check_env,
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "run_executor", new=run_executor),
+                mock.patch("src.nexus.nexus_runner.run_nexus", new=AsyncMock(return_value=nexus_dir)),
+                mock.patch("src.nexus.nexus_runner.get_tasks_for_nexus_run", return_value=["TASK-01"]),
+            ):
+                await orchestrator.main()
+            run_executor.assert_not_awaited()
+            check_env.assert_not_called()  # planning-only must not require docker/claude/bandit
+
+    async def test_auto_execute_skips_cleanly_when_project_has_no_repo(self) -> None:
+        with TemporaryDirectory() as td:
+            projects, project, nexus_dir, _exec = self._projects(td, repo=None)
+            run_executor = AsyncMock()
+            with (
+                mock.patch.object(orchestrator, "parse_args", return_value=self._idea_cfg(True, repo=None)),
+                mock.patch.object(orchestrator, "Projects", return_value=projects),
+                mock.patch.object(orchestrator, "check_environment"),
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "run_executor", new=run_executor),
+                mock.patch("src.nexus.nexus_runner.run_nexus", new=AsyncMock(return_value=nexus_dir)),
+                mock.patch("src.nexus.nexus_runner.get_tasks_for_nexus_run", return_value=["TASK-01"]),
+            ):
+                # No repo to clone → clean skip, NOT a SystemExit (planning still succeeded).
+                await orchestrator.main()
+            run_executor.assert_not_awaited()
+
+    async def test_auto_execute_skips_cleanly_when_no_tickets(self) -> None:
+        with TemporaryDirectory() as td:
+            projects, project, nexus_dir, _exec = self._projects(td)
+            run_executor = AsyncMock()
+            with (
+                mock.patch.object(orchestrator, "parse_args", return_value=self._idea_cfg(True)),
+                mock.patch.object(orchestrator, "Projects", return_value=projects),
+                mock.patch.object(orchestrator, "check_environment"),
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "run_executor", new=run_executor),
+                mock.patch("src.nexus.nexus_runner.run_nexus", new=AsyncMock(return_value=nexus_dir)),
+                mock.patch("src.nexus.nexus_runner.get_tasks_for_nexus_run", return_value=[]),
+            ):
+                await orchestrator.main()
+            run_executor.assert_not_awaited()
+
+    async def test_reanchor_logging_leaves_single_file_handler(self) -> None:
+        # Regression guard for the nexus→exec re-anchor: reconfigure_logging must SWAP (not stack) the
+        # RotatingFileHandler. Save/restore the global SDLC logger so this never leaks into other tests.
+        import logging
+        from logging.handlers import RotatingFileHandler
+        logger = logging.getLogger("SDLC")
+        saved = list(logger.handlers)
+        try:
+            with TemporaryDirectory() as td:
+                orchestrator.reconfigure_logging(Path(td) / "nexus_logs")
+                orchestrator.reconfigure_logging(Path(td) / "exec_logs")
+                file_handlers = [h for h in logger.handlers if isinstance(h, RotatingFileHandler)]
+                self.assertEqual(len(file_handlers), 1)
+                self.assertIn("exec_logs", file_handlers[0].baseFilename)
+        finally:
+            for h in list(logger.handlers):
+                if isinstance(h, RotatingFileHandler):
+                    logger.removeHandler(h)
+                    h.close()
+            for h in saved:
+                if h not in logger.handlers:
+                    logger.addHandler(h)
+
+
 class BootstrapSessionTests(unittest.IsolatedAsyncioTestCase):
     """Session bootstrap must shallow-clone, branch, map paths, and re-anchor logging."""
 

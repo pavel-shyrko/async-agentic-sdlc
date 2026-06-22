@@ -1,7 +1,8 @@
 # Repo module map (where to find things)
 
-Entrypoint: `main.py` → `src/executor/runner.py` `main()` (CLI parsing in `parse_args`).
-Three planes under `src/` (ADR 0012 virtual separation):
+Entrypoint: `main.py` → `src/executor/runner.py` `main()` (CLI parsing in `parse_args`); `main()` is a thin
+dispatcher that resolves the run and calls `run_executor` (with `--idea --auto-execute` it dispatches the
+first ticket, ADR 0017). Three planes under `src/` (ADR 0012 virtual separation):
 
 **`src/shared/core/`** — engine SSOTs:
 - `models.py` — `RUNS_BASE`, `WorkspacePaths`, `PipelineTelemetry`, `GlobalPipelineContext` (`save_checkpoint`/`load_checkpoint`).
@@ -15,10 +16,13 @@ Three planes under `src/` (ADR 0012 virtual separation):
 **`src/shared/utils/`** — `subprocess_helpers.py` (`parse_claude_usage`, streaming), `git_helpers.py`,
 `llm.py` (`run_structured_llm`), `api_retry.py` (`with_api_retry`), `redaction.py` (`redact`).
 
-**`src/executor/`** (worker plane) — `runner.py` (FSM loop), `nodes/gates.py` (build/test/SAST gates +
-`build_failure_is_environmental`), `agents/{techlead,developer,qa,reviewer,techwriter}.py`.
+**`src/executor/`** (worker plane) — `runner.py` (`main()` dispatcher + `run_executor` per-ticket FSM +
+`prepare_ticket_run` cfg-wiring/allocation, shared by `--run`/`--auto-execute`), `nodes/gates.py`
+(build/test/SAST gates + `build_failure_is_environmental`),
+`agents/{techlead,developer,qa,reviewer,techwriter,arbiter}.py`.
 
-**`src/nexus/`** (control plane) — `{po,sa,tpm}.py` (PO/SA/TPM agents), `nexus_runner.py` (`run_nexus`),
+**`src/nexus/`** (control plane) — `{po,sa,tpm}.py` (PO/SA/TPM agents), `nexus_runner.py` (`run_nexus` +
+`get_tasks_for_nexus_run` — planned ticket ids in TPM order, consumed by `--auto-execute`),
 `state.py` (`NexusState` checkpoint). See [agent-provider-model-map](agent-provider-model-map.md).
 
 Other: `prompts/system/` (per-role prompts) + `prompts/skills/` (gated fragments); `docker/*.Dockerfile`

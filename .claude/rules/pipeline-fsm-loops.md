@@ -5,14 +5,18 @@ paths:
 
 # Executor FSM: cycle, loops, channels, termination
 
-SSOT: `src/executor/runner.py` `main()`. The control-plane (PO→SA→TPM) is linear with no loops; all
-cycling lives here. Related: [repo-module-map](repo-module-map.md), [agent-contracts](agent-contracts.md),
+SSOT: `src/executor/runner.py` `run_executor()` — the per-ticket FSM (bootstrap/resume → TechLead → the
+self-heal cycle → finalize). `main()` is now a thin dispatcher that resolves the run and calls it (also
+the bridge for `--idea --auto-execute`, ADR 0017). The control-plane (PO→SA→TPM) is linear with no loops;
+all cycling lives here. Related: [repo-module-map](repo-module-map.md), [agent-contracts](agent-contracts.md),
 [config-constant-convention](config-constant-convention.md).
 
 ## Outer cycle
-`for attempt in range(ctx.current_attempt, max_retries + 1)` — `max_retries = 3` (bare literal, the
-config-constant-convention outlier). `current_attempt` is bumped **before** `save_checkpoint`, so a
-resumed run never re-spends a cycle. Phase order inside one cycle:
+`while ctx.current_attempt <= MAX_FUNCTIONAL_RETRIES + ctx.contract_amendments * AMENDMENT_RETRY_BONUS` —
+a **dynamic ceiling** recomputed each iteration from persisted state, so an Arbiter contract amendment
+(ADR 0016) grants extra cycles and `--resume` recomputes the identical bound. `MAX_FUNCTIONAL_RETRIES`
+(env `PIPELINE_MAX_RETRIES`, default 3) is a module constant. `current_attempt` is bumped **before**
+`save_checkpoint`, so a resumed run never re-spends a cycle. Phase order inside one cycle:
 1. financial breaker → reset BOTH feedback channels (save `prev_dev_trace`/`prev_qa_trace`, clear `error_trace`/`qa_error_trace` to `""`).
 2. `skip_developer = regenerate_tests AND not prev_dev_trace AND review_report is not None`.
 3. **QA generate + signature-lint** — only when `regenerate_tests` (see below).
@@ -31,7 +35,7 @@ On `not all_gates_passed`: `error_trace ← dev_diagnostic_payload`, `qa_error_t
 ## The five loops
 Only the **outer retry** loop consumes functional budget; the four inner loops are FREE fast-fail
 reroutes that bypass the (expensive) Reviewer until they clear or hit their cap.
-- **Outer retry** — bound `max_retries=3`; driven by Reviewer rejection / gate failure.
+- **Outer retry** — dynamic bound `MAX_FUNCTIONAL_RETRIES + contract_amendments * AMENDMENT_RETRY_BONUS`; driven by Reviewer rejection / gate failure.
 - **QA signature-lint** — bound `QA_LINT_MAX_REROUTES`; runs when `regenerate_tests`; `lint_test_suite_consistency` vs contract signatures.
 - **Developer guardrail** — bound `GUARDRAIL_MAX_REROUTES`; three checks in sequence: missing contract files → documentation-justification (`enforce_documentation_guardrail`) → compile gate (`run_build_gate`).
 - **QA test-compile gate** — bound `QA_GATE_MAX_REROUTES`; only TEST-only compile failures reroute to QA; env/network or production-referencing failures fall through to the Reviewer.

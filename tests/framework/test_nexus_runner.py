@@ -177,5 +177,36 @@ class CheckpointRouterTests(unittest.TestCase):
             self.assertEqual(_run_dir_from_checkpoint(nexus_ckpt), Path(td).resolve())
 
 
+class GetTasksForNexusRunTests(unittest.TestCase):
+    """E1 task enumeration: checkpoint order is authoritative (no sorting); the no-checkpoint fallback
+    natural-sorts artifacts so TASK-2 precedes TASK-10."""
+
+    def test_checkpoint_preserves_tpm_list_order(self) -> None:
+        with TemporaryDirectory() as td:
+            run_dir = Path(td) / "run_x"
+            state = NexusState(raw_idea="i", run_dir=run_dir, tasks=[
+                {"ticket_id": "TASK-10", "title": "ten", "description": "b", "environment_id": "python-3.12-core"},
+                {"ticket_id": "TASK-2", "title": "two", "description": "b", "environment_id": "python-3.12-core"},
+            ])
+            state.ensure_dirs()
+            state.save_checkpoint()
+            # Authoritative order = the TPM list order, NOT a re-sort of the ids.
+            self.assertEqual(nr.get_tasks_for_nexus_run(run_dir), ["TASK-10", "TASK-2"])
+
+    def test_fallback_scans_artifacts_in_natural_order(self) -> None:
+        with TemporaryDirectory() as td:
+            run_dir = Path(td) / "run_y"
+            artifacts = run_dir / "artifacts"
+            artifacts.mkdir(parents=True)
+            for name in ("TASK-2.md", "TASK-10.md", "epic.md", "blueprint.md"):
+                (artifacts / name).write_text("x", encoding="utf-8")
+            # No reports/checkpoint.json → fallback. Natural sort (2 < 10); epic/blueprint excluded.
+            self.assertEqual(nr.get_tasks_for_nexus_run(run_dir), ["TASK-2", "TASK-10"])
+
+    def test_empty_when_no_checkpoint_and_no_artifacts(self) -> None:
+        with TemporaryDirectory() as td:
+            self.assertEqual(nr.get_tasks_for_nexus_run(Path(td) / "nope"), [])
+
+
 if __name__ == "__main__":
     unittest.main()

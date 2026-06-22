@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each release maps to a completed SDLC iteration; the corresponding Architecture
 Decision Record (ADR) is linked from the version heading.
 
+## [v0.17.0] - 2026-06-22 — Nexus → Executor Auto-Dispatch (`--auto-execute`)
+
+ADR: [0017-nexus-executor-auto-dispatch](./docs/decisions/0017-nexus-executor-auto-dispatch.md)
+(extends [0012](./docs/decisions/0012-virtual-separation-monorepo-planes.md),
+[0015](./docs/decisions/0015-unified-project-run-topology.md))
+
+Archive: [iteration_17](./docs/releases/iteration_17/iteration_17_README.md)
+
+### Added
+- **`--auto-execute` — one-command plan→execute (E1).** With `--idea` (and a `--repo` clone target), the
+  engine now dispatches the Executor for the **first** planned ticket in the same invocation instead of
+  stopping after planning and requiring a separate `--run <project> -f TASK-01`. `RunConfig.auto_execute`
+  carries the flag; the dispatch lives in `main()` (entry layer) — **Nexus never imports the executor
+  plane** (ADR 0012). Only the first ticket runs (multi-ticket is E2; non-exiting halts are E3).
+- **`get_tasks_for_nexus_run(run_dir)`** (`src/nexus/nexus_runner.py`) — returns planned ticket ids in true
+  TPM order: authoritative from the run's `checkpoint.json` (`NexusState.tasks`, list order preserved),
+  fallback to a **natural-numeric** `artifacts/*.md` glob (`TASK-2` before `TASK-10`, not lexicographic).
+
+### Changed
+- **Per-ticket executor flow extracted into a reusable callable.** The ~350-line bootstrap→TechLead→FSM→
+  finalize body was lifted **verbatim** out of `main()` into `run_executor(cfg, run_dir, resume_checkpoint)
+  -> bool`, and the shared ticket setup into `prepare_ticket_run(...) -> Path | None`. The `--run` / legacy
+  / resume paths now call them — behavior is byte-identical (the only logic change is `return` → `return
+  True` on success). This is the foundation for E2/E3.
+- **Fail-fast preflight for auto-execute** — `check_environment()` now runs **up front** (before planning)
+  when `--auto-execute`, so a missing `docker`/`claude`/`bandit` aborts before planning tokens are spent.
+- **Git-auth onboarding hardened (docs)** — `docs/guides/setup.md` + `.claude/rules/run-layout-and-cli.md`
+  now document the **env-backed credential helper** (token in `GITHUB_TOKEN`, never on disk; pass a clean
+  `--repo` URL), warning that a token embedded in the URL persists verbatim into `project.json` and the
+  clone's `.git/config`. `README.md` directory tree re-synced to the actual repo topology.
+
+### Fixed
+- **`--idea` silently dropped `--push`.** The `--idea` branch built a `RunConfig` without forwarding
+  `args.push`, so `--push` was a no-op on planning-initiated runs; it (and `--auto-execute`) are now
+  forwarded, so an auto-executed first ticket pushes its `feat/ticket-<id>` branch as requested.
+
 ## [v0.16.1] - 2026-06-19 — Documentation, Licensing & Onboarding
 
 Archive: [iteration_16.1](./docs/releases/iteration_16.1/iteration_16.1_README.md)

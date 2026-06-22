@@ -211,6 +211,9 @@ python3 main.py --idea "Build a CLI that converts JSON to CSV" --repo <url|path>
 This writes `runs/<slug>/<NNN>_nexus_plan_<ts>_<uid>/artifacts/{epic.md, blueprint.md, TASK-01.md, …}`.
 Open and skim those artifacts before executing.
 
+> **Plan + run in one shot:** add **`--auto-execute`** to the `--idea` command (requires `--repo`) and the
+> engine runs the Executor for the first ticket automatically once planning completes — no separate `--run`.
+
 **2. Execute a ticket** — run the Executor FSM for one generated ticket under the same project:
 
 ```bash
@@ -229,6 +232,26 @@ python3 main.py --resume <slug>        # latest run; add a run number, e.g. `--r
 
 (See the root [README Quick Start](../../README.md) for the legacy direct-run form
 `--repo … --ticket … [-f|desc]` and more examples.)
+
+### Git auth (private repos)
+
+A **public** repo clones with no credentials. For a **private** repo over HTTPS, configure an
+env-backed credential helper **once** so the token rides in from the environment (like `GEMINI_API_KEY`) —
+never written to `project.json` or the clone's `.git/config` — and you pass a **clean** `--repo` URL every
+time:
+
+```bash
+git config --global credential.helper '!f(){ echo username=x-access-token; echo "password=$GITHUB_TOKEN"; };f'
+echo 'export GITHUB_TOKEN=ghp_your_token' >> ~/.bashrc && source ~/.bashrc
+```
+
+Then run with a token-free URL — `--repo https://github.com/<owner>/<repo>.git`. SSH
+(`--repo git@github.com:<owner>/<repo>.git` with a key in WSL) needs no helper at all. Full auth matrix:
+[run-layout-and-cli.md](../../.claude/rules/run-layout-and-cli.md).
+
+> ⚠ Embedding the token directly in the URL (`https://<token>@…`) is **persisted verbatim** into
+> `project.json` and `.git/config` under `runs/` — avoid it for non-throwaway tokens, and scrub the `repo`
+> field in an existing `project.json` if one already captured a token.
 
 ### How you know it worked
 
@@ -263,6 +286,7 @@ wsl -e bash -lc "cd /mnt/c/code/async-agentic-sdlc && source venv/bin/activate &
 |---|---|---|
 | **`GEMINI_API_KEY`** | — (**required**) | Credential for every structured agent (TechLead/QA/Reviewer/TechWriter/Arbiter + Nexus PO/SA/TPM). |
 | `CLAUDE_CLI_BIN` | `claude` | Path to the Claude CLI binary; pin to the nvm Linux build under WSL. |
+| `GITHUB_TOKEN` | (unset) | Read by an env-backed git credential helper (if you configure one) to clone/push **private** HTTPS repos, so you can pass a token-free `--repo` URL — see [Git auth (private repos)](#git-auth-private-repos). |
 | `DEVELOPER_CLI_TIMEOUT` | `900` | Hard wall-clock ceiling (s) per Developer CLI session; child is killed+reaped on expiry. |
 | `DEVELOPER_CLI_IDLE_TIMEOUT` | `120` | Inactivity ceiling (s); kills the child if it emits no output for this long. |
 | `PIPELINE_BUDGET_USD` | `10.00` | Primary Financial Circuit Breaker gate (authoritative for Claude, estimated for Gemini). |
@@ -286,7 +310,7 @@ wsl -e bash -lc "cd /mnt/c/code/async-agentic-sdlc && source venv/bin/activate &
 | `🚨 CRITICAL: Binary '<x>' not found in PATH` | Install the missing tool (`docker`/`claude`/`bandit`) and ensure it's on PATH — re-run the [pre-flight self-check](#pre-flight-self-check). |
 | `🚨 CRITICAL: GEMINI_API_KEY is not set` | `export GEMINI_API_KEY=…` and persist it in `~/.bashrc` (Step 8). |
 | `Unable to find image 'sdlc-sandbox/…'` / image pull fails | You skipped Step 7 — run `bash scripts/build_sandbox_images.sh`. There is no auto-pull; behind a corp proxy see [docker-on-windows.md](docker-on-windows.md) §6. |
-| git `could not read Password … terminal prompts disabled` | Use `https://<user>:<token>@github.com/…` (a **bare token fails** — token is the password, not the user), or SSH. Note: a token in the URL persists into `project.json` and the clone's `.git/config` — prefer a credential helper or a throwaway token. |
+| git `could not read Password … terminal prompts disabled` | The clone needs non-interactive creds. **Best:** an env-backed credential helper + clean URL — see [Git auth (private repos)](#git-auth-private-repos). One-off: `https://<user>:<token>@github.com/…` (a **bare** `https://<token>@…` fails — token is the password, not the user), or SSH. ⚠ A token in the URL persists into `project.json` + the clone's `.git/config`. |
 | Run halts with `CIRCUIT BREAKER` + `incident_report.json` | Diagnose with `/analyze-run`. If the cause was a transient network/API blip, retry with `--resume <slug> <NNN> --reset-attempts`. |
 | `RUNTIME_ENV=docker but 'src/' is writable` | In container mode `src/` must be immutable — mount it read-only (`:ro`) or run as a non-root user. |
 | `docker: command not found` | Start the WSL2 engine: `sudo service docker start` (or `wsl -d Ubuntu -u root service docker start` from PowerShell). Confirm `docker-ce` per [docker-on-windows.md](docker-on-windows.md) §2 Step A. |
