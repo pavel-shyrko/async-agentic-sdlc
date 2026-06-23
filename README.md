@@ -14,8 +14,9 @@ The core objective of this repository is to fully satisfy the **Mission · OPS_0
 Product ──> Planner ──> Architect ──> TechLead ──> Developer ──> Reviewer ──> QA ──> DevOps
 ```
 
-> The **implemented** architecture (two planes — a Nexus control plane `PO→SA→TPM` and an Executor
-> worker-plane FSM) is documented with C4 diagrams in **[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)**.
+> The **implemented** architecture (three physical planes — a **Nexus** control plane `PO→SA→TPM` + FSM, a
+> **Development** worker plane, and a **Deployment** infra plane, over a shared SSOT; ADR 0021) is documented
+> with C4 diagrams in **[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)**.
 
 ### Mandated Success Criteria
 

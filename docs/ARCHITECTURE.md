@@ -2,12 +2,14 @@
 
 A deterministic, multi-agent **SDLC automation engine**: it turns a one-line product idea into a planned
 backlog and then implements each ticket as verified, committed code — with no human in the loop. It is a
-custom Python `asyncio` Finite State Machine (no agentic framework), split into two planes: a **Nexus
-control plane** (idea → plan) and an **Executor worker plane** (one ticket → committed code).
+custom Python `asyncio` Finite State Machine (no agentic framework), split into three physical planes over a
+shared SSOT (ADR [0021](decisions/0021-physical-three-plane-split.md)): a **Nexus control plane**
+(idea → plan → orchestrate), a **Development worker plane** (one ticket → committed code), and a
+**Deployment infra plane** (CI/CD scaffolding).
 
 This document follows the [C4 model](https://c4model.com/): **Level 1 (System Context)** → **Level 2
 (Containers)** → **Level 3 (Components)** — zooming from "who uses it and what it talks to" down to "how
-the executor's self-healing loop works." Diagrams are Mermaid (GitHub-rendered). The authoritative SSOTs
+the per-ticket Executor FSM (`run_executor`) self-heals." Diagrams are Mermaid (GitHub-rendered). The authoritative SSOTs
 are [repo-module-map](../.claude/rules/repo-module-map.md), [pipeline-fsm-loops](../.claude/rules/pipeline-fsm-loops.md),
 and [agent-provider-model-map](../.claude/rules/agent-provider-model-map.md); this doc visualizes them.
 
@@ -21,7 +23,7 @@ Who operates the engine and which external systems it depends on.
 flowchart TB
     human(["👤 Human Operator<br/>(developer / maintainer)"])
 
-    engine["⚙️ Agentic SDLC Engine<br/>Python asyncio FSM · two planes<br/>(Nexus control + Executor worker)"]
+    engine["⚙️ Agentic SDLC Engine<br/>Python asyncio FSM · 3 planes + shared<br/>(control · worker · infra)"]
 
     gemini["☁️ Google Gemini API<br/>structured output via instructor"]
     claude["🤖 Claude Code CLI<br/>agentic file-editing (Developer)"]
@@ -216,7 +218,7 @@ flowchart TB
 
 ## End-to-end sequence
 
-From a raw idea to committed code across the two planes.
+From a raw idea to committed code across the planes (control → worker, then the optional deploy-scaffold).
 
 ```mermaid
 sequenceDiagram
