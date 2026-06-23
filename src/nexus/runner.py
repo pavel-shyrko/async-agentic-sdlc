@@ -16,19 +16,18 @@ from src.shared.core.observability import log_finops_summary as _render_finops_s
 from src.shared.core.config import check_environment, PIPELINE_BUDGET_TOKENS, PIPELINE_BUDGET_USD
 from src.shared.core.models import GlobalPipelineContext, WorkspacePaths, RUNS_BASE, BatchState
 from src.shared.core.runs import Projects
-from src.shared.core.environments import is_test_file, get_qa_profile, SUPPORTED_ENVIRONMENTS
+from src.shared.core.environments import is_test_file, get_qa_profile
 from src.shared.core.prompts import generate_repo_map
 from src.shared.utils.git_helpers import get_git_root, get_pipeline_snapshot_files
 from src.shared.utils.redaction import redact
 from src.shared.utils.subprocess_helpers import sanitize_for_argv
-from src.executor.agents.techlead import run_techlead_node
-from src.executor.agents.qa import run_qa_agent_node
-from src.executor.agents.developer import run_developer_node
-from src.executor.agents.reviewer import run_reviewer_node
-from src.executor.agents.arbiter import run_arbiter_node
-from src.executor.agents.techwriter import run_techwriter_node
-from src.executor.agents.devops import run_devops_node
-from src.executor.nodes.gates import run_qa_unit_tests, run_security_scan, run_build_gate, run_test_compile_gate, build_failure_is_test_only, build_failure_is_environmental, run_devops_gate, run_lint_gate, classify_lint_findings, run_format_pass
+from src.development.agents.techlead import run_techlead_node
+from src.development.agents.qa import run_qa_agent_node
+from src.development.agents.developer import run_developer_node
+from src.development.agents.reviewer import run_reviewer_node
+from src.development.agents.arbiter import run_arbiter_node
+from src.development.agents.techwriter import run_techwriter_node
+from src.development.gates import run_qa_unit_tests, run_security_scan, run_build_gate, run_test_compile_gate, build_failure_is_test_only, build_failure_is_environmental, run_lint_gate, classify_lint_findings, run_format_pass
 
 # ==========================================
 # CONTROL-FLOW SIGNALS
@@ -436,7 +435,6 @@ QA_LINT_MAX_REROUTES = 2        # free QA regenerations on a contract-signature 
 # Free fast-fail reroutes on a STYLE/LINT-gate failure (run_lint_gate) before lint folds into the budgeted
 # cycle. prod findings → Developer, test findings → QA; Reviewer bypassed, no functional-retry consumed.
 LINT_GATE_MAX_REROUTES = int(os.environ.get("PIPELINE_LINT_MAX_REROUTES", "2"))
-DEVOPS_MAX_RETRIES = int(os.environ.get("DEVOPS_MAX_RETRIES", "1"))  # E4: self-heal retries on a deploy-manifest static-lint failure before Hard Halt
 
 # Framing wrapper prepended to lint-gate findings when seeding the Developer/QA channels — those prompts
 # are tuned for compiler tracebacks/pytest failures, so raw ruff/gofmt/eslint/dotnet-format output is
@@ -832,127 +830,11 @@ async def run_batch(projects: Projects, project, cfg: RunConfig, nexus_run_dir: 
     # only on a fully-merged batch: a mid-batch halt sys.exit(1)s above, so an incomplete app is never
     # scaffolded. Covers both --idea --auto-execute and the bare --resume re-entry (both call run_batch).
     if cfg.scaffold_deploy:
+        # Lazy import: scaffold.py imports the transaction/forge/incident/FinOps SSOTs from THIS module,
+        # so importing it at module top would form a deployment→nexus cycle. Deferring to call time (the
+        # same pattern main() uses for nexus_runner) lets nexus.runner finish loading first.
+        from src.deployment.provision.scaffold import run_devops_scaffold
         await run_devops_scaffold(projects, project, cfg, nexus_run_dir)
-
-
-def _repo_has_source(repo_dir: Path) -> bool:
-    """True if the clone holds ≥1 non-doc/non-metadata file — i.e. there is an application to deploy.
-
-    The empty-state guard for E4: a degenerate batch (all tickets skipped) or a misused flag would leave
-    nothing but README/LICENSE/git metadata, and scaffolding a deploy for nothing is wrong."""
-    doc_or_meta = {
-        "readme.md", "readme", "readme.rst", "readme.txt", "license", "license.md", "license.txt",
-        ".gitignore", ".gitattributes", ".gitmodules",
-    }
-    for root, dirs, files in os.walk(repo_dir):
-        if ".git" in dirs:
-            dirs.remove(".git")  # never descend into git internals
-        for name in files:
-            if name.lower() not in doc_or_meta:
-                return True
-    return False
-
-
-def _nexus_environment_ids(nexus_run_dir: Path) -> str:
-    """Best-effort comma list of the unique environment_id(s) the plan's tickets ran on (from the Nexus
-    checkpoint). Feeds the DevOps agent the runtime(s) of the finished app; '' if unreadable."""
-    try:
-        data = json.loads((nexus_run_dir / "reports" / "checkpoint.json").read_text(encoding="utf-8"))
-        ids: list[str] = []
-        for task in data.get("tasks", []):
-            env = (task or {}).get("environment_id")
-            if env and env not in ids:
-                ids.append(env)
-        return ", ".join(ids)
-    except Exception:
-        return ""
-
-
-def _env_ci_commands(environment_ids: str) -> str:
-    """The CANONICAL build/test/lint commands for the finished app's environment(s), formatted for the
-    DevOps prompt. This is the SSOT coupling: the generated CI MUST run exactly these (the same commands
-    the engine's own gates ran), so engine-green ⇒ CI-green. Unknown/blank ids yield ''."""
-    blocks: list[str] = []
-    for env_id in [e.strip() for e in environment_ids.split(",") if e.strip()]:
-        spec = SUPPORTED_ENVIRONMENTS.get(env_id)
-        if not spec:
-            continue
-        lines = [f"- environment_id: {env_id}"]
-        for key in ("setup_cmd", "build_cmd", "test_cmd", "lint_cmd"):
-            if spec.get(key):
-                lines.append(f"    {key}: {spec[key]}")
-        blocks.append("\n".join(lines))
-    return "\n".join(blocks)
-
-
-async def run_devops_scaffold(projects: Projects, project, cfg: RunConfig, nexus_run_dir: Path) -> None:
-    """E4: after the batch has merged every ticket, scaffold deploy config for the finished application.
-
-    Clones the completed base branch FRESH, has the DevOps agent generate a Dockerfile + GitHub Actions
-    deploy workflow (Cloud Run via WIF for a web service; a build/release matrix for a CLI tool/library),
-    static-lints them (exactly ``DEVOPS_MAX_RETRIES`` self-heal retries), and lands them through the SAME
-    E2 forge flow tickets use — open → approve → squash-merge of ``chore/devops-scaffold`` — never a raw
-    push to ``main``. The merged application code is untouched on any failure; a persistently invalid
-    manifest writes an incident and exits 1 (the deploy config simply didn't land)."""
-    devops_branch = "chore/devops-scaffold"
-    cfg.repo = cfg.repo or project.repo
-    cfg.base_branch = project.base_branch
-    run_dir = projects.allocate(project.slug, "devops", "scaffold")
-    reconfigure_logging(run_dir / "logs")
-    log.info(f"🚀 [E4] Deploy-scaffolding for project '{project.slug}' → {run_dir.name}")
-
-    cfg.ticket = "devops"
-    ws = await bootstrap_session(cfg, run_dir, branch=devops_branch)
-
-    # Empty-state guard — nothing to deploy if the cloned base branch carries no source.
-    if not _repo_has_source(ws.repo_dir):
-        log.warning("⏭️  --scaffold-deploy: cloned main has no source — skipping deploy scaffolding.")
-        return
-
-    ctx = GlobalPipelineContext(
-        pr_description="scaffold deployment (Dockerfile + GitHub Actions deploy workflow)",
-        ticket="devops", base_branch=cfg.base_branch, workspace_paths=ws,
-    )
-    blueprint = nexus_run_dir / "artifacts" / "blueprint.md"
-    blueprint_text = blueprint.read_text(encoding="utf-8") if blueprint.exists() else "(no blueprint available)"
-    repo_map = generate_repo_map(ws.repo_dir)
-    environment_ids = _nexus_environment_ids(nexus_run_dir)
-    ci_commands = _env_ci_commands(environment_ids)  # SSOT: CI must run these exact commands
-
-    # Self-heal loop: exactly DEVOPS_MAX_RETRIES retries (default 1). Generate → static-lint; on a gate
-    # failure feed the errors back and regenerate; only a persistently invalid manifest Hard-Halts.
-    gate_feedback = ""
-    problems: list[str] = []
-    for attempt in range(1, DEVOPS_MAX_RETRIES + 2):
-        await run_devops_node(
-            ctx, blueprint_text=blueprint_text, repo_map=repo_map,
-            environment_ids=environment_ids, ci_commands=ci_commands, gate_feedback=gate_feedback,
-        )
-        problems = run_devops_gate(ws.repo_dir)
-        if not problems:
-            break
-        gate_feedback = "\n".join(f"- {p}" for p in problems)
-        log.warning(f"🔁 [E4] Deploy-manifest static lint failed (attempt {attempt}): {gate_feedback}")
-    if problems:
-        _abort_with_incident(
-            ctx,
-            "\n🚨 [E4] Deploy scaffolding failed static validation after retry (the application code is "
-            f"already merged to {cfg.base_branch}; only the deploy config did not land):\n{gate_feedback}",
-        )
-
-    # Land the manifests through the SAME E2 forge flow (no raw push). Skip cleanly when nothing is staged —
-    # an idempotent re-run after a prior scaffold already merged identical manifests.
-    repo_root = await get_git_root(str(ws.repo_dir))
-    if not await _has_staged_changes(repo_root):
-        log.info("🟢 [E4] No manifest changes vs the base branch — deploy config already present; nothing to merge.")
-        return
-    await finalize_transaction(ctx, push=True)
-    try:
-        await finalize_pr(ctx, cfg, head_branch=devops_branch)
-    finally:
-        write_finops_report(ctx)
-        log_finops_summary(ctx)
-    log.info(f"🏁 [E4] Deploy scaffolding merged into {cfg.base_branch}.")
 
 
 def prepare_ticket_run(projects: Projects, project, cfg: RunConfig, ticket_id: str) -> Path | None:

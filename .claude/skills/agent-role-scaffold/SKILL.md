@@ -1,6 +1,6 @@
 ---
 name: agent-role-scaffold
-description: Scaffold a new structured (Gemini/instructor) agent role end-to-end across every touch point — config/ROLE_MODELS, system prompt, Pydantic output model, agent node, checkpoint persistence, FSM wiring, tests, and the ADR. Use when the user asks to add a new agent/role to the Nexus or Executor plane. Operationalizes the agent-role-registration rule; the Developer is the one role this does NOT fit (it is the agentic Claude CLI, not structured).
+description: Scaffold a new structured (Gemini/instructor) agent role end-to-end across every touch point — config/ROLE_MODELS, system prompt, Pydantic output model, agent node, checkpoint persistence, FSM wiring, tests, and the ADR. Use when the user asks to add a new agent/role to any plane (Nexus control / Development worker / Deployment infra). Operationalizes the agent-role-registration rule; the Developer is the one role this does NOT fit (it is the agentic Claude CLI, not structured).
 ---
 
 # Scaffold a New Structured Agent Role
@@ -14,7 +14,7 @@ the **Developer** is the sole exception (agentic Claude CLI) and is out of scope
 [agent-provider-model-map](../../rules/agent-provider-model-map.md), [agent-contracts](../../rules/agent-contracts.md).
 
 ## Step 0 — Decide plane & shape
-Control plane (`src/nexus/`) or worker plane (`src/executor/`)? Does it introduce a **new FSM state/route**
+Control plane (`src/nexus/`) or worker plane (`src/development/`)? Does it introduce a **new FSM state/route**
 (→ needs an ADR + a `pipeline-fsm-loops` update) or slot into an existing transition? What is its input
 context and its structured output model?
 
@@ -29,15 +29,15 @@ context and its structured output model?
 3. **Output model** — a Pydantic model in `src/shared/core/models.py`. Use `Literal[...]` for closed enums so
    an invalid value fails at deserialization. If it carries an `environment_id`, reuse the shared
    `_validate_environment_id` validator.
-4. **Agent node** — `src/executor/agents/<role>.py` (worker) or `src/nexus/<role>.py` (control). Mirror
-   [reviewer.py](../../../src/executor/agents/reviewer.py): `sys_prompt = get_system_prompt(role) + "\n\n" +
+4. **Agent node** — `src/development/agents/<role>.py` (worker) or `src/nexus/agents/<role>.py` (control). Mirror
+   [reviewer.py](../../../src/development/agents/reviewer.py): `sys_prompt = get_system_prompt(role) + "\n\n" +
    await build_agent_context(role, ctx)`, call `run_structured_llm(role, Model, [...])`, store the result on
    `ctx`, then ALWAYS `log_token_usage(ctx.telemetry, "<Label>", raw_response, XYZ_MODEL)` — telemetry parity
    is mandatory or FinOps/the financial breaker under-counts.
 5. **State + persistence** — if the output must survive `--resume`, add a field to `GlobalPipelineContext`
    (worker) or `NexusState` (control). Both checkpoint via `model_dump_json`/`model_validate_json`, so a new
    field auto-persists.
-6. **FSM wiring** — import the node in `src/executor/runner.py` (or the Nexus runner) and call it at the right
+6. **FSM wiring** — import the node in `src/nexus/runner.py` and call it at the right
    point; gate it so existing flows are unaffected. New caps/limits are env-overridable `UPPER_CASE`
    constants ([config-constant-convention](../../rules/config-constant-convention.md)), never inline literals.
 7. **Tests** — `tests/framework/test_orchestrator.py` (mock the node, assert routing/termination via the

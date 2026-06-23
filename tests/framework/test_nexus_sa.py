@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock
 
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
 
-from src.nexus import sa as sa_mod
-from src.nexus.sa import run_sa, Blueprint
+from src.nexus.agents import sa as sa_mod
+from src.nexus.agents.sa import run_sa, Blueprint
 from src.shared.core.models import PipelineTelemetry
 
 

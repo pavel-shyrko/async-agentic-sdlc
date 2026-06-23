@@ -6,7 +6,7 @@ Google Cloud so every repository in the org inherits the same deploy pipeline â€
 keys anywhere. Do this **once** per organization; afterwards any new repo deploys with zero extra setup.
 
 > Scope: this guide configures the *target* (the org + GCP). The engine only **generates and merges** the
-> workflow + Dockerfile ([prompts/skills/devops_*.md](../../prompts/skills/), [devops.py](../../src/executor/agents/devops.py));
+> workflow + Dockerfile ([prompts/skills/devops_*.md](../../prompts/skills/), [devops.py](../../src/deployment/agents/devops.py));
 > GitHub Actions performs the WIF deploy on the next push. The engine never holds GCP credentials.
 
 ## Integration passport

@@ -1,7 +1,7 @@
 import sys
 import asyncio
 
-from src.executor.runner import main, PipelineHalt
+from src.nexus.runner import main, PipelineHalt
 
 if __name__ == "__main__":
     try:

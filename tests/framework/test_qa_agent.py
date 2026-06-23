@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 # qa imports src.shared.core.config at module import time.
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
 
-from src.executor.agents import qa
+from src.development.agents import qa
 from src.shared.core.models import QATestSuite
 from src.shared.core.environments import is_testable_source, derive_test_target, is_test_file, get_qa_profile
 

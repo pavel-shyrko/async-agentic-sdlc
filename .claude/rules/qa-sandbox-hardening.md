@@ -1,7 +1,7 @@
 ---
 paths:
   - "src/shared/core/docker_adapter.py"
-  - "src/executor/nodes/gates.py"
+  - "src/development/gates.py"
 ---
 
 # Sandbox least-privilege invariants (PRESERVE THEM)

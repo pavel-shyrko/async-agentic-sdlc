@@ -14,7 +14,7 @@ os.environ.setdefault("GEMINI_API_KEY", "test-key")
 
 from contextlib import ExitStack
 
-from src.executor import runner as orchestrator
+from src.nexus import runner as orchestrator
 from src.shared.core.models import (
     TechLeadContract, GlobalPipelineContext, ReviewReport, WorkspacePaths, ArbiterVerdict,
 )
@@ -1142,7 +1142,7 @@ class RunBatchTests(unittest.IsolatedAsyncioTestCase):
                 mock.patch.object(orchestrator, "prepare_ticket_run",
                                   side_effect=lambda _p, _pr, _c, t: Path(td) / f"exec_{t}"),
                 mock.patch.object(orchestrator, "run_executor", new=AsyncMock(return_value=True)),
-                mock.patch.object(orchestrator, "run_devops_scaffold", new=scaffold),
+                mock.patch("src.deployment.provision.scaffold.run_devops_scaffold", new=scaffold),
             ):
                 await orchestrator.run_batch(projects, project, cfg, nexus_dir, ["TASK-01", "TASK-02"])
             scaffold.assert_awaited_once_with(projects, project, cfg, nexus_dir)
@@ -1156,7 +1156,7 @@ class RunBatchTests(unittest.IsolatedAsyncioTestCase):
                 mock.patch.object(orchestrator, "prepare_ticket_run",
                                   side_effect=lambda _p, _pr, _c, t: Path(td) / f"exec_{t}"),
                 mock.patch.object(orchestrator, "run_executor", new=AsyncMock(return_value=True)),
-                mock.patch.object(orchestrator, "run_devops_scaffold", new=scaffold),
+                mock.patch("src.deployment.provision.scaffold.run_devops_scaffold", new=scaffold),
             ):
                 await orchestrator.run_batch(projects, project, cfg, nexus_dir, ["TASK-01"])
             scaffold.assert_not_awaited()
@@ -2363,6 +2363,48 @@ class LintGateLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Retries exhausted", abort_msgs[0])           # budgeted exhaustion, not …
             self.assertNotIn("MISCONFIGURATION", abort_msgs[0])         # … the deadlock-guard halt
             self.assertEqual(lint_gate.await_count, 2)                  # no-progress broke the fast-fail loop early
+
+    async def test_no_progress_lint_break_halts_fast_fail_loop_before_budget(self) -> None:
+        # Edge Case C (anti-loop): a PROD lint finding the agent never clears must break the step-3.6
+        # fast-fail loop on the SECOND iteration — the no-progress guard fires when iteration N's
+        # classified findings are byte-identical to N-1 (`findings_key == prev_lint_findings`). The cap
+        # is raised to 5 here on purpose: a cap-driven stop would be 5+1=6 lint calls, so observing
+        # EXACTLY 2 proves the guard — not the cap — halted the loop, leaving the global retry/$ budget
+        # untouched. Lint then folds into the budgeted cycle and the run ends on a clean
+        # "Retries exhausted" (NOT the deadlock-guard misconfiguration halt — lint is excluded from it).
+        with TemporaryDirectory() as td:
+            ctx = self._resume_ctx(Path(td))
+            # return_value (not side_effect): the SAME failing prod finding on every call ⇒ no progress.
+            lint_gate = AsyncMock(return_value=(
+                False, ["src/core/models.py:1:1: F401 `os` imported but unused"]))
+            abort_msgs: list[str] = []
+
+            def _capture_abort(_ctx, message, *a, **k):
+                abort_msgs.append(message)
+                raise SystemExit(1)
+
+            with ExitStack() as stack:
+                for cm in self._common_patches(ctx, lint_gate, self._approve_both(ctx)):
+                    stack.enter_context(cm)
+                qa = stack.enter_context(mock.patch.object(orchestrator, "run_qa_agent_node", new_callable=AsyncMock))
+                developer = stack.enter_context(mock.patch.object(orchestrator, "run_developer_node", new_callable=AsyncMock))
+                stack.enter_context(mock.patch.object(orchestrator, "LINT_GATE_MAX_REROUTES", 5))
+                stack.enter_context(mock.patch.object(orchestrator, "MAX_FUNCTIONAL_RETRIES", 1))
+                stack.enter_context(mock.patch.object(orchestrator, "ARBITER_TRIGGER_ATTEMPT", 99))  # keep the Arbiter out
+                stack.enter_context(mock.patch.object(orchestrator, "_abort_with_incident", side_effect=_capture_abort))
+                with self.assertRaises(SystemExit):
+                    await orchestrator.main()
+
+            # No-progress guard broke the loop at iteration 2 — NOT the (raised) cap of 6 — so the budget is intact.
+            self.assertEqual(lint_gate.await_count, 2)
+            # Cycle-1 Development pass + exactly ONE fast-fail reroute (iter 0); iter 1 broke before a 2nd reroute.
+            self.assertEqual(developer.await_count, 2)
+            self.assertIn("[LINT GATE FAILURE]", developer.await_args_list[-1].args[1])
+            qa.assert_not_awaited()                                     # a prod finding never routes to QA
+            # Folded into the budgeted cycle → clean exhaustion, never the deadlock-guard misconfiguration halt.
+            self.assertEqual(len(abort_msgs), 1)
+            self.assertIn("Retries exhausted", abort_msgs[0])
+            self.assertNotIn("MISCONFIGURATION", abort_msgs[0])
 
 
 class FinOpsReportTests(unittest.TestCase):

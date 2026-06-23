@@ -39,8 +39,9 @@ with the `/adr-generation` skill (next free sequence number).
 ## Planes & Run Topology
 | ADR | Decision |
 |---|---|
-| [0012](0012-virtual-separation-monorepo-planes.md) | Virtual separation: `nexus` / `executor` / `shared` planes by import discipline (logical before physical). |
+| [0012](0012-virtual-separation-monorepo-planes.md) | Virtual separation: `nexus` / `executor` / `shared` planes by import discipline (logical before physical). *(superseded by 0021.)* |
 | [0015](0015-unified-project-run-topology.md) | One run-layout SSOT + self-describing checkpoint (`kind`); per-project `project.json` umbrella. |
+| [0021](0021-physical-three-plane-split.md) | Physical split: `nexus` (control + FSM) / `development` (dev agents + gates) / `deployment` (devops + scaffold); `src/executor/` removed, lazy-import seam for the `deployment → nexus` SSOT back-edge (supersedes 0012). |
 
 ## QA Test Maintenance
 | ADR | Decision |

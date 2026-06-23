@@ -8,7 +8,7 @@ import unittest
 from unittest import mock
 from unittest.mock import AsyncMock, call
 
-from src.executor.nodes.gates import (
+from src.development.gates import (
     run_qa_unit_tests, run_security_scan, run_build_gate, run_format_pass, run_test_compile_gate,
     run_lint_gate, classify_lint_findings, _has_eslint_config,
     build_failure_is_test_only, build_failure_is_environmental, _has_test_files, _FILE_REF_RE,
@@ -30,8 +30,8 @@ class RunQaUnitTestsTests(unittest.IsolatedAsyncioTestCase):
     The empty-suite guard (`_has_test_files`) is forced True here so these cases exercise the
     restore/test phasing; the no-test no-op pass is covered by EmptySuiteGateTests below."""
 
-    @mock.patch("src.executor.nodes.gates._has_test_files", return_value=True)
-    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    @mock.patch("src.development.gates._has_test_files", return_value=True)
+    @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
     async def test_restore_then_test_with_network_phasing(self, mock_sandbox: AsyncMock, _has: mock.Mock) -> None:
         mock_sandbox.side_effect = [(0, "go: no module dependencies to download", ""), (0, "ran 3 tests", "")]
 
@@ -46,8 +46,8 @@ class RunQaUnitTestsTests(unittest.IsolatedAsyncioTestCase):
         # Benign successful-restore output must NOT pollute the test result context.
         self.assertEqual(log_lines, ["ran 3 tests"])
 
-    @mock.patch("src.executor.nodes.gates._has_test_files", return_value=True)
-    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    @mock.patch("src.development.gates._has_test_files", return_value=True)
+    @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
     async def test_successful_restore_noise_excluded_from_test_failure(self, mock_sandbox: AsyncMock, _has: mock.Mock) -> None:
         # Restore succeeds (benign stderr), tests FAIL — the failure context is the test output only.
         mock_sandbox.side_effect = [
@@ -61,8 +61,8 @@ class RunQaUnitTestsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(log_lines, ["processor_test.go:9: undefined: Convert"])
         self.assertNotIn("go: no module dependencies to download", log_lines)
 
-    @mock.patch("src.executor.nodes.gates._has_test_files", return_value=True)
-    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    @mock.patch("src.development.gates._has_test_files", return_value=True)
+    @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
     async def test_restore_failure_short_circuits_before_tests(self, mock_sandbox: AsyncMock, _has: mock.Mock) -> None:
         mock_sandbox.return_value = (1, "could not resolve deps", "")
 
@@ -72,8 +72,8 @@ class RunQaUnitTestsTests(unittest.IsolatedAsyncioTestCase):
         mock_sandbox.assert_awaited_once_with(_ENV, _SETUP, _REPO, network="bridge", cache_writable=True)  # tests never reached
         self.assertIn("🚨 Dependency restore failed:", log_lines[0])
 
-    @mock.patch("src.executor.nodes.gates._has_test_files", return_value=True)
-    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    @mock.patch("src.development.gates._has_test_files", return_value=True)
+    @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
     async def test_nonzero_test_exit_reports_failure(self, mock_sandbox: AsyncMock, _has: mock.Mock) -> None:
         mock_sandbox.side_effect = [(0, "", ""), (1, "out line", "err line")]
 
@@ -90,13 +90,13 @@ class RunFormatPassTests(unittest.IsolatedAsyncioTestCase):
     _GO = "go-1.23-cli"
     _GO_FMT = SUPPORTED_ENVIRONMENTS[_GO]["format_cmd"]
 
-    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
     async def test_runs_format_cmd_network_off(self, mock_sandbox: AsyncMock) -> None:
         mock_sandbox.return_value = (0, "", "")
         await run_format_pass(self._GO, _REPO)
         mock_sandbox.assert_awaited_once_with(self._GO, self._GO_FMT, _REPO, network="none")
 
-    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
     async def test_noop_when_no_format_cmd(self, mock_sandbox: AsyncMock) -> None:
         # Build a throwaway env spec with no format_cmd; the pass must not touch the sandbox.
         env_id = "no-fmt-env"
@@ -104,14 +104,14 @@ class RunFormatPassTests(unittest.IsolatedAsyncioTestCase):
             await run_format_pass(env_id, _REPO)
         mock_sandbox.assert_not_awaited()
 
-    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
     async def test_nonzero_exit_is_non_fatal(self, mock_sandbox: AsyncMock) -> None:
         mock_sandbox.return_value = (1, "", "goimports: boom")
         # Must NOT raise — a formatter hiccup never derails the pipeline.
         await run_format_pass(self._GO, _REPO)
         mock_sandbox.assert_awaited_once()
 
-    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
     async def test_sandbox_exception_is_swallowed(self, mock_sandbox: AsyncMock) -> None:
         mock_sandbox.side_effect = RuntimeError("docker unavailable")
         await run_format_pass(self._GO, _REPO)  # no raise
@@ -121,8 +121,8 @@ class EmptySuiteGateTests(unittest.IsolatedAsyncioTestCase):
     """An empty test suite (no test files) is a no-op PASS — never a fictitious functional failure
     from a runner that exits non-zero on "no tests collected" (pytest 5, jest 1)."""
 
-    @mock.patch("src.executor.nodes.gates._has_test_files", return_value=False)
-    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    @mock.patch("src.development.gates._has_test_files", return_value=False)
+    @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
     async def test_no_test_files_passes_without_running_runner(self, mock_sandbox: AsyncMock, _has: mock.Mock) -> None:
         ok, log_lines = await run_qa_unit_tests(environment_id=_ENV, repo_root=_REPO)
 
@@ -153,7 +153,7 @@ class HasTestFilesTests(unittest.TestCase):
 class RunBuildGateTests(unittest.IsolatedAsyncioTestCase):
     """The compile gate restores deps (network ON) then builds (network OFF) — build/run only."""
 
-    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
     async def test_restore_then_build_with_network_phasing(self, mock_sandbox: AsyncMock) -> None:
         mock_sandbox.side_effect = [(0, "restored", ""), (0, "build ok", "")]
 
@@ -165,7 +165,7 @@ class RunBuildGateTests(unittest.IsolatedAsyncioTestCase):
             call(_ENV, _BUILD, _REPO, network="none"),
         ])
 
-    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
     async def test_nonzero_build_exit_reports_failure(self, mock_sandbox: AsyncMock) -> None:
         mock_sandbox.side_effect = [(0, "", ""), (1, "undefined: Foo", "")]
 
@@ -174,7 +174,7 @@ class RunBuildGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(ok)
         self.assertIn("undefined: Foo", log_lines)
 
-    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
     async def test_restore_failure_short_circuits_before_build(self, mock_sandbox: AsyncMock) -> None:
         mock_sandbox.return_value = (1, "deps error", "")
 
@@ -188,8 +188,8 @@ class RunTestCompileGateTests(unittest.IsolatedAsyncioTestCase):
     """The pre-Reviewer QA test-compile gate: restore (network ON) → compile-only tests (network OFF),
     with no-op passes when there's no `test_compile_cmd` or no test files."""
 
-    @mock.patch("src.executor.nodes.gates._has_test_files", return_value=True)
-    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    @mock.patch("src.development.gates._has_test_files", return_value=True)
+    @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
     async def test_restore_then_compile_with_network_phasing(self, mock_sandbox: AsyncMock, _has: mock.Mock) -> None:
         mock_sandbox.side_effect = [(0, "restored", ""), (0, "collected 3 items", "")]
 
@@ -201,8 +201,8 @@ class RunTestCompileGateTests(unittest.IsolatedAsyncioTestCase):
             call(_ENV, _TCOMPILE, _REPO, network="none"),
         ])
 
-    @mock.patch("src.executor.nodes.gates._has_test_files", return_value=True)
-    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    @mock.patch("src.development.gates._has_test_files", return_value=True)
+    @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
     async def test_compile_failure_reports_lines(self, mock_sandbox: AsyncMock, _has: mock.Mock) -> None:
         mock_sandbox.side_effect = [(0, "", ""), (1, "", "test_x.py:2: ImportError: no module")]
 
@@ -211,15 +211,15 @@ class RunTestCompileGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(ok)
         self.assertIn("test_x.py:2: ImportError: no module", log_lines)
 
-    @mock.patch("src.executor.nodes.gates._has_test_files", return_value=False)
-    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    @mock.patch("src.development.gates._has_test_files", return_value=False)
+    @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
     async def test_noop_when_no_test_files(self, mock_sandbox: AsyncMock, _has: mock.Mock) -> None:
         ok, log_lines = await run_test_compile_gate(environment_id=_ENV, repo_root=_REPO)
         self.assertTrue(ok)
         mock_sandbox.assert_not_awaited()
 
-    @mock.patch("src.executor.nodes.gates._has_test_files", return_value=True)
-    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    @mock.patch("src.development.gates._has_test_files", return_value=True)
+    @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
     async def test_noop_when_env_has_no_test_compile_cmd(self, mock_sandbox: AsyncMock, _has: mock.Mock) -> None:
         env_id = "no-tc-env"
         with mock.patch.dict(SUPPORTED_ENVIRONMENTS, {env_id: {"image": "x"}}, clear=False):
@@ -231,7 +231,7 @@ class RunTestCompileGateTests(unittest.IsolatedAsyncioTestCase):
 class RunSecurityScanTests(unittest.IsolatedAsyncioTestCase):
     """The SAST gate runs the GENERIC Semgrep image (not the language image) over the repo."""
 
-    @mock.patch("src.executor.nodes.gates.run_in_image", new_callable=AsyncMock)
+    @mock.patch("src.development.gates.run_in_image", new_callable=AsyncMock)
     async def test_runs_generic_semgrep_image_offline(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = (1, "findings", "")
 
@@ -242,7 +242,7 @@ class RunSecurityScanTests(unittest.IsolatedAsyncioTestCase):
         mock_run.assert_awaited_once_with(SAST_IMAGE, SAST_CMD, _REPO, network="none")
         self.assertEqual(log_lines, ["findings"])
 
-    @mock.patch("src.executor.nodes.gates.run_in_image", new_callable=AsyncMock)
+    @mock.patch("src.development.gates.run_in_image", new_callable=AsyncMock)
     async def test_silent_success_injects_pass_message(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = (0, "", "")
 
@@ -309,7 +309,7 @@ class RunLintGateTests(unittest.IsolatedAsyncioTestCase):
     """The HARD lint gate restores deps (network ON) then runs the registry `lint_cmd` (network OFF);
     no-op pass when the env has no `lint_cmd`, and (node) when the clone carries no eslint config."""
 
-    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
     async def test_restore_then_lint_with_network_phasing(self, mock_sandbox: AsyncMock) -> None:
         mock_sandbox.side_effect = [(0, "restored", ""), (0, "All checks passed!", "")]
 
@@ -321,7 +321,7 @@ class RunLintGateTests(unittest.IsolatedAsyncioTestCase):
             call(_ENV, _LINT, _REPO, network="none"),
         ])
 
-    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
     async def test_lint_violation_reports_failure(self, mock_sandbox: AsyncMock) -> None:
         mock_sandbox.side_effect = [
             (0, "", ""),
@@ -333,7 +333,7 @@ class RunLintGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(ok)
         self.assertTrue(any("F841" in ln for ln in log_lines))
 
-    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
     async def test_noop_when_no_lint_cmd(self, mock_sandbox: AsyncMock) -> None:
         env_id = "no-lint-env"
         with mock.patch.dict(SUPPORTED_ENVIRONMENTS, {env_id: {"image": "x", "language_id": "python"}}, clear=False):
@@ -341,8 +341,8 @@ class RunLintGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok)
         mock_sandbox.assert_not_awaited()
 
-    @mock.patch("src.executor.nodes.gates._has_eslint_config", return_value=False)
-    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    @mock.patch("src.development.gates._has_eslint_config", return_value=False)
+    @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
     async def test_node_noop_when_no_eslint_config(self, mock_sandbox: AsyncMock, _cfg: mock.Mock) -> None:
         # A node project with no eslint config must NOT hard-fail — the gate is a no-op pass.
         ok, log_lines = await run_lint_gate(environment_id="node-20-web", repo_root=_REPO)

@@ -1,11 +1,13 @@
 ---
 paths:
-  - "src/executor/agents/devops.py"
+  - "src/deployment/agents/devops.py"
   - "prompts/system/devops.md"
   - "prompts/skills/devops_*.md"
   - "src/shared/core/environments.py"
-  - "src/executor/nodes/gates.py"
-  - "src/executor/runner.py"
+  - "src/development/gates.py"
+  - "src/deployment/provision/gates.py"
+  - "src/deployment/provision/scaffold.py"
+  - "src/nexus/runner.py"
 ---
 
 # DevOps deploy-scaffolding & the `lint_cmd` CI-parity SSOT
@@ -17,9 +19,9 @@ reddened a generated `ruff check` CI on an `F841` finding that had passed **ever
 the engine's cleanup was lenient (`ruff check --fix --exit-zero`) while the generated CI was strict. The
 invariants below prevent that class of failure (and the category error of deploying a CLI to Cloud Run).
 Uphold them when you touch the `devops` agent/prompt/skills, the `environments.py` commands, or the
-lint/deploy gates. SSOTs: `run_devops_scaffold` / `_env_ci_commands` (`runner.py`), `run_lint_gate` /
-`classify_lint_findings` / `run_devops_gate` (`gates.py`), `lint_cmd`/`build_cmd`/`test_cmd`
-(`environments.py`).
+lint/deploy gates. SSOTs: `run_devops_scaffold` / `_env_ci_commands` (`deployment/provision/scaffold.py`),
+`run_lint_gate` / `classify_lint_findings` (`development/gates.py`), `run_devops_gate`
+(`deployment/provision/gates.py`), `lint_cmd`/`build_cmd`/`test_cmd` (`environments.py`).
 
 ## 1. Classify the application archetype FIRST, then branch
 A **web service** (REST API / CRUD, listens on a port) → a multi-stage non-root `Dockerfile` + a Cloud Run

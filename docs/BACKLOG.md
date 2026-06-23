@@ -80,10 +80,10 @@ command. (User-requested feature 1: "nexus запускал executor с зада
 
 **Current state:**
 - The two planes are bridged only inside `main()` (resume routing by checkpoint `kind`,
-  [runner.py:647-673](../src/executor/runner.py#L647-L673)); neither plane invokes the other — the operator
+  [runner.py:647-673](../src/nexus/runner.py#L647-L673)); neither plane invokes the other — the operator
   does, via a second `--run` invocation.
 - The per-ticket Executor flow (bootstrap → FSM cycle → finalize) is **inlined inside `main()`**
-  ([runner.py](../src/executor/runner.py), roughly the `bootstrap_session` → while-loop → `finalize_transaction`
+  ([runner.py](../src/nexus/runner.py), roughly the `bootstrap_session` → while-loop → `finalize_transaction`
   span), **not** a callable function. `bootstrap_session` and `finalize_transaction` already are async/standalone.
 - Tasks are enumerated as `NexusState.tasks` (`list[dict]` of `ticket_id/title/environment_id/description`)
   and materialized to `artifacts/TASK-*.md` ([nexus_runner.py](../src/nexus/nexus_runner.py)); the executor
@@ -116,8 +116,8 @@ auto-approve + merge** — full-autonomy MVP, switchable to human-review later.)
 
 **Current state:**
 - `finalize_transaction` makes the atomic `feat(<ticket>): …` commit on `feat/ticket-<id>` and, with `--push`,
-  runs `git push -u origin HEAD` — and stops ([runner.py:219-257](../src/executor/runner.py#L219-L257)). The
-  success block that calls it is [runner.py:1155-1163](../src/executor/runner.py#L1155-L1163).
+  runs `git push -u origin HEAD` — and stops ([runner.py:219-257](../src/nexus/runner.py#L219-L257)). The
+  success block that calls it is [runner.py:1155-1163](../src/nexus/runner.py#L1155-L1163).
 - `base_branch` is only a **diff anchor + fetch ref**, **never a merge target** (grep confirms; bootstrap
   fetches it for `git diff --cached <base>`).
 - **PR/merge/`gh`/GitHub API = none today (greenfield).** `ctx.pr_description` (clean ticket text) and the
@@ -160,7 +160,7 @@ so each ticket builds on the previously merged state, ending with the full app o
 feature 3: "nexus циклично по таскам запускал executor".)
 
 **Current state:** each ticket runs in its **own** exec run dir and **clones `main` fresh** on a new
-`feat/ticket-<id>` branch ([bootstrap_session](../src/executor/runner.py#L165-L192)). There is no cross-ticket
+`feat/ticket-<id>` branch ([bootstrap_session](../src/nexus/runner.py#L165-L192)). There is no cross-ticket
 state — TASK-02's clone does **not** contain TASK-01's work unless it has already merged to `main`.
 
 **Design (seam + approach):** a batch loop over `get_tasks_for_nexus_run(...)` (from E1) calling
@@ -206,7 +206,7 @@ ones.
 - [environments.py](../src/shared/core/environments.py) has `build`/`test`/`setup`/`format` commands but
   **no `run`/`serve`/`package`/`deploy`** command. `docker_adapter.py` runs ephemeral, least-privilege
   *verification* sandboxes only — not a deployment target.
-- [techwriter.py](../src/executor/agents/techwriter.py) is the exact structural template for a success-path
+- [techwriter.py](../src/development/agents/techwriter.py) is the exact structural template for a success-path
   "finalizing" agent (runs once on success, before commit); adding a `devops` role follows the 8-point
   checklist in [agent-role-registration](../.claude/rules/agent-role-registration.md).
 
@@ -237,7 +237,7 @@ an autonomous `--idea` run should be bounded for the *application*, which is wha
 pays for — a per-ticket cap does not bound the thing being built.)
 
 **Current state:**
-- The financial circuit breaker (`enforce_financial_circuit_breaker`, [runner.py](../src/executor/runner.py))
+- The financial circuit breaker (`enforce_financial_circuit_breaker`, [runner.py](../src/nexus/runner.py))
   gates each ticket's OWN `GlobalPipelineContext.telemetry` against the fixed `PIPELINE_BUDGET_USD` /
   `PIPELINE_BUDGET_TOKENS` ([config.py](../src/shared/core/config.py)) — a **per-ticket** ceiling read from
   module constants, not a parameter.
@@ -306,11 +306,11 @@ flagging legacy code — but verbatim-citation is still not enforced.)
 
 ## 17. [P1] Reviewer can reject without guidance — silent retry-budget burn
 **Symptom:** the Reviewer sets `code_quality_approved=false` (or `test_integrity_approved=false`) while
-leaving the matching payload `""`. Routing at [runner.py:1089-1092](../src/executor/runner.py#L1089-L1092)
+leaving the matching payload `""`. Routing at [runner.py:1089-1092](../src/nexus/runner.py#L1089-L1092)
 copies the empty trace; the agent re-runs next cycle with zero guidance, reproduces the same output, and
 the loop burns all `max_retries` cycles until aborting "Retries exhausted."
 **Cause:** no model/code invariant ties an approval to a non-empty payload. The deadlock guard
-([runner.py:1070](../src/executor/runner.py#L1070)) only catches `gate_failed ∧ approved_both`, never
+([runner.py:1070](../src/nexus/runner.py#L1070)) only catches `gate_failed ∧ approved_both`, never
 `not approved ∧ empty payload`. Payload defaults are `""` ([models.py:244-245](../src/shared/core/models.py)).
 **Fix direction:** add a `ReviewReport` model validator — `not code_quality_approved ⇒ dev_diagnostic_payload != ""`
 and the QA analog — so a guidance-less rejection fails fast with a debuggable validation error instead of
@@ -318,18 +318,18 @@ silently wasting the budget.
 
 ## 18. [P2] Feedback-channel isolation is enforced only by prompt, not by code
 **Symptom:** `reviewer.md` mandates "never duplicate an instruction across both channels," but
-[runner.py:1091-1092](../src/executor/runner.py#L1091-L1092) copies BOTH `dev_diagnostic_payload` and
+[runner.py:1091-1092](../src/nexus/runner.py#L1091-L1092) copies BOTH `dev_diagnostic_payload` and
 `qa_diagnostic_payload` unconditionally. If the Reviewer LLM populates both (or the wrong one), the
 Developer and QA both act next cycle and can fight (dev edits production while QA expects a test fix).
 **Cause:** the transport is isolated (`error_trace` vs `qa_error_trace`, reset each cycle at
-[runner.py:816-817](../src/executor/runner.py#L816-L817)), but *which* channel the Reviewer fills is an
+[runner.py:816-817](../src/nexus/runner.py#L816-L817)), but *which* channel the Reviewer fills is an
 LLM-trust invariant with no code guard.
 **Fix direction:** validate routing coherence — e.g. a payload may be non-empty only when its own
 approval is false (pairs naturally with #17), and log/incident when both are populated in one report.
 
 ## 25. [P2] Arbiter `developer`/`qa` routes are advisory — they don't change control flow
 **Context:** the Arbiter (ADR [0016](decisions/0016-arbiter-contract-self-healing.md), added to the FSM at
-[runner.py](../src/executor/runner.py) in the `if not all_gates_passed:` block) returns
+[runner.py](../src/nexus/runner.py) in the `if not all_gates_passed:` block) returns
 `ArbiterVerdict.route ∈ {developer, qa, contract, halt}`. Only `contract` (re-derive the TechLead spec)
 and `halt` (abort) actually alter control flow. For `developer`/`qa` the code **falls through to the
 existing isolated-channel routing** — i.e. the next cycle is driven by the Reviewer's
@@ -356,7 +356,7 @@ only when the Arbiter agrees with the Reviewer's routing.
 ## 19. [P1] `domain_tags[0]` and `environment_id` are validated individually, never against each other
 **Symptom:** a `TechLeadContract` with `environment_id=go-1.23-cli` + `domain_tags=['python']` passes
 both validators yet loads Python skills ([prompts.py:266](../src/shared/core/prompts.py)) while every gate
-runs the Go toolchain ([gates.py](../src/executor/nodes/gates.py)) — split-brain execution.
+runs the Go toolchain ([gates.py](../src/development/gates.py)) — split-brain execution.
 **Cause:** skills route on `domain_tags[0]`; gates route on `environment_id`; nothing cross-checks that
 the first tag is the language of the selected platform. Currently guarded only by `techlead.md` prose.
 **Fix direction:** add a `TechLeadContract` model validator — `env_language(environment_id) == domain_tags[0]`.
@@ -374,7 +374,7 @@ TechLead input so the chosen platform propagates as a validated value, not re-pa
 
 ## 21. [P2] TechLead contract is an un-cross-checkable single point of failure
 **Symptom:** the Developer never sees the blueprint; QA sees the contract; the Reviewer audits the
-contract dump ([reviewer.py:23](../src/executor/agents/reviewer.py#L23)), not `blueprint.md`. If the
+contract dump ([reviewer.py:23](../src/development/agents/reviewer.py#L23)), not `blueprint.md`. If the
 TechLead drops an NFR from `architectural_constraints` or misreads the blueprint, no downstream agent can
 detect the omission — they all inherit the flattened contract as ground truth.
 **Fix direction:** feed `blueprint_markdown` to the Reviewer as a reference block so it can audit the
@@ -382,11 +382,11 @@ TechLead's extraction fidelity against the source, not just adjudicate the deriv
 
 ## 22. [P3] QA generates tests on cycle 1 with no production-code snapshot (by design)
 **Symptom:** cycle 1 `needs_test_regeneration()` is True (no test snapshot, [models.py:283](../src/shared/core/models.py#L283)),
-so QA generates BEFORE the Developer ([runner.py:825-851](../src/executor/runner.py#L825-L851)); the
-`PRODUCTION CODE SNAPSHOT` block is absent ([qa.py:162](../src/executor/agents/qa.py#L162)). Import
+so QA generates BEFORE the Developer ([runner.py:825-851](../src/nexus/runner.py#L825-L851)); the
+`PRODUCTION CODE SNAPSHOT` block is absent ([qa.py:162](../src/development/agents/qa.py#L162)). Import
 correctness on cycle 1 rests entirely on `topology_contract` precision.
 **Note:** contract-first is intentional and `qa.md` says "when present, the PRODUCTION CODE SNAPSHOT"; the
-post-Developer test-compile gate ([runner.py:991](../src/executor/runner.py#L991)) catches resulting import
+post-Developer test-compile gate ([runner.py:991](../src/nexus/runner.py#L991)) catches resulting import
 errors. Tracked as a known limitation, not a defect — monitor for cycle-1 import-collection failures that
 trace back to thin/ambiguous topology nodes.
 
@@ -422,9 +422,9 @@ with a dirty index from the failed attempt. `finalize_transaction` only stages-a
 **Fix direction:** `git reset` (or discard the worktree) in `_abort_with_incident` for clean resume hygiene.
 
 ## 24. [P3] Misleading comment on the QA-self zombie-disposal path
-**Symptom:** [qa.py:231](../src/executor/agents/qa.py#L231) labels the `suite.files_to_delete` disposal as
+**Symptom:** [qa.py:231](../src/development/agents/qa.py#L231) labels the `suite.files_to_delete` disposal as
 "Reviewer-routed", but that path is QA-self-identified; the Reviewer-routed disposal is the separate block
-at [qa.py:126-129](../src/executor/agents/qa.py#L126-L129). Both call the same idempotent guarded
+at [qa.py:126-129](../src/development/agents/qa.py#L126-L129). Both call the same idempotent guarded
 `_dispose_zombie_tests`, so behavior is correct — only the comment is wrong.
-**Fix direction:** relabel the [qa.py:231](../src/executor/agents/qa.py#L231) comment to "QA-self-identified
+**Fix direction:** relabel the [qa.py:231](../src/development/agents/qa.py#L231) comment to "QA-self-identified
 obsolete files" to match the dual-path reality already documented in `qa.md`.

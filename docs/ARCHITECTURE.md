@@ -2,12 +2,14 @@
 
 A deterministic, multi-agent **SDLC automation engine**: it turns a one-line product idea into a planned
 backlog and then implements each ticket as verified, committed code — with no human in the loop. It is a
-custom Python `asyncio` Finite State Machine (no agentic framework), split into two planes: a **Nexus
-control plane** (idea → plan) and an **Executor worker plane** (one ticket → committed code).
+custom Python `asyncio` Finite State Machine (no agentic framework), split into three physical planes over a
+shared SSOT (ADR [0021](decisions/0021-physical-three-plane-split.md)): a **Nexus control plane**
+(idea → plan → orchestrate), a **Development worker plane** (one ticket → committed code), and a
+**Deployment infra plane** (CI/CD scaffolding).
 
 This document follows the [C4 model](https://c4model.com/): **Level 1 (System Context)** → **Level 2
 (Containers)** → **Level 3 (Components)** — zooming from "who uses it and what it talks to" down to "how
-the executor's self-healing loop works." Diagrams are Mermaid (GitHub-rendered). The authoritative SSOTs
+the per-ticket Executor FSM (`run_executor`) self-heals." Diagrams are Mermaid (GitHub-rendered). The authoritative SSOTs
 are [repo-module-map](../.claude/rules/repo-module-map.md), [pipeline-fsm-loops](../.claude/rules/pipeline-fsm-loops.md),
 and [agent-provider-model-map](../.claude/rules/agent-provider-model-map.md); this doc visualizes them.
 
@@ -21,7 +23,7 @@ Who operates the engine and which external systems it depends on.
 flowchart TB
     human(["👤 Human Operator<br/>(developer / maintainer)"])
 
-    engine["⚙️ Agentic SDLC Engine<br/>Python asyncio FSM · two planes<br/>(Nexus control + Executor worker)"]
+    engine["⚙️ Agentic SDLC Engine<br/>Python asyncio FSM · 3 planes + shared<br/>(control · worker · infra)"]
 
     gemini["☁️ Google Gemini API<br/>structured output via instructor"]
     claude["🤖 Claude Code CLI<br/>agentic file-editing (Developer)"]
@@ -45,7 +47,7 @@ flowchart TB
 ```
 
 **Key:**
-- **Human Operator** drives everything through one CLI (`main.py` → `src/executor/runner.py` `main()`):
+- **Human Operator** drives everything through one CLI (`main.py` → `src/nexus/runner.py` `main()`):
   `--idea` plans a new project (add `--auto-execute` to then drive the Executor over **all** planned tickets
   to `main` in order, in the same invocation — E3), `--run <project> -f <ticket>` executes one ticket,
   `--resume` recovers.
@@ -72,8 +74,9 @@ flowchart TB
 
     subgraph engine["Agentic SDLC Engine"]
         direction TB
-        nexus["🧭 Nexus Control Plane<br/>src/nexus/ · PO → SA → TPM<br/><i>idea → epic → blueprint → tickets</i>"]
-        executor["🏗️ Executor Worker Plane<br/>src/executor/ · FSM loop<br/><i>one ticket → committed code</i>"]
+        nexus["🧭 Nexus Control Plane<br/>src/nexus/ · PO→SA→TPM + FSM<br/><i>plan + orchestrate (run_executor / run_batch)</i>"]
+        development["🏗️ Development Worker Plane<br/>src/development/ · agents + gates<br/><i>one ticket → committed code</i>"]
+        deployment["🚀 Deployment Infra Plane<br/>src/deployment/ · devops + provision<br/><i>CI/CD scaffolding (--scaffold-deploy)</i>"]
         shared["🧱 Shared Plane<br/>src/shared/ core + utils<br/><i>models, config, observability,<br/>runs, llm, git, docker adapter</i>"]
         prompts["📝 Prompt Store<br/>prompts/system + prompts/skills<br/><i>per-role prompts + gated skills</i>"]
         images["🐳 Sandbox Images<br/>docker/*.Dockerfile<br/><i>per-language hardened runtimes</i>"]
@@ -86,43 +89,49 @@ flowchart TB
     github["🔗 Git / GitHub + target repo"]
 
     human --> cli
-    cli -->|"--idea"| nexus
-    cli -->|"--run / --resume"| executor
-    cli -.->|"--idea --auto-execute:<br/>drive ALL tickets to main<br/>after planning (run_batch)"| executor
+    cli -->|"--idea / --run / --resume"| nexus
+    nexus -->|"run_executor / run_batch<br/>(per-ticket FSM, E3)"| development
+    nexus -.->|"--scaffold-deploy:<br/>run_devops_scaffold (post-batch)"| deployment
+    deployment -.->|"reuses transaction/forge/FinOps<br/>SSOTs (lazy import)"| nexus
 
     nexus --> shared
-    executor --> shared
-    nexus -->|"epic/blueprint/TASK-*.md + checkpoint"| runstore
-    executor -->|"checkpoint, finops, incident, clone"| runstore
+    development --> shared
+    deployment --> shared
+    nexus -->|"epic/blueprint/TASK-*.md, checkpoint,<br/>finops, incident, clone"| runstore
     nexus -.->|"reads role prompts"| prompts
-    executor -.->|"reads role prompts + skills"| prompts
+    development -.->|"reads role prompts + skills"| prompts
+    deployment -.->|"reads devops prompt + archetype skills"| prompts
 
     shared -->|"structured calls (instructor)"| gemini
     shared -->|"agentic Developer session"| claude
-    executor -->|"run_in_image (gates)"| docker
+    development -->|"run_in_image (gates)"| docker
     docker --> images
-    executor -->|"clone / branch / commit / push / PR+merge (--auto-merge);<br/>deploy-scaffold PR (--scaffold-deploy)"| github
+    nexus -->|"clone / branch / commit / push / PR+merge (--auto-merge)"| github
+    deployment -->|"deploy-scaffold PR (--scaffold-deploy)"| github
 
     classDef plane fill:#1168bd,stroke:#0b4884,color:#fff;
     classDef store fill:#2d6a4f,stroke:#1b4332,color:#fff;
     classDef ext fill:#999,stroke:#6b6b6b,color:#fff;
-    class nexus,executor,shared,prompts,images plane;
+    class nexus,development,deployment,shared,prompts,images plane;
     class runstore store;
     class gemini,claude,docker,github ext;
 ```
 
 **Key:**
-- **Nexus control plane** (`src/nexus/`) — linear, no loops, no Docker/git: `run_nexus` drives PO → SA →
-  TPM, writing `artifacts/{epic.md, blueprint.md, TASK-*.md}` + a `NexusState` checkpoint. Needs only the
-  Gemini key.
-- **Executor worker plane** (`src/executor/`) — `run_executor` in `runner.py` is the per-ticket FSM driver
-  (`main()` calls it for `--run`/`--resume`, and dispatches it for the first planned ticket on
-  `--idea --auto-execute`, ADR 0017 — the bridge stays in the entry layer, never a Nexus→Executor import);
-  `agents/` holds the seven execution agents (incl. the **DevOps** deploy-scaffolder); `nodes/gates.py` runs
-  build/test/**lint**/SAST + the deploy-manifest static lint. Full git + Docker isolation per run. After a
-  full `--auto-execute` batch, `--scaffold-deploy` runs `run_devops_scaffold` once (post-batch terminal
-  phase) to generate + merge the app's CI/CD config (ADR 0020).
-- **Shared plane** (`src/shared/`) — the engine SSOTs both planes import: `core/` (`models.py`,
+- **Nexus control plane** (`src/nexus/`) — owns planning AND orchestration. `run_nexus` drives PO → SA →
+  TPM (linear, no loops, no Docker/git; `agents/{po,sa,tpm}.py`), writing
+  `artifacts/{epic.md, blueprint.md, TASK-*.md}` + a `NexusState` checkpoint. `runner.py` then owns `main()`
+  (dispatch/resume), the per-ticket FSM (`run_executor`), and the E3 batch loop (`run_batch`), calling into
+  the development/deployment planes — never the reverse, save the one documented lazy-import back-edge below.
+- **Development worker plane** (`src/development/`) — the six execution agents (`agents/`: techlead,
+  developer, qa, reviewer, arbiter, techwriter) + `gates.py` (build/test/**lint**/SAST + format pass), run
+  per ticket under full git + Docker isolation by the nexus FSM.
+- **Deployment infra plane** (`src/deployment/`) — the **DevOps** agent (`agents/devops.py`) + `provision/`
+  (`scaffold.py` `run_devops_scaffold` + `gates.py` `run_devops_gate`). After a full `--auto-execute` batch,
+  `--scaffold-deploy` runs `run_devops_scaffold` once (post-batch terminal phase) to generate + merge the
+  app's CI/CD config (ADR 0020); it reuses nexus's transaction/forge/FinOps SSOTs via a **lazy import** — the
+  single `deployment → nexus` edge.
+- **Shared plane** (`src/shared/`) — the engine SSOTs all planes import: `core/` (`models.py`,
   `config.py` incl. `ROLE_MODELS`, `observability.py`, `runs.py`, `docker_adapter.py`, `environments.py`,
   `prompts.py`) and `utils/` (`llm.py`, `api_retry.py`, `git_helpers.py`, `subprocess_helpers.py`,
   `redaction.py`, `forge.py` — the `gh`-backed PR open/approve/merge seam). All LLM traffic flows through here.
@@ -209,14 +218,14 @@ flowchart TB
 
 ## End-to-end sequence
 
-From a raw idea to committed code across the two planes.
+From a raw idea to committed code across the planes (control → worker, then the optional deploy-scaffold).
 
 ```mermaid
 sequenceDiagram
     actor H as Human
     participant N as Nexus (PO→SA→TPM)
     participant FS as Run Store
-    participant X as Executor FSM
+    participant X as Execution FSM
     participant G as Gemini
     participant C as Claude CLI
     participant R as Git/GitHub
@@ -261,19 +270,19 @@ for the full module map and [agent-contracts](../.claude/rules/agent-contracts.m
 
 | Plane | Component | File | Responsibility |
 |---|---|---|---|
-| Entry | CLI / router | `main.py` → `src/executor/runner.py` `main()` | Parse args; route to Nexus or Executor; `--resume` dispatch (incl. batch re-entry); on `--idea --auto-execute`, drive ALL tickets to `main` via `run_batch` (`prepare_ticket_run` + `run_executor` per ticket, `get_tasks_for_nexus_run` for order, `BatchState` checkpoint). |
-| Nexus | PO / SA / TPM | `src/nexus/{po,sa,tpm}.py` | Idea → Epic → Blueprint → task tickets (structured Gemini). |
+| Entry | CLI / router | `main.py` → `src/nexus/runner.py` `main()` | Parse args; route to planning vs. ticket execution; `--resume` dispatch (incl. batch re-entry); on `--idea --auto-execute`, drive ALL tickets to `main` via `run_batch` (`prepare_ticket_run` + `run_executor` per ticket, `get_tasks_for_nexus_run` for order, `BatchState` checkpoint). |
+| Nexus | PO / SA / TPM | `src/nexus/agents/{po,sa,tpm}.py` | Idea → Epic → Blueprint → task tickets (structured Gemini). |
 | Nexus | Runner / State | `src/nexus/nexus_runner.py`, `state.py` | Drive PO→SA→TPM; `NexusState` checkpoint + resume. |
-| Executor | FSM driver | `src/executor/runner.py` | Outer cycle, reroutes, breaker, routing, commit. |
-| Executor | TechLead | `src/executor/agents/techlead.py` | Derive (and, in amendment mode, re-derive) the `TechLeadContract`. |
-| Executor | Developer | `src/executor/agents/developer.py` | Implement code in the clone (Claude CLI, agentic). |
-| Executor | QA | `src/executor/agents/qa.py` | Generate per-module tests (contract-first). |
-| Executor | Reviewer | `src/executor/agents/reviewer.py` | Code + test verdict; isolated dev/QA diagnostics. |
-| Executor | Arbiter | `src/executor/agents/arbiter.py` | Triage stuck cycle → developer/qa/contract/halt. |
-| Executor | TechWriter | `src/executor/agents/techwriter.py` | Maintain the living ADR (`docs/architecture_state.md` in the clone). |
-| Executor | DevOps | `src/executor/agents/devops.py` | Generate `DevOpsManifests` (archetype-aware Dockerfile + GitHub Actions deploy workflow, WIF) for the finished app (`--scaffold-deploy`, E4). |
-| Executor | Deploy-scaffold phase | `src/executor/runner.py` `run_devops_scaffold` | Post-batch terminal phase: clone `main` → DevOps node → `run_devops_gate` → merge `chore/devops-scaffold` via the forge flow. |
-| Executor | Gates | `src/executor/nodes/gates.py` | Build / unit-test / **lint** (`run_lint_gate` + `classify_lint_findings`) / SAST in the sandbox; `run_devops_gate` static-lints the deploy manifests. |
+| Nexus | FSM driver | `src/nexus/runner.py` | `main()` dispatch/resume; per-ticket FSM (`run_executor`) — outer cycle, reroutes, breaker, routing, commit; E3 batch loop (`run_batch`). |
+| Development | TechLead | `src/development/agents/techlead.py` | Derive (and, in amendment mode, re-derive) the `TechLeadContract`. |
+| Development | Developer | `src/development/agents/developer.py` | Implement code in the clone (Claude CLI, agentic). |
+| Development | QA | `src/development/agents/qa.py` | Generate per-module tests (contract-first). |
+| Development | Reviewer | `src/development/agents/reviewer.py` | Code + test verdict; isolated dev/QA diagnostics. |
+| Development | Arbiter | `src/development/agents/arbiter.py` | Triage stuck cycle → developer/qa/contract/halt. |
+| Development | TechWriter | `src/development/agents/techwriter.py` | Maintain the living ADR (`docs/architecture_state.md` in the clone). |
+| Development | Gates | `src/development/gates.py` | Build / unit-test / **lint** (`run_lint_gate` + `classify_lint_findings`) / SAST in the sandbox. |
+| Deployment | DevOps | `src/deployment/agents/devops.py` | Generate `DevOpsManifests` (archetype-aware Dockerfile + GitHub Actions deploy workflow, WIF) for the finished app (`--scaffold-deploy`, E4). |
+| Deployment | Deploy-scaffold | `src/deployment/provision/scaffold.py` `run_devops_scaffold` | Post-batch terminal phase: clone `main` → DevOps node → `run_devops_gate` (`provision/gates.py`) → merge `chore/devops-scaffold` via the forge flow. |
 | Shared | Models | `src/shared/core/models.py` | `GlobalPipelineContext`, `TechLeadContract`, `ReviewReport`, `ArbiterVerdict`, `BatchState` (E3 batch checkpoint), `DevOpsManifests` (E4 deploy config), telemetry. |
 | Shared | Config | `src/shared/core/config.py` | `ROLE_MODELS`, budgets, pricing, FSM constants. |
 | Shared | Observability | `src/shared/core/observability.py` | Logging, token/FinOps telemetry, finish-reason diagnostics. |
@@ -286,7 +295,7 @@ for the full module map and [agent-contracts](../.claude/rules/agent-contracts.m
 
 ---
 
-*Diagrams reflect the engine as of the deployability-closure iteration ([CHANGELOG](../CHANGELOG.md) v0.20.0 —
-`--scaffold-deploy` deploy-scaffolding + the engine lint gate, ADR [0020](decisions/0020-deploy-scaffolding-and-lint-gate.md)).
+*Diagrams reflect the engine as of the three-plane-split iteration ([CHANGELOG](../CHANGELOG.md) v0.21.0 —
+physical `nexus` / `development` / `deployment` planes, ADR [0021](decisions/0021-physical-three-plane-split.md)).
 For the "why" behind each decision see [decisions/](decisions/README.md); for what's still open see
 [BACKLOG.md](BACKLOG.md).*

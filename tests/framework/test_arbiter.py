@@ -11,8 +11,8 @@ os.environ.setdefault("GEMINI_API_KEY", "test-key")
 
 from pydantic import ValidationError
 
-from src.executor.agents import arbiter as arbiter_mod
-from src.executor.agents.arbiter import run_arbiter_node
+from src.development.agents import arbiter as arbiter_mod
+from src.development.agents.arbiter import run_arbiter_node
 from src.shared.core.models import (
     ArbiterVerdict, TechLeadContract, ReviewReport, GlobalPipelineContext, WorkspacePaths,
 )

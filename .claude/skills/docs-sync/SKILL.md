@@ -33,10 +33,10 @@ Update factual project-state tracking after code changes. Focus strictly on "Wha
      (`flowchart`/`sequenceDiagram` — never C4-plugin syntax, which GitHub won't render).
    - **Trigger — only when this iteration changed *structure*, not behavior.** Skip this step entirely for
      pure bugfixes/tuning. Re-sync when any of these changed:
-     - **A new/removed agent role** (a `src/{nexus,executor}/agents/*.py` or plane module + its `ROLE_MODELS`
+     - **A new/removed agent role** (a `src/{nexus,development,deployment}/agents/*.py` or plane module + its `ROLE_MODELS`
        entry) → add/remove the node in the relevant L2/L3 diagram AND the component-reference table row.
      - **A new/removed/re-routed FSM state or decision edge** (e.g. a new routing target like Arbiter, a new
-       gate, a changed `while`/deadlock/breaker condition in `src/executor/runner.py`) → update the **L3
+       gate, a changed `while`/deadlock/breaker condition in `src/nexus/runner.py`) → update the **L3
        Executor FSM** flowchart to match [pipeline-fsm-loops](../../rules/pipeline-fsm-loops.md). Don't
        duplicate that rule's prose — keep the diagram faithful and cross-reference it.
      - **A new external system** (a new provider/CLI/service the engine talks to) → L1 System Context node + arrow.

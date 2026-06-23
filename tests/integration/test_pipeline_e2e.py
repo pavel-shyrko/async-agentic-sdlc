@@ -10,7 +10,7 @@ model boundaries are mocked:
 * Gemini  -> ``src.shared.utils.llm.instructor_client`` (structured output for techlead/qa/reviewer
   AND the per-skill ``SkillRelevance`` gate — every ``response_model`` must be handled or the call
   raises, ``with_api_retry`` swallows it after 2+4s backoff per attempt, and the run crawls)
-* Claude  -> ``src.executor.agents.developer.run_claude_cli`` (file mutation)
+* Claude  -> ``src.development.agents.developer.run_claude_cli`` (file mutation)
 * docker gates -> ``run_build_gate`` / ``run_qa_unit_tests`` / ``run_security_scan`` / ``run_lint_gate``
   (and the ``run_format_pass`` autofix) are all stubbed (docker cannot be assumed portable in a hermetic test)
 
@@ -31,7 +31,7 @@ from unittest.mock import AsyncMock
 # orchestrator imports src.shared.core.config at import time, which builds the genai client.
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
 
-from src.executor import runner as orchestrator
+from src.nexus import runner as orchestrator
 from src.shared.core.models import (
     TechLeadContract,
     QATestSuite,
@@ -170,7 +170,7 @@ class PipelineEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 mock.patch("src.shared.utils.llm.instructor_client", client),
                 mock.patch(
-                    "src.executor.agents.developer.run_claude_cli",
+                    "src.development.agents.developer.run_claude_cli",
                     new=AsyncMock(side_effect=_fake_claude_cli),
                 ),
                 mock.patch.object(

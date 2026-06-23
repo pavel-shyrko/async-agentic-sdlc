@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock
 # Agents import src.shared.core.config at module import time.
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
 
-from src.executor.agents import developer, qa
+from src.development.agents import developer, qa
 from src.shared.core.models import GlobalPipelineContext, TechLeadContract, WorkspacePaths, QATestSuite
 
 _DEV_BLOCK = "=== PROJECT CONTEXT (reference only"

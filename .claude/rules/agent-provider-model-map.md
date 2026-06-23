@@ -1,16 +1,18 @@
 ---
 paths:
   - "src/nexus/*.py"
-  - "src/executor/agents/*.py"
+  - "src/nexus/agents/*.py"
+  - "src/development/agents/*.py"
+  - "src/deployment/agents/*.py"
   - "src/shared/utils/llm.py"
 ---
 
 # Agent → provider / model map
 
 **Gemini, via `run_structured_llm`** (`src/shared/utils/llm.py` → instructor + `instructor_client`,
-forced structured Pydantic output): the executor's **TechLead, QA, Reviewer, Technical Writer, Arbiter
-(failure triage / contract self-healing), and DevOps (post-batch deploy-scaffolding, E4)** and the
-Nexus control plane's **PO, SA, TPM**. Each role's model + display label is in `ROLE_MODELS`
+forced structured Pydantic output): the **development** plane's **TechLead, QA, Reviewer, Technical Writer,
+Arbiter (failure triage / contract self-healing)** and the **deployment** plane's **DevOps (post-batch
+deploy-scaffolding, E4)**, plus the Nexus control plane's **PO, SA, TPM**. Each role's model + display label is in `ROLE_MODELS`
 (`src/shared/core/config.py`; `DEVOPS_MODEL` registers `devops`). On a structured failure the cause (e.g.
 Gemini `RECITATION`) is surfaced by `describe_finish_reason` (`observability.py`) via `with_api_retry`.
 `run_structured_llm` also relocates any Jinja-marker (`{{ }}`/`{% %}`) **system** message to a user turn

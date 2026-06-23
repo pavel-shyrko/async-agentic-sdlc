@@ -14,9 +14,9 @@ from src.shared.core.models import PipelineTelemetry
 from src.shared.core.observability import log, log_finops_summary, describe_finish_reason
 from src.shared.utils.redaction import redact
 from src.nexus.state import NexusState
-from src.nexus.po import run_po
-from src.nexus.sa import run_sa
-from src.nexus.tpm import run_tpm
+from src.nexus.agents.po import run_po
+from src.nexus.agents.sa import run_sa
+from src.nexus.agents.tpm import run_tpm
 
 # Filesystem-safe ticket id (used verbatim in the TASK-XX.md filename).
 _SLUG_RE = re.compile(r"[^A-Za-z0-9._-]+")

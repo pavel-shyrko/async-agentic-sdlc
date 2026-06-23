@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock
 # techwriter imports src.shared.core.config at import time, which builds the genai client.
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
 
-from src.executor.agents import techwriter
+from src.development.agents import techwriter
 from src.shared.core.models import ArchitectureUpdate, GlobalPipelineContext, WorkspacePaths
 
 

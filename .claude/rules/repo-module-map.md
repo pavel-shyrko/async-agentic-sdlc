@@ -1,8 +1,9 @@
 # Repo module map (where to find things)
 
-Entrypoint: `main.py` → `src/executor/runner.py` `main()` (CLI parsing in `parse_args`); `main()` is a thin
+Entrypoint: `main.py` → `src/nexus/runner.py` `main()` (CLI parsing in `parse_args`); `main()` is a thin
 dispatcher that resolves the run and calls `run_executor` (with `--idea --auto-execute` it dispatches the
-first ticket, ADR 0017). Three planes under `src/` (ADR 0012 virtual separation):
+first ticket, ADR 0017). Four planes under `src/` (ADR 0021 physical split — control / worker / infra +
+shared; supersedes ADR 0012's virtual separation):
 
 **`src/shared/core/`** — engine SSOTs:
 - `models.py` — `RUNS_BASE`, `WorkspacePaths`, `PipelineTelemetry`, `GlobalPipelineContext` (`save_checkpoint`/`load_checkpoint`), `BatchState` (E3 batch checkpoint, `kind="batch"` → `reports/batch_state.json`), `DevOpsManifests` (E4 deploy config: `archetype`/`dockerfile_content`/`workflow_content`/`env_scaffold_content`).
@@ -17,22 +18,26 @@ first ticket, ADR 0017). Three planes under `src/` (ADR 0012 virtual separation)
 `llm.py` (`run_structured_llm` + `_relocate_jinja_system_messages` — demotes a `{{ }}`/`{% %}`-bearing system message to a user turn so instructor's GenAI guard doesn't reject a config-teaching prompt, e.g. DevOps `${{ secrets.* }}`), `api_retry.py` (`with_api_retry`), `redaction.py` (`redact`),
 `forge.py` (`open_pr`/`approve_pr`/`merge_pr` — gh-backed PR auto-merge seam, E2 / `--auto-merge`).
 
-**`src/executor/`** (worker plane) — `runner.py` (`main()` dispatcher + `run_executor` per-ticket FSM +
-`prepare_ticket_run` cfg-wiring/allocation, shared by `--run`/`--auto-execute` + `finalize_pr` — the E2
-success-path PR step (open→approve→merge via `forge`, behind `--auto-merge`) + `run_batch` /
-`_load_or_init_batch` — the E3 multi-ticket loop driving ALL tickets to `main` (with `--auto-execute`,
-which now implies `--auto-merge`) + `PipelineHalt` — the catchable FSM-halt exception `_abort_with_incident`
-raises (so the batch records `failed` and stops; `main.py` maps an uncaught one to exit 1) + `run_devops_scaffold`
-/ `_env_ci_commands` — the E4 post-batch deploy-scaffolding terminal phase (behind `--scaffold-deploy`,
-clones `main` onto `chore/devops-scaffold`, merges via `finalize_pr`) + the step-3.6 lint loop
-(`LINT_GATE_MAX_REROUTES`, `_LINT_FEEDBACK_PREAMBLE`)), `nodes/gates.py`
-(build/test/**lint** (`run_lint_gate` + `classify_lint_findings`)/SAST gates + `run_format_pass` autofix +
-`run_devops_gate` deploy-manifest static lint + `build_failure_is_environmental`),
-`agents/{techlead,developer,qa,reviewer,techwriter,arbiter,devops}.py`.
+**`src/nexus/`** (control plane — orchestration + FSM + planning) — `runner.py` (`main()` dispatcher +
+`run_executor` per-ticket FSM + `prepare_ticket_run` cfg-wiring/allocation, shared by `--run`/`--auto-execute`
++ `finalize_pr` — the E2 success-path PR step (open→approve→merge via `forge`, behind `--auto-merge`) +
+`run_batch` / `_load_or_init_batch` — the E3 multi-ticket loop driving ALL tickets to `main` (with
+`--auto-execute`, which now implies `--auto-merge`) + `PipelineHalt` — the catchable FSM-halt exception
+`_abort_with_incident` raises (so the batch records `failed` and stops; `main.py` maps an uncaught one to
+exit 1) + the step-3.6 lint loop (`LINT_GATE_MAX_REROUTES`, `_LINT_FEEDBACK_PREAMBLE`); `run_batch` lazily
+imports `run_devops_scaffold` to break the `deployment → nexus` cycle, ADR 0021), `agents/{po,sa,tpm}.py`
+(PO/SA/TPM agents), `nexus_runner.py` (`run_nexus` + `get_tasks_for_nexus_run` — planned ticket ids in TPM
+order, consumed by `--auto-execute`), `state.py` (`NexusState` checkpoint).
 
-**`src/nexus/`** (control plane) — `{po,sa,tpm}.py` (PO/SA/TPM agents), `nexus_runner.py` (`run_nexus` +
-`get_tasks_for_nexus_run` — planned ticket ids in TPM order, consumed by `--auto-execute`),
-`state.py` (`NexusState` checkpoint). See [agent-provider-model-map](agent-provider-model-map.md).
+**`src/development/`** (worker plane — code generation + quality gates) — `gates.py`
+(build/test/**lint** (`run_lint_gate` + `classify_lint_findings`)/SAST gates + `run_format_pass` autofix +
+`build_failure_is_environmental`), `agents/{techlead,developer,qa,reviewer,techwriter,arbiter}.py`.
+
+**`src/deployment/`** (infra plane — CI/CD scaffolding) — `agents/devops.py` (the DevOps agent),
+`provision/scaffold.py` (`run_devops_scaffold` / `_env_ci_commands` / `_repo_has_source` /
+`_nexus_environment_ids` / `DEVOPS_MAX_RETRIES` — the E4 post-batch deploy-scaffolding terminal phase, behind
+`--scaffold-deploy`, clones `main` onto `chore/devops-scaffold`, merges via `finalize_pr`), `provision/gates.py`
+(`run_devops_gate` deploy-manifest static lint). See [agent-provider-model-map](agent-provider-model-map.md).
 
 Other: `prompts/system/` (per-role prompts) + `prompts/skills/` (gated fragments); `docker/*.Dockerfile`
 (sandbox images, built by `scripts/build_sandbox_images.sh`); tests in `tests/` (WSL-only — see

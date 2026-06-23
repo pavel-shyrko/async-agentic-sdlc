@@ -6,7 +6,8 @@ paths:
   - "src/shared/utils/llm.py"
   - "src/shared/core/config.py"
   - "src/shared/core/docker_adapter.py"
-  - "src/executor/runner.py"
+  - "src/nexus/runner.py"
+  - "src/deployment/provision/scaffold.py"
 ---
 
 # Boundary safety: sanitize every subprocess argv, time-bound every blocking external call

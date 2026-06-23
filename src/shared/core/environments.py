@@ -3,7 +3,7 @@
 # adapter look up the canonical image + commands here, so no agent can invent a tech stack.
 # `language_id` keys the per-language QA test profile (see QA_LANGUAGE_PROFILES).
 #
-# Gate execution (src/executor/nodes/gates.py + docker_adapter.py):
+# Gate execution (src/development/gates.py + docker_adapter.py):
 #   image        custom sandbox image built by scripts/build_sandbox_images.sh — carries the test
 #                runner + writable HOME/cache (stock images lack pytest etc. and EPERM on /.cache).
 #   sandbox_env  env vars injected into the container so the non-root --user run has writable caches.

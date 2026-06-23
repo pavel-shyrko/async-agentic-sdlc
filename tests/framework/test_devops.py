@@ -16,8 +16,8 @@ from unittest.mock import AsyncMock
 # devops imports src.shared.core.config at import time, which builds the genai client.
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
 
-from src.executor.agents import devops
-from src.executor.nodes.gates import run_devops_gate
+from src.deployment.agents import devops
+from src.deployment.provision.gates import run_devops_gate
 from src.shared.core.models import DevOpsManifests, GlobalPipelineContext, WorkspacePaths
 from src.shared.utils.llm import _relocate_jinja_system_messages
 

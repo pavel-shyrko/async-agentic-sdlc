@@ -7,11 +7,13 @@ forward. Docker internals (daemon, loopback, corporate CA, NU1301) live in their
 
 ## What you're setting up
 
-The engine is a deterministic multi-agent SDLC orchestrator with two planes: a **Nexus** control plane that
-turns an idea into a plan (Epic → Blueprint → tickets), and an **Executor** worker plane that builds each
-ticket through an FSM (TechLead → QA → Developer → gates → Reviewer). The structured roles run on **Google
-Gemini**; the **Developer** runs on the **Claude Code CLI**; the build/test/lint/SAST gates run in **Docker**
-sandboxes. See [ARCHITECTURE.md](../ARCHITECTURE.md) for the full picture.
+The engine is a deterministic multi-agent SDLC orchestrator split into three physical planes: a **Nexus**
+control plane that turns an idea into a plan (Epic → Blueprint → tickets) and orchestrates the FSM, a
+**Development** worker plane that builds each ticket through that FSM (TechLead → QA → Developer → gates →
+Reviewer), and a **Deployment** infra plane that scaffolds the finished app's CI/CD (`--scaffold-deploy`).
+The structured roles run on **Google Gemini**; the **Developer** runs on the **Claude Code CLI**; the
+build/test/lint/SAST gates run in **Docker** sandboxes. See [ARCHITECTURE.md](../ARCHITECTURE.md) for the
+full picture.
 
 Mentally, you set up **four things** — WSL2 + Docker, Node + Claude CLI, a Python venv, and a Gemini API
 key — then you **plan a project** and **execute its tickets**.

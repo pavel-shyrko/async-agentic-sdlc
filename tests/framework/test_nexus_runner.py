@@ -13,8 +13,8 @@ os.environ.setdefault("GEMINI_API_KEY", "test-key")
 from src.nexus import nexus_runner as nr
 from src.nexus.nexus_runner import run_nexus
 from src.nexus.state import NexusState
-from src.executor import runner as orchestrator
-from src.executor.runner import _checkpoint_kind, _run_dir_from_checkpoint
+from src.nexus import runner as orchestrator
+from src.nexus.runner import _checkpoint_kind, _run_dir_from_checkpoint
 from src.shared.core.runs import Projects
 
 _TASKS = [{"ticket_id": "TASK-01", "title": "Do it", "description": "body", "environment_id": "python-3.12-core"}]
