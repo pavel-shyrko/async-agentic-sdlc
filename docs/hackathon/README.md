@@ -49,6 +49,7 @@ not feed the runtime engine. (Engine/agent rules live in `.claude/rules/` and `p
 
 | Path | What it holds |
 | --- | --- |
+| [`agentic-sdlc-specification-v1.md`](agentic-sdlc-specification-v1.md) | **Deliverable #1** — the Agentic SDLC Specification (Mission 00 mandatory prerequisite). Code-grounded: maps the Token Burners Factory engine to all five spec sections (1.1–1.5). |
 | [`missions/`](missions/) | The 11 mission transmissions (`00`–`10`), saved verbatim as received. |
 | [`acceptance-criteria.md`](acceptance-criteria.md) | The Judge Cheat Sheet — 135-pt scorecard across 7 dimensions, grade bands, and instant-DQ rules. This is what the demo is scored against. |
 
@@ -75,3 +76,11 @@ development / deployment — chaining PO → SA → TPM → TechLead → Develop
 DevOps via machine-readable contracts) plus the live FinOps reporting that dimension 7 grades.
 As missions arrive, record here how each one is satisfied by the existing engine vs. what still
 needs building.
+
+### Final-deliverable status (Mission 00)
+1. **Agentic SDLC Spec** — ✅ [agentic-sdlc-specification-v1.md](agentic-sdlc-specification-v1.md).
+2. **Agent architecture diagram** — partial: a physical-plane Mermaid diagram is embedded in the spec §0;
+   the full C4 model lives in [../ARCHITECTURE.md](../ARCHITECTURE.md).
+3. **Working prototype** — ✅ the engine itself (`main.py` → `src/`).
+4. **Demo project built by agents** — to run live (`--idea … --auto-execute`).
+5. **Evaluation report (what worked / collapsed)** — pending.

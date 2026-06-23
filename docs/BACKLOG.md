@@ -5,7 +5,7 @@ Two parts:
 - **Part I — Capability Roadmap (Epics `E1`–`E5`)**: the forward-looking work to close the autonomy loop
   (idea → working, merged code in `main` → deployable). Larger than a single fix; each has its own
   Goal / Current state / Design / Dependencies / Risks / Acceptance.
-- **Part II — Defects & Refinements (`#4`–`#26`)**: granular fixes surfaced across pipeline runs, grouped by
+- **Part II — Defects & Refinements (`#4`–`#28`)**: granular fixes surfaced across pipeline runs, grouped by
   theme. Resolved items have been removed — their fixes live in the code, tests, and `CHANGELOG.md`; only
   outstanding work remains. **Original item numbers are preserved** so existing cross-references (from
   `.claude/rules/*` and ADRs) stay valid. The `E#` epic namespace is deliberately separate from the `#NN`
@@ -34,6 +34,8 @@ Two parts:
 > CI/CD config, v0.20.0 / ADR 0020), together with a companion **engine lint gate** (`run_lint_gate`, FSM
 > step 3.6) whose per-env `lint_cmd` is the SSOT the generated CI runs verbatim (engine-green ⇒ CI-green).
 > New follow-ups noted under the lint-gate work: mypy/type-checking and node-eslint auto-provisioning.
+> Added **#27** (Gemini billing-balance exhaustion: 403 billing errors retried silently with no actionable message; fix in `api_retry.py` + `config.py`).
+> Added **#28** (per-role reasoning-effort/thinking routing for both providers — the second cost-tuning axis; surfaced from Cyberthone 2026 dimension-7 prep).
 
 ---
 
@@ -427,6 +429,27 @@ does `sys.exit(1)` with no `git reset`. The run clone is reused on `--resume`, s
 with a dirty index from the failed attempt. `finalize_transaction` only stages-and-commits on success.
 **Fix direction:** `git reset` (or discard the worktree) in `_abort_with_incident` for clean resume hygiene.
 
+## 27. [P1] Gemini billing-balance exhaustion not handled gracefully — 403 billing errors are retried with no actionable message
+**Symptom (reported 2026-06-23):** the Google AI Studio account went negative (−1 PLN). Depending on
+what the Pay-as-you-go API returns, one of two bad paths fires:
+- **429 `RESOURCE_EXHAUSTED` with billing context** — `api_retry.py:40` fast-fails correctly, but
+  `handle_quota_error` (`config.py:293`) logs "quota limit / ensure Pay-as-you-go plan" — the wrong
+  advice when the user IS on pay-as-you-go and the real fix is to top up the balance.
+- **403 `PERMISSION_DENIED` / `BILLING_DISABLED`** — `api_retry.py:40`'s `status_code == 429` check
+  does NOT match; the error falls through to `_retry_or_raise`, burns 3 retries with exponential
+  backoff (6 + 8 + 12 s), then dies with a generic "API call failed after 3 attempts — ClientError"
+  and no billing context. The operator has no idea why.
+**Root cause:** `ClientError` catches ALL 4xx HTTP errors; only 429 is branched as non-retryable. A
+billing 403 is not transient — retrying it is wasteful and misleading. The error message in the 429
+path also does not distinguish rate-limit (true quota) from balance-exhaustion.
+**Fix direction:**
+1. `src/shared/utils/api_retry.py` — add a fast-fail branch for 403 alongside 429: billing errors are
+   permanent, not transient; retrying them wastes backoff budget and obscures the real cause.
+2. `src/shared/core/config.py` — split `handle_quota_error` (or add `handle_billing_error`) to detect
+   billing-exhaustion signals in `e.status` or `e.message` (keywords: `BILLING_DISABLED`, `PERMISSION_DENIED`,
+   negative balance message) and surface: *"Your Gemini account balance is negative — top up at
+   console.cloud.google.com/billing"* vs the rate-limit message for a true 429 quota hit.
+
 ## 24. [P3] Misleading comment on the QA-self zombie-disposal path
 **Symptom:** [qa.py:231](../src/development/agents/qa.py#L231) labels the `suite.files_to_delete` disposal as
 "Reviewer-routed", but that path is QA-self-identified; the Reviewer-routed disposal is the separate block
@@ -434,3 +457,37 @@ at [qa.py:126-129](../src/development/agents/qa.py#L126-L129). Both call the sam
 `_dispose_zombie_tests`, so behavior is correct — only the comment is wrong.
 **Fix direction:** relabel the [qa.py:231](../src/development/agents/qa.py#L231) comment to "QA-self-identified
 obsolete files" to match the dual-path reality already documented in `qa.md`.
+
+### Model routing & cost efficiency
+
+## 28. [P2] Per-role reasoning-effort / thinking routing (both providers) — second cost-tuning axis
+**Why:** model routing is currently a SINGLE axis (which model) and effectively flat — all nine Gemini roles
+default to `gemini-3.5-flash` ([config.py](../src/shared/core/config.py)), and only the Developer differs (on
+`claude-sonnet`). The Cyberthone cost-efficiency dimension explicitly rewards *different tiers for different
+roles* (7.2 → 0 pts if every agent uses one model) and *A/B trade-off evidence* (7.3). A second tuning axis —
+**how hard the model thinks** — multiplies the effective routing matrix (`{model} × {effort}`) without adding
+models, so a cheap role can run a cheap model at minimal effort while a complex role runs a stronger model at
+high effort.
+**Current state:**
+- Per-role models exist via `ROLE_MODELS` ([config.py](../src/shared/core/config.py)), but the assignment is
+  uniform `gemini-3.5-flash` for every structured role.
+- The Developer (Claude CLI) takes a single GLOBAL `DEVELOPER_EFFORT` constant (`AVAILABLE_EFFORT_LEVELS` =
+  `low…max`) — there is **no per-role** effort knob.
+- Gemini has **no** thinking control wired at all — `run_structured_llm`
+  ([llm.py](../src/shared/utils/llm.py)) never passes `thinking_config` / `thinking_level` (3.x) /
+  `thinking_budget` (2.5) to the genai client.
+**Fix direction:**
+1. Generalize each role's config from a bare model into a `(model, effort_or_thinking)` pair — extend
+   `ROLE_MODELS` (or a parallel `ROLE_EFFORT` map) with an env-overridable level per role
+   ([config-constant-convention](../.claude/rules/config-constant-convention.md)).
+2. Thread Gemini `thinking_config` into the `instructor`/genai call in `run_structured_llm`, and a per-role
+   `--effort` into the Developer CLI launcher (replacing the single global constant).
+3. Surface the chosen level per agent in `PipelineTelemetry` / the FinOps report so the cost-vs-quality A/B
+   is capturable (feeds 7.3). Keep cache-exclusion + the money-only breaker invariants
+   ([token-budget-excludes-cache](../.claude/rules/token-budget-excludes-cache.md),
+   [finops-app-budget](../.claude/rules/finops-app-budget.md)).
+**Acceptance:** a role can be assigned both a model and a thinking/effort level; mechanical roles
+(TechWriter, formatting, log-summary, DevOps lint) run minimal-effort and complex roles
+(Architect/TechLead/Reviewer/Arbiter) run high-effort; the level is recorded per agent; an A/B comparison
+across two re-runs is capturable for the cost report. (Surfaced from the Cyberthone 2026 dimension-7 prep;
+see [docs/hackathon/agentic-sdlc-specification-v1.md](hackathon/agentic-sdlc-specification-v1.md) §7.)
