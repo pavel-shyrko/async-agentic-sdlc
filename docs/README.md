@@ -8,6 +8,7 @@ decisions, or release history as needed.
 |---|---|
 | Understand **what the system is and how it's built** | [ARCHITECTURE.md](ARCHITECTURE.md) — C4 context / container / FSM diagrams (Mermaid) |
 | **Run it locally** | [guides/setup.md](guides/setup.md) → [guides/docker-on-windows.md](guides/docker-on-windows.md) |
+| **Deploy autonomously** (`--scaffold-deploy`) | [guides/devops_setup.md](guides/devops_setup.md) — GitHub org → GCP WIF (passwordless CI/CD) |
 | Know **why** a design choice was made | [decisions/](decisions/README.md) — the ADR log (0000–0019) |
 | See **what changed each release** | [../CHANGELOG.md](../CHANGELOG.md) + [releases/](releases/) write-ups |
 | Find the **distilled engineering lessons** | [../PRACTICUM.md](../PRACTICUM.md) |
@@ -20,6 +21,7 @@ docs/
   guides/               # environment setup
     setup.md
     docker-on-windows.md
+    devops_setup.md       # GitHub org → GCP WIF (passwordless deploy)
   decisions/            # Architecture Decision Records (MADR) + index
     README.md
     0000-…md … 0019-…md

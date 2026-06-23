@@ -443,6 +443,20 @@ class DevOpsPromptTests(unittest.TestCase):
             self.assertEqual(meta.get("triggers"), [trigger], skill_id)
             self.assertTrue(body.strip(), skill_id)
 
+    def test_secrets_vs_variables_split_matches_devops_setup_guide(self) -> None:
+        # Contract (docs/guides/devops_setup.md): WIF_PROVIDER/SERVICE_ACCOUNT are SECRETS;
+        # PROJECT_ID/REGION/REGISTRY_NAME are VARIABLES. The generated workflow must reference them
+        # accordingly or the deploy can't resolve. Pin both the rest_api skill and the system prompt.
+        rest = get_skill("devops_rest_api")
+        self.assertIn("secrets.GCP_WIF_PROVIDER", rest)
+        self.assertIn("vars.GCP_PROJECT_ID", rest)
+        self.assertIn("vars.GCP_REGION", rest)
+        self.assertNotIn("secrets.GCP_PROJECT_ID", rest)   # the bug this fixes
+        self.assertNotIn("secrets.GCP_REGION", rest)
+        prompt = get_system_prompt("devops")
+        self.assertIn("${{ secrets.* }}", prompt)
+        self.assertIn("${{ vars.* }}", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

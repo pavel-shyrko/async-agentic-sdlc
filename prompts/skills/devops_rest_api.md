@@ -16,8 +16,8 @@ ARCHETYPE: REST API / web service — deploy to Google Cloud Run.
 - Trigger on push to the default branch.
 - `permissions: { id-token: write, contents: read }` (required for WIF).
 - Authenticate with `google-github-actions/auth` using `workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}` and `service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}` — NO key JSON.
-- Build + deploy with `google-github-actions/deploy-cloudrun` (source or image deploy), passing the service name, `${{ secrets.GCP_PROJECT_ID }}`, and `${{ secrets.GCP_REGION }}`.
-- Do not hardcode project ids, regions, or any secret — reference repository secrets/variables.
+- Build + deploy with `google-github-actions/deploy-cloudrun` (source or image deploy), passing the service name, `${{ vars.GCP_PROJECT_ID }}`, and `${{ vars.GCP_REGION }}`. For an image deploy, build the Artifact Registry path from `${{ vars.GCP_REGION }}`, `${{ vars.GCP_PROJECT_ID }}`, and `${{ vars.GCP_REGISTRY_NAME }}`.
+- Secrets vs variables (the org is pre-provisioned this way — see docs/guides/devops_setup.md): `GCP_WIF_PROVIDER` + `GCP_SERVICE_ACCOUNT` are repository **secrets** (`${{ secrets.* }}`); `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_REGISTRY_NAME` are repository **variables** (`${{ vars.* }}`). Never inline a key, project id, or region.
 
 ## .env.example
 - List runtime variables the service reads (e.g. `PORT`, any datastore URL placeholder) with placeholder values only.
