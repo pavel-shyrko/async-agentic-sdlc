@@ -9,8 +9,12 @@ SSOT: `src/executor/runner.py` `run_executor()` — the per-ticket FSM (bootstra
 self-heal cycle → finalize). `main()` is now a thin dispatcher that resolves the run and calls it. For
 `--idea --auto-execute` (E3, ADR 0019) the bridge is **`run_batch`**, an outer loop *above* `run_executor`:
 it drives ALL planned tickets to `main` in TPM order (one merged ticket at a time, `--auto-merge` implied),
-checkpoints progress to `batch_state.json`, and stops on the first `PipelineHalt`. The control-plane
-(PO→SA→TPM) is linear with no loops; all cycling lives here. Related: [repo-module-map](repo-module-map.md),
+checkpoints progress to `batch_state.json`, and stops on the first `PipelineHalt`. After a clean batch, if
+`--scaffold-deploy` is set, **`run_devops_scaffold`** runs once as a post-batch terminal phase (E4, ADR 0020):
+it clones `main` onto `chore/devops-scaffold`, has the `devops` agent emit `DevOpsManifests`, static-lints
+them (`run_devops_gate`, 1 self-heal retry), and merges via the same `finalize_pr` forge flow — it is NOT
+part of the per-ticket FSM cycle. The control-plane (PO→SA→TPM) is linear with no loops; all cycling lives
+here. Related: [repo-module-map](repo-module-map.md),
 [agent-contracts](agent-contracts.md), [config-constant-convention](config-constant-convention.md).
 
 ## Outer cycle
@@ -23,24 +27,27 @@ a **dynamic ceiling** recomputed each iteration from persisted state, so an Arbi
 2. `skip_developer = regenerate_tests AND not prev_dev_trace AND review_report is not None`.
 3. **QA generate + signature-lint** — only when `regenerate_tests` (see below).
 4. **Developer + guardrails** — unless `skip_developer`.
-5. financial breaker → **QA test-compile gate** → `parallel(run_qa_unit_tests, run_security_scan)`.
+5. financial breaker → **QA test-compile gate** → **lint gate (step 3.6)** → `parallel(run_qa_unit_tests, run_security_scan)`.
 6. **Reviewer** → financial breaker → decision/routing → checkpoint.
 
 `regenerate_tests = ctx.needs_test_regeneration()` (`models.py`): True when the last review rejected
 tests **OR no test snapshot exists yet**. So on **cycle 1 QA generates tests BEFORE the Developer runs**
 (contract-first); `production_code_snapshot` is empty then — QA works from the contract + topology only.
 
-`all_gates_passed = qa_success ∧ sec_success ∧ code_quality_approved ∧ test_integrity_approved`.
+`all_gates_passed = qa_success ∧ sec_success ∧ lint_success ∧ code_quality_approved ∧ test_integrity_approved`.
 On `not all_gates_passed`: `error_trace ← dev_diagnostic_payload`, `qa_error_trace ← qa_diagnostic_payload`
-(both `_cap_text`-capped); if `not test_integrity_approved` → `regenerate_tests = True` for next cycle.
+(both `_cap_text`-capped); if `not test_integrity_approved` → `regenerate_tests = True` for next cycle. When
+lint stayed red after its fast-fail budget, the classified lint findings are **re-applied** to the channels
+after the Reviewer routes (the Reviewer is lint-blind), so the next budgeted cycle gets real feedback.
 
-## The five loops
-Only the **outer retry** loop consumes functional budget; the four inner loops are FREE fast-fail
+## The six loops
+Only the **outer retry** loop consumes functional budget; the five inner loops are FREE fast-fail
 reroutes that bypass the (expensive) Reviewer until they clear or hit their cap.
 - **Outer retry** — dynamic bound `MAX_FUNCTIONAL_RETRIES + contract_amendments * AMENDMENT_RETRY_BONUS`; driven by Reviewer rejection / gate failure.
 - **QA signature-lint** — bound `QA_LINT_MAX_REROUTES`; runs when `regenerate_tests`; `lint_test_suite_consistency` vs contract signatures.
 - **Developer guardrail** — bound `GUARDRAIL_MAX_REROUTES`; three checks in sequence: missing contract files → documentation-justification (`enforce_documentation_guardrail`) → compile gate (`run_build_gate`).
 - **QA test-compile gate** — bound `QA_GATE_MAX_REROUTES`; only TEST-only compile failures reroute to QA; env/network or production-referencing failures fall through to the Reviewer.
+- **Lint gate (step 3.6)** — bound `LINT_GATE_MAX_REROUTES` (env `PIPELINE_LINT_MAX_REROUTES`, default 2); `run_format_pass` autofix → `run_lint_gate` verify → `classify_lint_findings` splits findings prod→Developer / test→QA (no functional budget), with a no-progress break. `lint_success` is a HARD gate (folds into `all_gates_passed`); deliberately NOT in the deadlock guard, so a persistent lint nit rides the budgeted cycle rather than fast-failing as an env misconfig.
 - **Compile env-retry** — bound 1; an environmental/network build error retries once, else hard-halt.
 
 ## Two isolated feedback channels

@@ -11,10 +11,11 @@ paths:
 
 # Boundary safety: sanitize every subprocess argv, time-bound every blocking external call
 
-Two production incidents (ADR [0018](../../docs/decisions/0018-auto-merge-pr-loop-closure.md)) shared one
-shape — an unguarded value crossing a process/network boundary. Both are fixed *at the boundary*, as a
-shared SSOT, never by patching the one field/call that happened to break. When you add or edit code that
-spawns a subprocess or makes a blocking external call, you MUST uphold both invariants below.
+Production incidents across iterations (ADR [0018](../../docs/decisions/0018-auto-merge-pr-loop-closure.md),
+[0020](../../docs/decisions/0020-deploy-scaffolding-and-lint-gate.md)) shared one shape — an unguarded value
+crossing a process/network/library boundary. Each is fixed *at the boundary*, as a shared SSOT, never by
+patching the one field/call that happened to break. When you add or edit code that spawns a subprocess,
+makes a blocking external call, or sends a structured-LLM message, you MUST uphold the invariants below.
 
 ## 1. Every subprocess argv element goes through `sanitize_for_argv`
 
@@ -48,9 +49,28 @@ constant ([[config-constant-convention]]):
 transport ceiling a hung call hangs the whole run forever (the symptom that motivated `GEMINI_REQUEST_TIMEOUT`).
 A timeout converts the stall into a raised error that the existing retry/backoff handles, then fails fast.
 
-**Diagnostic tell:** a hang or an `embedded null byte` traceback that escapes to `main()` is **not** an FSM
-halt — no `incident_report.json` is written. See [[pipeline-fsm-loops]] and the `analyze-run` skill's
-boundary-crash/hang class.
+## 3. A system message that teaches templated-config syntax must not trip the structured-call library's parser
+
+Before any structured call, `run_structured_llm` relocates a SYSTEM message containing Jinja-style markers
+(`{{ … }}` / `{% … %}`) into a USER turn via `_relocate_jinja_system_messages` (`src/shared/utils/llm.py`,
+the SSOT) — a fast-path no-op for every marker-free role.
+
+**Why:** `instructor`'s Google-GenAI path hard-rejects Jinja markers in a *system* message
+(`extract_genai_system_message` raises `ValueError: Jinja templating is not supported in system messages
+with Google GenAI`). A config-teaching prompt legitimately contains them — the DevOps prompt's GitHub
+Actions `${{ secrets.* }}` / `${{ vars.* }}` expressions — so every structured DevOps call crashed
+deterministically (3 identical retries) before producing output. We never pass a Jinja `context`, so nothing
+is rendered; the markers are literals the model must emit verbatim. The guard inspects ONLY system-role
+content, so relocating to a user turn (neither guard-checked nor rendered) gets the literal through.
+
+**How to apply:** fix it at the `llm.py` seam — NEVER by stripping the `{{ }}` the model must produce (the
+generated YAML needs them) nor by escaping them in the prompt. A *new* config-generating role
+(Helm/Terraform/k8s/Jinja-emitting) is covered automatically; the relocation is the SSOT for "a
+templated-config prompt crosses the structured-call boundary."
+
+**Diagnostic tell:** a hang, an `embedded null byte` traceback, or a Jinja-in-system-message `ValueError`
+that escapes to `main()` is **not** an FSM halt — no `incident_report.json` is written. See
+[[pipeline-fsm-loops]] and the `analyze-run` skill's boundary-crash/hang class.
 
 Related: [[repo-module-map]] (where these seams live), [[config-constant-convention]] (the env knobs),
 [[agent-provider-model-map]] (the Gemini timeout).

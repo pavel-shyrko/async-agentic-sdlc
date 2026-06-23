@@ -14,8 +14,14 @@
 #   setup_cmd    dependency restore, run in a NETWORK-ON phase before the network-OFF build/test.
 #   build_cmd    compile/typecheck only (NEVER runs tests) — the post-Developer compile gate.
 #   test_cmd     the functional-test command (network-OFF).
-#   format_cmd   OPTIONAL deterministic cleanup run over freshly generated test files (network-OFF),
-#                primarily to strip unused imports before the compile gate. Best-effort/non-fatal.
+#   lint_cmd     OPTIONAL style/lint VERIFY command (network-OFF) — the HARD lint gate (run_lint_gate).
+#                Must be non-zero-exit on any violation. This is the SSOT the DevOps-generated CI also
+#                runs, so engine-green ⇒ CI-green. Paired with format_cmd, which auto-FIXES what this
+#                VERIFIES (so only genuinely-unfixable findings, e.g. F841, ever reach an agent). An env
+#                without lint_cmd → the lint gate is a no-op pass.
+#   format_cmd   OPTIONAL deterministic cleanup run over the workspace (network-OFF) — autofixes lint +
+#                formatting (strips unused imports, applies the formatter) before the lint gate verifies.
+#                Best-effort/non-fatal.
 #   test_compile_cmd  OPTIONAL compile-ONLY check of the QA tests (network-OFF) — builds the test
 #                code but runs no test bodies; drives the pre-Reviewer QA test-compile gate.
 
@@ -34,12 +40,17 @@ SUPPORTED_ENVIRONMENTS = {
         # ImportError/SyntaxError before the Reviewer. Drives the pre-Reviewer QA test-compile gate.
         "test_compile_cmd": "python -m pytest --collect-only -q",
         "setup_cmd": "pip install -r requirements.txt 2>/dev/null || true",
-        # format_cmd: deterministic post-QA cleanup pass — strips unused imports + autofixes lint on
-        # freshly generated tests (ruff is baked into the image). --exit-zero keeps a residual
-        # unfixable finding from logging a spurious non-fatal warning; the pass is cleanup, not a gate.
-        # --no-cache: one-shot pass, so skip the cache — otherwise ruff writes a `.ruff_cache/` into the
-        # repo that `git add -A` would commit.
-        "format_cmd": "ruff check --fix --exit-zero --quiet --no-cache .",
+        # lint_cmd: the HARD lint gate (run_lint_gate). `ruff check` catches lint rules format_cmd's
+        # autofix could not apply (e.g. F841 unused-local — an *unsafe* fix ruff won't auto-apply), and
+        # `ruff format --check` catches formatter drift. --no-cache on the check so ruff never leaves a
+        # `.ruff_cache/` in the tree for a later `git add -A` to commit. SSOT shared with the generated CI.
+        "lint_cmd": "ruff check --no-cache . && ruff format --check .",
+        # format_cmd: deterministic cleanup pass — strips unused imports, autofixes safe lint, AND applies
+        # the formatter (ruff format) so the lint gate's `ruff format --check` passes without rerouting the
+        # (expensive) Developer for pure formatting. --exit-zero keeps a residual unfixable finding from
+        # logging a spurious non-fatal warning; the pass is cleanup, not a gate. --no-cache: one-shot pass,
+        # so skip the cache — otherwise ruff writes a `.ruff_cache/` into the repo that `git add -A` commits.
+        "format_cmd": "ruff check --fix --exit-zero --quiet --no-cache . ; ruff format --quiet .",
         "sandbox_env": {"HOME": "/tmp", "XDG_CACHE_HOME": "/tmp/.cache", "PYTHONDONTWRITEBYTECODE": "1"},  # nosec B108 — in-container tmpfs paths
         # Persistent download cache (survives the separate restore/build/test containers + across runs);
         # mounted RW only on the network-ON restore phase. Overrides the tmpfs pip cache.
@@ -57,6 +68,11 @@ SUPPORTED_ENVIRONMENTS = {
         # pre-Reviewer QA test-compile gate.
         "test_compile_cmd": "go test -run=^$ ./...",
         "setup_cmd": "go mod download",
+        # lint_cmd: HARD lint gate. `go vet` catches suspicious constructs; `test -z "$(gofmt -l .)"`
+        # fails iff gofmt would reformat any file (gofmt -l lists unformatted files — a BARE PATH per
+        # line, no :line:col, which classify_lint_findings handles). format_cmd (goimports/gofmt -w)
+        # auto-applies the formatting this verifies.
+        "lint_cmd": "go vet ./... && test -z \"$(gofmt -l .)\"",
         # goimports (NOT gofmt) removes unused imports — Go treats those as a HARD compile error, the
         # exact failure that bounced QA's tests through an extra Reviewer cycle. Baked into the image
         # (docker/go.Dockerfile); falls back to gofmt (always present) if the build couldn't fetch
@@ -73,6 +89,11 @@ SUPPORTED_ENVIRONMENTS = {
         "build_cmd": "npm run build --if-present",
         "test_cmd": "npm test",
         "setup_cmd": "npm ci || npm install",
+        # lint_cmd: HARD lint gate via the project's own eslint. run_lint_gate FIRST checks (host-side)
+        # that an eslint config is present in the clone — absent → the gate is a no-op pass (a project
+        # that never adopted eslint must not hard-fail). With a config, a real lint error is a non-zero
+        # exit. format_cmd (eslint --fix) auto-applies the fixable subset first.
+        "lint_cmd": "npx --no-install eslint .",
         # Best-effort: only fixes if a project-local eslint is installed (--no-install never fetches).
         # Non-fatal, so a project without eslint just skips the cleanup.
         "format_cmd": "npx --no-install eslint --fix . || true",
@@ -91,6 +112,10 @@ SUPPORTED_ENVIRONMENTS = {
         # proxy/AV drops (the NU1301 deadlock); 3 attempts absorb a transient drop. Single line so it
         # passes the adapter's no-newline command validation.
         "setup_cmd": "for i in 1 2 3; do dotnet restore --disable-parallel && exit 0; sleep 5; done; exit 1",
+        # lint_cmd: HARD lint gate. `dotnet format --verify-no-changes` exits non-zero iff the formatter
+        # WOULD change anything (style/whitespace/unused usings). --no-restore keeps it network-OFF (the
+        # restore phase ran first). format_cmd (dotnet format) auto-applies the same fixes beforehand.
+        "lint_cmd": "dotnet format --verify-no-changes --no-restore",
         # Best-effort: --no-restore keeps it network-OFF; removes unused usings where the SDK supports it.
         "format_cmd": "dotnet format --no-restore",
         "sandbox_env": {"HOME": "/tmp", "DOTNET_CLI_HOME": "/tmp", "NUGET_PACKAGES": "/tmp/nuget", "XDG_DATA_HOME": "/tmp/.local"},  # nosec B108 — in-container tmpfs paths

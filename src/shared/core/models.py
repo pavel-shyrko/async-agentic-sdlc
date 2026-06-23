@@ -266,6 +266,29 @@ class ArbiterVerdict(BaseModel):
         "which rule/precedence/approach the contract must change. MUST NOT propose changing "
         "environment_id (the platform is fixed). Empty for any other route.")
 
+class DevOpsManifests(BaseModel):
+    """E4 deploy-scaffolding output: the CI/CD manifests a DevOps run writes into the finished app.
+
+    Generated once, after the batch has merged every ticket to the base branch (see
+    ``run_devops_scaffold``). ``archetype`` is a closed enum so an invalid class fails at
+    deserialization; ``dockerfile_content`` is null for a ``cli_tool`` (no runtime container — the
+    workflow builds/publishes a binary instead of deploying to Cloud Run)."""
+    archetype: Literal["rest_api", "crud_app", "cli_tool"] = Field(
+        description="Deploy archetype of the finished app — determines whether a runtime Dockerfile + "
+        "Cloud Run deploy is generated (web service) or a build/release matrix (CLI tool / library).")
+    dockerfile_content: str | None = Field(
+        default=None,
+        description="Full Dockerfile content for a web service (multi-stage, non-root). MUST be null for "
+        "a cli_tool — a CLI/library has no runtime container.")
+    workflow_content: str = Field(
+        description="Full content of the .github/workflows/deploy.yml GitHub Actions workflow.")
+    env_scaffold_content: str | None = Field(
+        default=None,
+        description="Optional .env.example / config scaffold listing required runtime env vars (no secrets).")
+    engineering_reasoning: str = Field(
+        description="Why this deploy topology (and archetype) was chosen, given the blueprint + repo.")
+
+
 class GlobalPipelineContext(BaseModel):
     pr_description: str              # CLEAN ticket description — SSOT for the commit subject / PR body.
     # TechLead routing brief: pr_description prefixed with the [CURRENT TASK] header + appended
@@ -291,6 +314,8 @@ class GlobalPipelineContext(BaseModel):
     contract_amendments: int = 0
     current_attempt: int = 1
     repository_map: str = ""
+    # E4 deploy-scaffolding output (set only on a --scaffold-deploy run); persisted for checkpoint parity.
+    devops_manifests: DevOpsManifests | None = None
     telemetry: PipelineTelemetry = Field(default_factory=PipelineTelemetry)
 
     def needs_test_regeneration(self) -> bool:

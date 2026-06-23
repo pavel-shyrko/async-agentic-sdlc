@@ -20,6 +20,7 @@ from src.shared.core.models import (
     ReviewReport,
     WorkspacePaths,
     BatchState,
+    DevOpsManifests,
 )
 
 
@@ -496,6 +497,37 @@ class BatchStateCheckpointTests(unittest.TestCase):
         self.assertEqual(batch.tickets, [])
         self.assertEqual(batch.completed, [])
         self.assertIsNone(batch.failed)
+
+
+class DevOpsManifestsModelTests(unittest.TestCase):
+    """E4 DevOps output: round-trips its fields; the archetype is a closed enum; Dockerfile is optional."""
+
+    def test_round_trip_web_service(self) -> None:
+        m = DevOpsManifests(
+            archetype="rest_api",
+            dockerfile_content="FROM python:3.12-slim\nCMD [\"python\"]\n",
+            workflow_content="name: deploy\non: push\n",
+            env_scaffold_content="PORT=8080\n",
+            engineering_reasoning="web service → Cloud Run",
+        )
+        loaded = DevOpsManifests.model_validate_json(m.model_dump_json())
+        self.assertEqual(loaded.archetype, "rest_api")
+        self.assertEqual(loaded.dockerfile_content, m.dockerfile_content)
+        self.assertEqual(loaded.workflow_content, m.workflow_content)
+
+    def test_cli_tool_allows_null_dockerfile(self) -> None:
+        m = DevOpsManifests(archetype="cli_tool", workflow_content="name: build\non: push\n",
+                            engineering_reasoning="CLI → build matrix")
+        self.assertIsNone(m.dockerfile_content)
+        self.assertIsNone(m.env_scaffold_content)
+
+    def test_invalid_archetype_is_rejected(self) -> None:
+        with self.assertRaises(ValidationError):
+            DevOpsManifests(archetype="lambda", workflow_content="x", engineering_reasoning="r")
+
+    def test_workflow_and_reasoning_are_required(self) -> None:
+        with self.assertRaises(ValidationError):
+            DevOpsManifests(archetype="rest_api")
 
 
 if __name__ == "__main__":

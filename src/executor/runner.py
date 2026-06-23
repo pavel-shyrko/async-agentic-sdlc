@@ -16,7 +16,7 @@ from src.shared.core.observability import log_finops_summary as _render_finops_s
 from src.shared.core.config import check_environment, PIPELINE_BUDGET_TOKENS, PIPELINE_BUDGET_USD
 from src.shared.core.models import GlobalPipelineContext, WorkspacePaths, RUNS_BASE, BatchState
 from src.shared.core.runs import Projects
-from src.shared.core.environments import is_test_file, get_qa_profile
+from src.shared.core.environments import is_test_file, get_qa_profile, SUPPORTED_ENVIRONMENTS
 from src.shared.core.prompts import generate_repo_map
 from src.shared.utils.git_helpers import get_git_root, get_pipeline_snapshot_files
 from src.shared.utils.redaction import redact
@@ -27,7 +27,8 @@ from src.executor.agents.developer import run_developer_node
 from src.executor.agents.reviewer import run_reviewer_node
 from src.executor.agents.arbiter import run_arbiter_node
 from src.executor.agents.techwriter import run_techwriter_node
-from src.executor.nodes.gates import run_qa_unit_tests, run_security_scan, run_build_gate, run_test_compile_gate, build_failure_is_test_only, build_failure_is_environmental
+from src.executor.agents.devops import run_devops_node
+from src.executor.nodes.gates import run_qa_unit_tests, run_security_scan, run_build_gate, run_test_compile_gate, build_failure_is_test_only, build_failure_is_environmental, run_devops_gate, run_lint_gate, classify_lint_findings, run_format_pass
 
 # ==========================================
 # CONTROL-FLOW SIGNALS
@@ -62,6 +63,7 @@ class RunConfig:
     resume_number: str | None = None   # the optional NNN for --resume <project> <N>
     auto_execute: bool = False  # --idea --auto-execute: after planning, run the Executor for the first ticket
     auto_merge: bool = False  # --auto-merge: on success, open a PR into base_branch and squash-merge it (E2; implies push)
+    scaffold_deploy: bool = False  # --scaffold-deploy: after a batch merges all tickets, generate + merge deploy manifests (E4)
 
 
 def parse_args() -> RunConfig:
@@ -89,11 +91,22 @@ def parse_args() -> RunConfig:
     parser.add_argument("--auto-merge", action="store_true",
                         help="On success, open a PR from feat/ticket-<id> into the base branch and squash-merge "
                              "it (E2). Implies --push; requires the gh CLI + GITHUB_TOKEN.")
+    parser.add_argument("--scaffold-deploy", action="store_true",
+                        help="After the batch merges ALL tickets, generate + merge a Dockerfile + GitHub "
+                             "Actions deploy workflow (GCP Cloud Run via WIF) for the finished app (E4). "
+                             "Consumed only by the --auto-execute batch (or its --resume); requires the gh "
+                             "CLI + GITHUB_TOKEN.")
 
     args = parser.parse_args()
 
     # --auto-merge needs the branch on origin before a PR can reference it, so it implies --push.
     push = args.push or args.auto_merge
+
+    # --scaffold-deploy is consumed ONLY by the post-batch terminal phase (run_batch). On any non-batch
+    # invocation it is inert — warn rather than silently ignore it.
+    if args.scaffold_deploy and not (args.auto_execute or args.resume):
+        log.warning("⚠️  --scaffold-deploy is consumed only by the --auto-execute batch (or its --resume); "
+                    "it has no effect on this invocation.")
 
     # Nexus Control Plane: an idea starts a new project (planning run). --repo (optional) is captured
     # into the project so later `--run` ticket executions reuse it. With --auto-execute the engine drives
@@ -105,7 +118,7 @@ def parse_args() -> RunConfig:
         return RunConfig(
             description=None, base_branch=args.base_branch, resume=None, reset_attempts=False,
             idea=args.idea, repo=args.repo, push=(push or auto_merge), auto_execute=args.auto_execute,
-            auto_merge=auto_merge,
+            auto_merge=auto_merge, scaffold_deploy=args.scaffold_deploy,
         )
 
     # Execute a ticket under an existing project: --run <project> -f <ticket>.
@@ -131,6 +144,7 @@ def parse_args() -> RunConfig:
             description=None, base_branch=args.base_branch, resume=None,
             reset_attempts=args.reset_attempts, push=push, auto_merge=args.auto_merge,
             resume_project=first, resume_number=(args.resume[1] if len(args.resume) > 1 else None),
+            scaffold_deploy=args.scaffold_deploy,
         )
 
     # Fresh DIRECT run: a target repo and ticket are mandatory for git-anchored bootstrapping.
@@ -197,12 +211,13 @@ async def _run_checked(cmd: list[str], action: str, timeout: float | None = None
         sys.exit(1)
 
 
-async def bootstrap_session(cfg: RunConfig, run_dir: Path) -> WorkspacePaths:
+async def bootstrap_session(cfg: RunConfig, run_dir: Path, branch: str | None = None) -> WorkspacePaths:
     """Isolates a run: shallow-clone the target repo, cut the feature branch, map the workspace.
 
     The caller owns ``run_dir`` (and has already re-anchored logging to it), so the run id is
-    bound once, up front — no late binding. Produces ``run_dir/repo/`` (shallow clone on
-    ``feat/ticket-<ticket>``) and returns the mapped workspace paths.
+    bound once, up front — no late binding. Produces ``run_dir/repo/`` (shallow clone on ``branch``,
+    default ``feat/ticket-<ticket>``) and returns the mapped workspace paths. The E4 deploy-scaffolding
+    phase passes ``branch="chore/devops-scaffold"`` to land on a chore branch instead.
     """
     repo_dir = run_dir / "repo"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -212,7 +227,7 @@ async def bootstrap_session(cfg: RunConfig, run_dir: Path) -> WorkspacePaths:
     # Network op: bounded by GIT_NETWORK_TIMEOUT so a credential prompt can never hang the run.
     await _run_checked(["git", "clone", "--depth", "1", cfg.repo, str(repo_dir)], "git clone", timeout=GIT_NETWORK_TIMEOUT)
 
-    branch = f"feat/ticket-{cfg.ticket}"
+    branch = branch or f"feat/ticket-{cfg.ticket}"
     await _run_checked(["git", "-C", str(repo_dir), "checkout", "-b", branch], "git checkout -b")
 
     # Force a LOCAL ref for the base branch via an explicit refspec (<base>:<base>) so the snapshot diff
@@ -304,16 +319,18 @@ def _pr_body(ctx: GlobalPipelineContext) -> str:
             f"FinOps: {_finops_subtotals(ctx)}.")
 
 
-async def finalize_pr(ctx: GlobalPipelineContext, cfg: RunConfig) -> None:
+async def finalize_pr(ctx: GlobalPipelineContext, cfg: RunConfig, head_branch: str | None = None) -> None:
     """E2: open a PR for the just-pushed feature branch and squash-merge it into ``cfg.base_branch``.
 
     Runs only on the success path, AFTER ``finalize_transaction`` has committed and pushed the branch
     (``--auto-merge`` implies ``--push``). Idempotent on ``--resume`` (reuses an open PR / skips an
     already-merged one). Approval is best-effort; a genuine merge failure exits non-zero so the operator
     sees the loop didn't close. Provider-agnostic via ``src.shared.utils.forge`` (GitHub-first via gh).
+    ``head_branch`` defaults to ``feat/ticket-<ticket>``; the E4 deploy-scaffolding phase passes
+    ``chore/devops-scaffold`` so it lands the same way through the forge seam (never a raw push to main).
     """
     from src.shared.utils.forge import open_pr, approve_pr, merge_pr
-    head_branch = f"feat/ticket-{ctx.ticket}"
+    head_branch = head_branch or f"feat/ticket-{ctx.ticket}"
     repo_dir = ctx.workspace_paths.repo_dir
     pr = await open_pr(repo_dir, head_branch, cfg.base_branch, _commit_subject(ctx), _pr_body(ctx))
     if pr is None:
@@ -416,6 +433,18 @@ GUARDRAIL_TOP_LINES = 15        # top-of-file window scanned for a justification
 GUARDRAIL_MAX_REROUTES = 2      # local guardrail_retries cap: free reroutes before a Hard Halt
 QA_GATE_MAX_REROUTES = 2        # free QA regenerations on a test-compile failure (Reviewer bypassed)
 QA_LINT_MAX_REROUTES = 2        # free QA regenerations on a contract-signature lint hit (Reviewer bypassed)
+# Free fast-fail reroutes on a STYLE/LINT-gate failure (run_lint_gate) before lint folds into the budgeted
+# cycle. prod findings → Developer, test findings → QA; Reviewer bypassed, no functional-retry consumed.
+LINT_GATE_MAX_REROUTES = int(os.environ.get("PIPELINE_LINT_MAX_REROUTES", "2"))
+DEVOPS_MAX_RETRIES = int(os.environ.get("DEVOPS_MAX_RETRIES", "1"))  # E4: self-heal retries on a deploy-manifest static-lint failure before Hard Halt
+
+# Framing wrapper prepended to lint-gate findings when seeding the Developer/QA channels — those prompts
+# are tuned for compiler tracebacks/pytest failures, so raw ruff/gofmt/eslint/dotnet-format output is
+# labelled as a style/lint task with an explicit "fix ONLY these, don't change behaviour" instruction.
+_LINT_FEEDBACK_PREAMBLE = (
+    "[LINT GATE FAILURE] The project's style/lint checker rejected the code. Fix ONLY these specific "
+    "style/lint violations — do not change behaviour, signatures, or logic. The exact findings:\n"
+)
 
 # ==========================================
 # FUNCTIONAL RETRY BUDGET + ARBITER (contract self-healing)
@@ -798,6 +827,132 @@ async def run_batch(projects: Projects, project, cfg: RunConfig, nexus_run_dir: 
         batch.failed = None
         batch.save_checkpoint(batch_path)
     log.info(f"🏁 Batch complete: all {len(tickets)} ticket(s) merged into {cfg.base_branch}.")
+
+    # E4 — once every ticket has merged, optionally scaffold deploy config for the finished app. Reached
+    # only on a fully-merged batch: a mid-batch halt sys.exit(1)s above, so an incomplete app is never
+    # scaffolded. Covers both --idea --auto-execute and the bare --resume re-entry (both call run_batch).
+    if cfg.scaffold_deploy:
+        await run_devops_scaffold(projects, project, cfg, nexus_run_dir)
+
+
+def _repo_has_source(repo_dir: Path) -> bool:
+    """True if the clone holds ≥1 non-doc/non-metadata file — i.e. there is an application to deploy.
+
+    The empty-state guard for E4: a degenerate batch (all tickets skipped) or a misused flag would leave
+    nothing but README/LICENSE/git metadata, and scaffolding a deploy for nothing is wrong."""
+    doc_or_meta = {
+        "readme.md", "readme", "readme.rst", "readme.txt", "license", "license.md", "license.txt",
+        ".gitignore", ".gitattributes", ".gitmodules",
+    }
+    for root, dirs, files in os.walk(repo_dir):
+        if ".git" in dirs:
+            dirs.remove(".git")  # never descend into git internals
+        for name in files:
+            if name.lower() not in doc_or_meta:
+                return True
+    return False
+
+
+def _nexus_environment_ids(nexus_run_dir: Path) -> str:
+    """Best-effort comma list of the unique environment_id(s) the plan's tickets ran on (from the Nexus
+    checkpoint). Feeds the DevOps agent the runtime(s) of the finished app; '' if unreadable."""
+    try:
+        data = json.loads((nexus_run_dir / "reports" / "checkpoint.json").read_text(encoding="utf-8"))
+        ids: list[str] = []
+        for task in data.get("tasks", []):
+            env = (task or {}).get("environment_id")
+            if env and env not in ids:
+                ids.append(env)
+        return ", ".join(ids)
+    except Exception:
+        return ""
+
+
+def _env_ci_commands(environment_ids: str) -> str:
+    """The CANONICAL build/test/lint commands for the finished app's environment(s), formatted for the
+    DevOps prompt. This is the SSOT coupling: the generated CI MUST run exactly these (the same commands
+    the engine's own gates ran), so engine-green ⇒ CI-green. Unknown/blank ids yield ''."""
+    blocks: list[str] = []
+    for env_id in [e.strip() for e in environment_ids.split(",") if e.strip()]:
+        spec = SUPPORTED_ENVIRONMENTS.get(env_id)
+        if not spec:
+            continue
+        lines = [f"- environment_id: {env_id}"]
+        for key in ("setup_cmd", "build_cmd", "test_cmd", "lint_cmd"):
+            if spec.get(key):
+                lines.append(f"    {key}: {spec[key]}")
+        blocks.append("\n".join(lines))
+    return "\n".join(blocks)
+
+
+async def run_devops_scaffold(projects: Projects, project, cfg: RunConfig, nexus_run_dir: Path) -> None:
+    """E4: after the batch has merged every ticket, scaffold deploy config for the finished application.
+
+    Clones the completed base branch FRESH, has the DevOps agent generate a Dockerfile + GitHub Actions
+    deploy workflow (Cloud Run via WIF for a web service; a build/release matrix for a CLI tool/library),
+    static-lints them (exactly ``DEVOPS_MAX_RETRIES`` self-heal retries), and lands them through the SAME
+    E2 forge flow tickets use — open → approve → squash-merge of ``chore/devops-scaffold`` — never a raw
+    push to ``main``. The merged application code is untouched on any failure; a persistently invalid
+    manifest writes an incident and exits 1 (the deploy config simply didn't land)."""
+    devops_branch = "chore/devops-scaffold"
+    cfg.repo = cfg.repo or project.repo
+    cfg.base_branch = project.base_branch
+    run_dir = projects.allocate(project.slug, "devops", "scaffold")
+    reconfigure_logging(run_dir / "logs")
+    log.info(f"🚀 [E4] Deploy-scaffolding for project '{project.slug}' → {run_dir.name}")
+
+    cfg.ticket = "devops"
+    ws = await bootstrap_session(cfg, run_dir, branch=devops_branch)
+
+    # Empty-state guard — nothing to deploy if the cloned base branch carries no source.
+    if not _repo_has_source(ws.repo_dir):
+        log.warning("⏭️  --scaffold-deploy: cloned main has no source — skipping deploy scaffolding.")
+        return
+
+    ctx = GlobalPipelineContext(
+        pr_description="scaffold deployment (Dockerfile + GitHub Actions deploy workflow)",
+        ticket="devops", base_branch=cfg.base_branch, workspace_paths=ws,
+    )
+    blueprint = nexus_run_dir / "artifacts" / "blueprint.md"
+    blueprint_text = blueprint.read_text(encoding="utf-8") if blueprint.exists() else "(no blueprint available)"
+    repo_map = generate_repo_map(ws.repo_dir)
+    environment_ids = _nexus_environment_ids(nexus_run_dir)
+    ci_commands = _env_ci_commands(environment_ids)  # SSOT: CI must run these exact commands
+
+    # Self-heal loop: exactly DEVOPS_MAX_RETRIES retries (default 1). Generate → static-lint; on a gate
+    # failure feed the errors back and regenerate; only a persistently invalid manifest Hard-Halts.
+    gate_feedback = ""
+    problems: list[str] = []
+    for attempt in range(1, DEVOPS_MAX_RETRIES + 2):
+        await run_devops_node(
+            ctx, blueprint_text=blueprint_text, repo_map=repo_map,
+            environment_ids=environment_ids, ci_commands=ci_commands, gate_feedback=gate_feedback,
+        )
+        problems = run_devops_gate(ws.repo_dir)
+        if not problems:
+            break
+        gate_feedback = "\n".join(f"- {p}" for p in problems)
+        log.warning(f"🔁 [E4] Deploy-manifest static lint failed (attempt {attempt}): {gate_feedback}")
+    if problems:
+        _abort_with_incident(
+            ctx,
+            "\n🚨 [E4] Deploy scaffolding failed static validation after retry (the application code is "
+            f"already merged to {cfg.base_branch}; only the deploy config did not land):\n{gate_feedback}",
+        )
+
+    # Land the manifests through the SAME E2 forge flow (no raw push). Skip cleanly when nothing is staged —
+    # an idempotent re-run after a prior scaffold already merged identical manifests.
+    repo_root = await get_git_root(str(ws.repo_dir))
+    if not await _has_staged_changes(repo_root):
+        log.info("🟢 [E4] No manifest changes vs the base branch — deploy config already present; nothing to merge.")
+        return
+    await finalize_transaction(ctx, push=True)
+    try:
+        await finalize_pr(ctx, cfg, head_branch=devops_branch)
+    finally:
+        write_finops_report(ctx)
+        log_finops_summary(ctx)
+    log.info(f"🏁 [E4] Deploy scaffolding merged into {cfg.base_branch}.")
 
 
 def prepare_ticket_run(projects: Projects, project, cfg: RunConfig, ticket_id: str) -> Path | None:
@@ -1210,6 +1365,70 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
             enforce_financial_circuit_breaker(ctx)
         ctx.qa_error_trace = ""  # consumed by the rebound loop; don't leak into the Reviewer's channels
 
+        # 3.6 Lint/style gate (HARD): the engine's own quality bar so a STRICT CI stays green — `lint_cmd`
+        #     is the SSOT the DevOps-generated workflow also runs (engine-green ⇒ CI-green). Cheap
+        #     deterministic autofix (format_cmd) FIRST, then VERIFY (lint_cmd); a residual finding the
+        #     autofix could not apply (e.g. F841 unused-local) fast-fail-reroutes to the offending channel
+        #     — production → Developer, test → QA — with NO functional-retry consumed. `lint_success` folds
+        #     into all_gates_passed below, so anything still red after LINT_GATE_MAX_REROUTES rides the
+        #     budgeted cycle (the classified findings are re-applied to the channels AFTER the Reviewer's
+        #     routing). Deliberately NOT in the deadlock guard: a lint nit is always agent-fixable in
+        #     principle, never an environment misconfiguration.
+        lint_success = True
+        lint_prod_feedback = ""
+        lint_test_feedback = ""
+        lint_prod_findings: list[str] = []
+        lint_test_findings: list[str] = []
+        prev_lint_findings: tuple | None = None
+        for lint_retries in range(LINT_GATE_MAX_REROUTES + 1):
+            await run_format_pass(ctx.contract.environment_id, str(ctx.workspace_paths.repo_dir))
+            lint_ok, lint_lines = await run_lint_gate(
+                ctx.contract.environment_id, str(ctx.workspace_paths.repo_dir)
+            )
+            if lint_ok:
+                break
+            lint_prod_findings, lint_test_findings = classify_lint_findings(
+                ctx.contract.environment_id, lint_lines
+            )
+            findings_key = (tuple(lint_prod_findings), tuple(lint_test_findings))
+            # Stop the fast-fail loop at the cap, on no-progress (agent rewrote but the SAME findings remain
+            # — e.g. a format↔lint flip-flop), or when nothing classified to a channel — and hand the
+            # residual to the budgeted cycle below.
+            if (lint_retries == LINT_GATE_MAX_REROUTES or findings_key == prev_lint_findings
+                    or not (lint_prod_findings or lint_test_findings)):
+                lint_success = False
+                break
+            prev_lint_findings = findings_key
+            log.warning(
+                f"🔶 Lint gate failed — fast-fail reroute {lint_retries + 1}/{LINT_GATE_MAX_REROUTES} "
+                f"(prod={len(lint_prod_findings)}, test={len(lint_test_findings)}; no budget spent), Reviewer bypassed."
+            )
+            if lint_prod_findings:
+                ctx.error_trace = _cap_text(_LINT_FEEDBACK_PREAMBLE + "\n".join(lint_prod_findings))
+                await run_developer_node(ctx, ctx.error_trace, None)
+                build_production_snapshot(ctx)
+                ctx.repository_map = generate_repo_map(ctx.workspace_paths.repo_dir)
+            if lint_test_findings:
+                ctx.qa_error_trace = _cap_text(_LINT_FEEDBACK_PREAMBLE + "\n".join(lint_test_findings))
+                await run_qa_agent_node(ctx, ctx.qa_error_trace)  # its format pass re-runs over the new tests
+            enforce_financial_circuit_breaker(ctx)
+        # Keep the Reviewer's snapshot consistent with the autofixed/rerouted working tree, then clear the
+        # live channels so lint feedback never leaks into the Reviewer's own diagnostic routing.
+        build_production_snapshot(ctx)
+        ctx.repository_map = generate_repo_map(ctx.workspace_paths.repo_dir)
+        ctx.error_trace = ""
+        ctx.qa_error_trace = ""
+        if not lint_success:
+            # Stash the residual findings; re-applied to the channels AFTER the Reviewer routes (the
+            # Reviewer is lint-blind and may have emptied the channels by approving).
+            lint_prod_feedback = (
+                _cap_text(_LINT_FEEDBACK_PREAMBLE + "\n".join(lint_prod_findings)) if lint_prod_findings else ""
+            )
+            lint_test_feedback = (
+                _cap_text(_LINT_FEEDBACK_PREAMBLE + "\n".join(lint_test_findings)) if lint_test_findings else ""
+            )
+            log.warning("🔶 Lint gate still failing after the fast-fail budget — folding into the budgeted cycle.")
+
         # 4. Automated Validation Phase (Runtime gates).
         #    DUMB PIPE: the orchestrator never inspects the test exit code to alter FSM state — no test
         #    purging, no cycle skipping. All runner logs (stdout+stderr) flow to the Reviewer, the sole
@@ -1246,6 +1465,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
         all_gates_passed = (
             qa_success
             and sec_success
+            and lint_success
             and ctx.review_report.code_quality_approved
             and ctx.review_report.test_integrity_approved
         )
@@ -1324,6 +1544,16 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
             ctx.error_trace = _cap_text(ctx.review_report.dev_diagnostic_payload)
             ctx.qa_error_trace = _cap_text(ctx.review_report.qa_diagnostic_payload)
             log.warning(f"🔶 Cycle {attempt} failed. Routing reviewer diagnostics to isolated channels.")
+
+            # Lint stayed red after its fast-fail budget: those classified findings are the authoritative
+            # feedback for the next budgeted cycle. The Reviewer is lint-blind and may have approved both
+            # sides (emptying the payloads above), so re-apply the lint feedback over whatever it routed.
+            if not lint_success:
+                if lint_prod_feedback:
+                    ctx.error_trace = lint_prod_feedback
+                if lint_test_feedback:
+                    ctx.qa_error_trace = lint_test_feedback
+                    regenerate_tests = True   # ensure QA actually re-runs next cycle to fix the test lint
 
         # Advance the persisted attempt counter so a resumed run cannot exceed the
         # original retry budget. The counter is bumped before saving so the next

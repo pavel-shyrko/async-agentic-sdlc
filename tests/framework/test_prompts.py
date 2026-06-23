@@ -418,5 +418,56 @@ class PerLanguageCoreFrontmatterTests(unittest.TestCase):
             self.assertIn("LANGUAGE TARGET", body, skill_id)
 
 
+class DevOpsPromptTests(unittest.TestCase):
+    """E4: the devops system prompt carries the archetype-branching + WIF hard rules, and the three
+    archetype skills are well-formed and target the devops node."""
+
+    def setUp(self) -> None:
+        get_system_prompt.cache_clear()
+        get_skill.cache_clear()
+
+    def test_system_prompt_has_archetype_branching_and_wif_rules(self) -> None:
+        raw = get_system_prompt("devops")
+        self.assertIn("Workload Identity Federation", raw)
+        self.assertIn("Cloud Run", raw)
+        # CLI/library must NOT get a Dockerfile / Cloud Run deploy (the audit's #3 — in the prompt itself).
+        self.assertIn("NO Dockerfile and NO Cloud Run deploy step", raw)
+
+    def test_archetype_skills_target_devops_node(self) -> None:
+        from src.shared.core.prompts import _parse_frontmatter, _SKILLS_DIR
+        expected = {"devops_rest_api": "api", "devops_crud_app": "crud", "devops_cli_tool": "cli"}
+        for skill_id, trigger in expected.items():
+            meta, body = _parse_frontmatter((_SKILLS_DIR / f"{skill_id}.md").read_text(encoding="utf-8"))
+            self.assertEqual(meta.get("type"), "domain", skill_id)
+            self.assertEqual(meta.get("nodes"), ["devops"], skill_id)
+            self.assertEqual(meta.get("triggers"), [trigger], skill_id)
+            self.assertTrue(body.strip(), skill_id)
+
+    def test_secrets_vs_variables_split_matches_devops_setup_guide(self) -> None:
+        # Contract (docs/guides/devops_setup.md): WIF_PROVIDER/SERVICE_ACCOUNT are SECRETS;
+        # PROJECT_ID/REGION/REGISTRY_NAME are VARIABLES. The generated workflow must reference them
+        # accordingly or the deploy can't resolve. Pin both the rest_api skill and the system prompt.
+        rest = get_skill("devops_rest_api")
+        self.assertIn("secrets.GCP_WIF_PROVIDER", rest)
+        self.assertIn("vars.GCP_PROJECT_ID", rest)
+        self.assertIn("vars.GCP_REGION", rest)
+        self.assertNotIn("secrets.GCP_PROJECT_ID", rest)   # the bug this fixes
+        self.assertNotIn("secrets.GCP_REGION", rest)
+        prompt = get_system_prompt("devops")
+        self.assertIn("${{ secrets.* }}", prompt)
+        self.assertIn("${{ vars.* }}", prompt)
+
+    def test_devops_prompt_mandates_canonical_commands_no_invented_linters(self) -> None:
+        # The lint-gate epic's CI SSOT: the generated CI must run the project's canonical commands and
+        # must NOT invent stricter gates (the cause of the red `ruff check` CI). Pin the rule in the
+        # system prompt and the CLI skill (the archetype whose workflow runs test/lint steps).
+        prompt = get_system_prompt("devops")
+        self.assertIn("CANONICAL", prompt)
+        self.assertIn("do not invent it", prompt)
+        cli = get_skill("devops_cli_tool")
+        self.assertIn("canonical project commands", cli)
+        self.assertIn("lint_cmd", cli)
+
+
 if __name__ == "__main__":
     unittest.main()

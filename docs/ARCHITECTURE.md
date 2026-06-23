@@ -31,10 +31,10 @@ flowchart TB
     human -->|"--idea [--auto-execute] / --run / --resume (CLI)"| engine
     engine -->|"epic, blueprint, tickets;<br/>logs, FinOps, atomic commit"| human
 
-    engine -->|"prompts → structured JSON<br/>(PO/SA/TPM, TechLead, QA,<br/>Reviewer, TechWriter, Arbiter)"| gemini
+    engine -->|"prompts → structured JSON<br/>(PO/SA/TPM, TechLead, QA, Reviewer,<br/>TechWriter, Arbiter, DevOps)"| gemini
     engine -->|"prompt + tools → file edits<br/>(Developer only)"| claude
     engine -->|"run code in least-priv container"| docker
-    engine -->|"shallow clone, branch, atomic commit,<br/>optional push, PR open/approve/merge"| github
+    engine -->|"shallow clone, branch, atomic commit,<br/>optional push, PR open/approve/merge,<br/>deploy-scaffold PR (--scaffold-deploy)"| github
 
     classDef sys fill:#1168bd,stroke:#0b4884,color:#fff;
     classDef ext fill:#999,stroke:#6b6b6b,color:#fff;
@@ -50,7 +50,7 @@ flowchart TB
   to `main` in order, in the same invocation — E3), `--run <project> -f <ticket>` executes one ticket,
   `--resume` recovers.
 - **Google Gemini API** — every *structured* agent (forced Pydantic output via `instructor`):
-  PO/SA/TPM (planning) and TechLead/QA/Reviewer/TechWriter/Arbiter (execution).
+  PO/SA/TPM (planning) and TechLead/QA/Reviewer/TechWriter/Arbiter/DevOps (execution + deploy-scaffolding).
 - **Claude Code CLI** — the *Developer* agent only; agentic, edits files directly in the run's clone.
 - **Docker Engine** — runs the build, unit-test, and SAST gates in a hardened, least-privilege container
   (`--network none` for test/SAST).
@@ -101,7 +101,7 @@ flowchart TB
     shared -->|"agentic Developer session"| claude
     executor -->|"run_in_image (gates)"| docker
     docker --> images
-    executor -->|"clone / branch / commit / push / PR+merge (--auto-merge)"| github
+    executor -->|"clone / branch / commit / push / PR+merge (--auto-merge);<br/>deploy-scaffold PR (--scaffold-deploy)"| github
 
     classDef plane fill:#1168bd,stroke:#0b4884,color:#fff;
     classDef store fill:#2d6a4f,stroke:#1b4332,color:#fff;
@@ -118,8 +118,10 @@ flowchart TB
 - **Executor worker plane** (`src/executor/`) — `run_executor` in `runner.py` is the per-ticket FSM driver
   (`main()` calls it for `--run`/`--resume`, and dispatches it for the first planned ticket on
   `--idea --auto-execute`, ADR 0017 — the bridge stays in the entry layer, never a Nexus→Executor import);
-  `agents/` holds the six execution agents; `nodes/gates.py` runs build/test/SAST. Full git + Docker
-  isolation per run.
+  `agents/` holds the seven execution agents (incl. the **DevOps** deploy-scaffolder); `nodes/gates.py` runs
+  build/test/**lint**/SAST + the deploy-manifest static lint. Full git + Docker isolation per run. After a
+  full `--auto-execute` batch, `--scaffold-deploy` runs `run_devops_scaffold` once (post-batch terminal
+  phase) to generate + merge the app's CI/CD config (ADR 0020).
 - **Shared plane** (`src/shared/`) — the engine SSOTs both planes import: `core/` (`models.py`,
   `config.py` incl. `ROLE_MODELS`, `observability.py`, `runs.py`, `docker_adapter.py`, `environments.py`,
   `prompts.py`) and `utils/` (`llm.py`, `api_retry.py`, `git_helpers.py`, `subprocess_helpers.py`,
@@ -153,7 +155,7 @@ flowchart TB
         direction TB
         qa["QA: (re)generate tests<br/><i>+ signature-lint reroute</i>"]
         dev["Developer (Claude CLI)<br/><i>+ doc/compile guardrail reroute</i>"]
-        gates["Gates (Docker, network-off)<br/>build · unit-tests · SAST"]
+        gates["Gates (Docker, network-off)<br/>build · unit-tests · lint · SAST"]
         rev["run_reviewer_node<br/><i>code + test verdict, diagnostics</i>"]
         decide{"all_gates_passed?"}
         qa --> dev --> gates --> rev --> decide
@@ -192,8 +194,10 @@ flowchart TB
   (contract-first).
 - **Two isolated channels:** a rejection routes `dev_diagnostic_payload` → Developer (`error_trace`) and
   `qa_diagnostic_payload` → QA (`qa_error_trace`); mis-routing deadlocks the run.
-- **Free fast-fail reroutes** (QA signature-lint, Developer doc/compile guardrails, QA test-compile gate)
-  bypass the expensive Reviewer without spending the functional retry budget.
+- **Free fast-fail reroutes** (QA signature-lint, Developer doc/compile guardrails, QA test-compile gate,
+  and the **lint gate** — step 3.6: prod findings → Developer, test findings → QA) bypass the expensive
+  Reviewer without spending the functional retry budget. The HARD lint gate's per-env `lint_cmd` is the SSOT
+  the `--scaffold-deploy` CI runs verbatim, so engine-green ⇒ CI-green (ADR 0020).
 - **Arbiter (ADR [0016](decisions/0016-arbiter-contract-self-healing.md)):** on a stuck cycle it adds a
   third route — amend the **contract** — for failures no worker can fix (contradictory spec, missing error
   precedence, NFR-violating "fix"). Bounded: `environment_id` pinned, `MAX_CONTRACT_AMENDMENTS` cap, a
@@ -230,7 +234,7 @@ sequenceDiagram
         loop until gates pass or budget exhausted
             X->>G: QA (tests) · Reviewer (verdict) · [Arbiter]
             X->>C: Developer (edit repo/)
-            X->>X: Docker gates (build/test/SAST)
+            X->>X: Docker gates (build/test/lint/SAST)
         end
         X->>G: TechWriter (living ADR)
         X->>R: atomic commit (+ optional push)
@@ -239,7 +243,13 @@ sequenceDiagram
         end
         X->>FS: batch_state.json (completed += ticket)
     end
-    X-->>H: ✅ all tickets merged + FinOps total
+    opt --scaffold-deploy (once, after the whole batch — E4 / ADR 0020)
+        X->>R: shallow-clone main → chore/devops-scaffold
+        X->>G: DevOps → DevOpsManifests (archetype-aware)
+        X->>X: run_devops_gate (static-lint the manifests)
+        X->>R: open PR → approve → squash-merge deploy config into main
+    end
+    X-->>H: ✅ all tickets merged (+ deploy config) + FinOps total
 ```
 
 ---
@@ -261,20 +271,22 @@ for the full module map and [agent-contracts](../.claude/rules/agent-contracts.m
 | Executor | Reviewer | `src/executor/agents/reviewer.py` | Code + test verdict; isolated dev/QA diagnostics. |
 | Executor | Arbiter | `src/executor/agents/arbiter.py` | Triage stuck cycle → developer/qa/contract/halt. |
 | Executor | TechWriter | `src/executor/agents/techwriter.py` | Maintain the living ADR (`docs/architecture_state.md` in the clone). |
-| Executor | Gates | `src/executor/nodes/gates.py` | Build / unit-test / SAST in the sandbox. |
-| Shared | Models | `src/shared/core/models.py` | `GlobalPipelineContext`, `TechLeadContract`, `ReviewReport`, `ArbiterVerdict`, `BatchState` (E3 batch checkpoint), telemetry. |
+| Executor | DevOps | `src/executor/agents/devops.py` | Generate `DevOpsManifests` (archetype-aware Dockerfile + GitHub Actions deploy workflow, WIF) for the finished app (`--scaffold-deploy`, E4). |
+| Executor | Deploy-scaffold phase | `src/executor/runner.py` `run_devops_scaffold` | Post-batch terminal phase: clone `main` → DevOps node → `run_devops_gate` → merge `chore/devops-scaffold` via the forge flow. |
+| Executor | Gates | `src/executor/nodes/gates.py` | Build / unit-test / **lint** (`run_lint_gate` + `classify_lint_findings`) / SAST in the sandbox; `run_devops_gate` static-lints the deploy manifests. |
+| Shared | Models | `src/shared/core/models.py` | `GlobalPipelineContext`, `TechLeadContract`, `ReviewReport`, `ArbiterVerdict`, `BatchState` (E3 batch checkpoint), `DevOpsManifests` (E4 deploy config), telemetry. |
 | Shared | Config | `src/shared/core/config.py` | `ROLE_MODELS`, budgets, pricing, FSM constants. |
 | Shared | Observability | `src/shared/core/observability.py` | Logging, token/FinOps telemetry, finish-reason diagnostics. |
 | Shared | Run layout | `src/shared/core/runs.py` | `Projects` store + `allocate_run_dir` (run-layout SSOT). |
 | Shared | Docker adapter | `src/shared/core/docker_adapter.py` | Least-privilege `run_in_image` / `execute_in_sandbox`. |
-| Shared | Environments | `src/shared/core/environments.py` | `SUPPORTED_ENVIRONMENTS` (image + build/test cmds + gitignore). |
+| Shared | Environments | `src/shared/core/environments.py` | `SUPPORTED_ENVIRONMENTS` (image + build/test/**lint** cmds + gitignore); `lint_cmd` is the SSOT shared with the generated CI. |
 | Shared | Prompts | `src/shared/core/prompts.py` | `get_system_prompt*`, `build_agent_context` (skill routing). |
-| Shared | LLM / retry | `src/shared/utils/{llm,api_retry}.py` | `run_structured_llm`; backoff + non-retryable/RECITATION handling. |
+| Shared | LLM / retry | `src/shared/utils/{llm,api_retry}.py` | `run_structured_llm` (relocates Jinja-marker system messages to a user turn for GenAI); backoff + non-retryable/RECITATION handling. |
 | Shared | PR forge | `src/shared/utils/forge.py` | Provider-agnostic `open_pr`/`approve_pr`/`merge_pr` (`gh`-backed); `--auto-merge` loop closure to `base_branch`. |
 
 ---
 
-*Diagrams reflect the engine as of the cyclical multi-ticket iteration ([CHANGELOG](../CHANGELOG.md) v0.19.0 —
-`--auto-execute` drives all tickets to `main`, ADR [0019](decisions/0019-cyclical-multi-ticket-orchestration.md)).
+*Diagrams reflect the engine as of the deployability-closure iteration ([CHANGELOG](../CHANGELOG.md) v0.20.0 —
+`--scaffold-deploy` deploy-scaffolding + the engine lint gate, ADR [0020](decisions/0020-deploy-scaffolding-and-lint-gate.md)).
 For the "why" behind each decision see [decisions/](decisions/README.md); for what's still open see
 [BACKLOG.md](BACKLOG.md).*

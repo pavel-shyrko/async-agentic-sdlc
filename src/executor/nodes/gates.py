@@ -1,12 +1,17 @@
 import os
 import re
+from pathlib import Path
 
 from src.shared.core.observability import log
-from src.shared.core.environments import SUPPORTED_ENVIRONMENTS, SAST_IMAGE, SAST_CMD, is_test_file
+from src.shared.core.environments import SUPPORTED_ENVIRONMENTS, SAST_IMAGE, SAST_CMD, is_test_file, env_language
 from src.shared.core.docker_adapter import execute_in_sandbox, run_in_image
 
 # Compiler/diagnostic lines reference a source file as `path/to/file.ext:line[:col]:`.
 _FILE_REF_RE = re.compile(r"^\s*([\w./\\-]+\.(?:go|cs|ts|tsx|js|jsx|py)):\d+")
+# A linter line that is ONLY a relative path with no `:line:col` (e.g. `gofmt -l` output). Kept as a
+# SEPARATE pattern so the compile-error regex above is never loosened (which would risk mis-parsing the
+# build gate's output). Used only by the lint-finding classifier.
+_BARE_PATH_RE = re.compile(r"^\s*([\w./\\-]+\.(?:go|cs|ts|tsx|js|jsx|py))\s*$")
 
 
 def build_failure_is_test_only(environment_id: str, log_lines: list[str]) -> bool:
@@ -55,6 +60,30 @@ def build_failure_is_environmental(environment_id: str, log_lines: list[str]) ->
     return any(marker in blob for marker in _ENV_BUILD_FAILURE_MARKERS)
 
 
+def classify_lint_findings(environment_id: str, log_lines: list[str]) -> tuple[list[str], list[str]]:
+    """Split lint-gate output into ``(production_findings, test_findings)`` so each routes to the right
+    isolated channel — production findings → Developer, test findings → QA — exactly the prod/test split
+    the compile gates already enforce via ``is_test_file``.
+
+    Stateful by design: a line that references a source file (``path:line:col`` OR a bare ``path`` like
+    ``gofmt -l``) sets the 'current file'; following detail lines with no path of their own inherit that
+    file's bucket. This handles both per-line tools (ruff, ``go vet``) and file-grouped tools (eslint
+    'stylish', which prints the path once then indented findings). Leading lines before any file
+    reference (banner/preamble) are dropped."""
+    prod: list[str] = []
+    test: list[str] = []
+    current_is_test: bool | None = None
+    for line in log_lines:
+        m = _FILE_REF_RE.match(line) or _BARE_PATH_RE.match(line)
+        if m:
+            current_is_test = is_test_file(environment_id, m.group(1))
+        if current_is_test is True:
+            test.append(line)
+        elif current_is_test is False:
+            prod.append(line)
+    return prod, test
+
+
 def _has_test_files(environment_id: str, repo_root: str) -> bool:
     """True if the workspace holds ≥1 test file for the target stack (language-aware, via the
     is_test_file SSOT). Runner-agnostic empty-suite detection: rather than special-casing each
@@ -68,6 +97,49 @@ def _has_test_files(environment_id: str, repo_root: str) -> bool:
         if any(is_test_file(environment_id, name) for name in files):
             return True
     return False
+
+
+# ==========================================
+# STATIC DEPLOY-MANIFEST GATE (E4 deploy-scaffolding)
+# ==========================================
+def run_devops_gate(repo_dir) -> list[str]:
+    """Static-lint the generated deploy manifests; return a list of problems (empty list = clean).
+
+    Host-side only (NO Docker/sandbox): the E4 deploy-scaffolding phase writes a GitHub Actions deploy
+    workflow (and, for a web service, a Dockerfile) into the finished-app clone, and the most brittle
+    failure mode is malformed workflow YAML. Checks: (1) ``.github/workflows/deploy.yml`` exists and
+    parses as a YAML mapping; (2) if a ``Dockerfile`` exists, it carries a ``FROM`` and a
+    ``CMD``/``ENTRYPOINT`` directive. A non-empty return drives exactly one self-heal retry (the messages
+    are fed back to the DevOps agent) before a Hard Halt — see ``run_devops_scaffold``."""
+    repo_dir = Path(repo_dir)
+    problems: list[str] = []
+
+    workflow = repo_dir / ".github" / "workflows" / "deploy.yml"
+    if not workflow.exists():
+        problems.append("Missing .github/workflows/deploy.yml — the deploy workflow was not generated.")
+    else:
+        try:
+            import yaml  # local: keeps PyYAML optional for non-devops runs (declared in requirements.txt)
+        except ImportError:  # pragma: no cover - PyYAML is a declared dependency
+            problems.append("PyYAML is not installed — cannot validate deploy.yml (add PyYAML to requirements).")
+        else:
+            try:
+                parsed = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+                if not isinstance(parsed, dict):
+                    problems.append("deploy.yml did not parse to a YAML mapping (a top-level workflow object is expected).")
+            except yaml.YAMLError as exc:
+                problems.append(f"deploy.yml is not valid YAML: {exc}")
+
+    dockerfile = repo_dir / "Dockerfile"
+    if dockerfile.exists():
+        lines = [ln.strip().upper() for ln in dockerfile.read_text(encoding="utf-8").splitlines()]
+        if not any(ln.startswith("FROM ") for ln in lines):
+            problems.append("Dockerfile is missing a FROM directive.")
+        if not any(ln.startswith("CMD") or ln.startswith("ENTRYPOINT") for ln in lines):
+            problems.append("Dockerfile is missing a CMD/ENTRYPOINT directive.")
+
+    return problems
+
 
 # ==========================================
 # PARALLEL RUNTIME GATES (Sandboxed execution)
@@ -176,6 +248,63 @@ async def run_test_compile_gate(environment_id: str, repo_root: str) -> tuple[bo
     returncode, stdout, stderr = await execute_in_sandbox(environment_id, test_compile_cmd, repo_root, network="none")
     log_lines = (stdout + "\n" + stderr).strip().splitlines()
     log.debug(f"QA test-compile gate completed with exit code: {returncode}")
+    return returncode == 0, log_lines
+
+
+def _has_eslint_config(repo_root: str) -> bool:
+    """True if the clone ships an eslint configuration (host-side check). A node project with NO eslint
+    config must NOT hard-fail the lint gate (`npx eslint .` would exit non-zero with 'Configuration …
+    is missing'), so the node lint gate is a no-op pass unless a config is present."""
+    root = Path(repo_root)
+    for name in ("eslint.config.js", "eslint.config.mjs", "eslint.config.cjs"):
+        if (root / name).is_file():
+            return True
+    # Legacy .eslintrc / .eslintrc.{js,cjs,json,yml,yaml}
+    if any(p.name == ".eslintrc" or p.name.startswith(".eslintrc.") for p in root.glob(".eslintrc*")):
+        return True
+    # eslintConfig key inside package.json
+    pkg = root / "package.json"
+    if pkg.is_file():
+        try:
+            import json
+            if "eslintConfig" in json.loads(pkg.read_text(encoding="utf-8")):
+                return True
+        except (ValueError, OSError):
+            pass
+    return False
+
+
+async def run_lint_gate(environment_id: str, repo_root: str) -> tuple[bool, list[str]]:
+    """HARD style/lint gate: restore deps (network ON) then run the env's `lint_cmd` (network OFF).
+
+    The engine's own quality bar so a strict CI stays green — `lint_cmd` is the SSOT the DevOps-generated
+    workflow also runs, making engine-green ⇒ CI-green. Returns ``(ok, log_lines)``; a no-op pass when the
+    env declares no `lint_cmd`, or (node) when the clone carries no eslint config. Verify-only — the
+    paired `format_cmd` autofix runs first, so only genuinely-unfixable findings (e.g. F841) fail here."""
+    spec = SUPPORTED_ENVIRONMENTS[environment_id]
+    lint_cmd = spec.get("lint_cmd")
+    if not lint_cmd:
+        return True, []
+    if env_language(environment_id) == "node" and not _has_eslint_config(repo_root):
+        log.debug(f"No eslint config in {repo_root} — lint gate is a no-op pass for this node project.")
+        return True, []
+
+    setup_cmd = spec.get("setup_cmd")
+    if setup_cmd:
+        log.debug(f"Restoring dependencies for lint [{environment_id}] (network ON): {setup_cmd}")
+        # cache_writable: the restore phase is the ONLY writer of the persistent package cache volume.
+        rc, out, err = await execute_in_sandbox(environment_id, setup_cmd, repo_root, network="bridge", cache_writable=True)
+        restore_out = (out + "\n" + err).strip()
+        if rc != 0:
+            log.debug(f"Dependency restore (lint) failed with exit code: {rc}")
+            return False, ["🚨 Dependency restore failed:"] + restore_out.splitlines()
+        if restore_out:
+            log.debug(f"Dependency restore output: {restore_out}")
+
+    log.debug(f"Executing lint gate [{environment_id}] (network OFF): {lint_cmd}")
+    returncode, stdout, stderr = await execute_in_sandbox(environment_id, lint_cmd, repo_root, network="none")
+    log_lines = (stdout + "\n" + stderr).strip().splitlines()
+    log.debug(f"Lint gate completed with exit code: {returncode}")
     return returncode == 0, log_lines
 
 

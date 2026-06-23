@@ -10,7 +10,7 @@ forward. Docker internals (daemon, loopback, corporate CA, NU1301) live in their
 The engine is a deterministic multi-agent SDLC orchestrator with two planes: a **Nexus** control plane that
 turns an idea into a plan (Epic → Blueprint → tickets), and an **Executor** worker plane that builds each
 ticket through an FSM (TechLead → QA → Developer → gates → Reviewer). The structured roles run on **Google
-Gemini**; the **Developer** runs on the **Claude Code CLI**; the build/test/SAST gates run in **Docker**
+Gemini**; the **Developer** runs on the **Claude Code CLI**; the build/test/lint/SAST gates run in **Docker**
 sandboxes. See [ARCHITECTURE.md](../ARCHITECTURE.md) for the full picture.
 
 Mentally, you set up **four things** — WSL2 + Docker, Node + Claude CLI, a Python venv, and a Gemini API
@@ -21,7 +21,7 @@ key — then you **plan a project** and **execute its tickets**.
 | What | Why | Installed in |
 |---|---|---|
 | WSL2 + Ubuntu 24.04 | The whole toolchain runs inside Linux (the Windows interpreter lacks the deps) | Step 0 |
-| Docker Engine (`docker-ce` in WSL2, **not** Docker Desktop) | Runs the sandboxed build/test/SAST gates | Step 1 |
+| Docker Engine (`docker-ce` in WSL2, **not** Docker Desktop) | Runs the sandboxed build/test/lint/SAST gates | Step 1 |
 | `python3-venv`, `python3-pip`, `bandit` | Engine runtime + SAST linter (`bandit` must be on PATH) | Step 2 |
 | Node.js via **nvm** (Linux paths only) | Hosts the Claude CLI | Step 3 |
 | Python 3.12 venv + `requirements.txt` | The orchestrator's own dependencies | Step 5 |
@@ -279,7 +279,7 @@ python3 main.py --run <slug> -f TASK-01
 ```
 
 The Executor shallow-clones `--repo` into the run's `repo/` on a `feat/ticket-TASK-01` branch, runs the
-build/test/SAST/review cycle, and makes one **atomic commit** on success. Add **`--push`** to push the
+build/test/lint/SAST/review cycle, and makes one **atomic commit** on success. Add **`--push`** to push the
 feature branch to `origin` after that commit.
 
 > **Close the loop to the base branch (`--auto-merge`, E2):** add **`--auto-merge`** to open a PR from
@@ -348,7 +348,7 @@ wsl -e bash -lc "cd /mnt/c/code/async-agentic-sdlc && source venv/bin/activate &
 
 | Variable | Default | Effect |
 |---|---|---|
-| **`GEMINI_API_KEY`** | — (**required**) | Credential for every structured agent (TechLead/QA/Reviewer/TechWriter/Arbiter + Nexus PO/SA/TPM). |
+| **`GEMINI_API_KEY`** | — (**required**) | Credential for every structured agent (TechLead/QA/Reviewer/TechWriter/Arbiter/DevOps + Nexus PO/SA/TPM). |
 | `CLAUDE_CLI_BIN` | `claude` | Path to the Claude CLI binary; pin to the nvm Linux build under WSL. |
 | `GITHUB_TOKEN` | (unset) | Read by an env-backed git credential helper (if you configure one) to clone/push **private** HTTPS repos, so you can pass a token-free `--repo` URL — see [Git auth (private repos)](#git-auth-private-repos). Also the auth `gh` uses for `--auto-merge` (then **required**). |
 | `GITHUB_REVIEWER_TOKEN` | (unset) | A *separate* identity's token for `--auto-merge` PR approval (GitHub forbids approving your own PR). Best-effort: unset → approval skipped, relying on the `--admin` merge. |

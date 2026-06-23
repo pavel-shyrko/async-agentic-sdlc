@@ -18,7 +18,7 @@ Update factual project-state tracking after code changes. Focus strictly on "Wha
 3. **README Alignment**:
    - Target `README.md`.
    - Scan for out-of-sync factual data across ALL of these surfaces (not just CLI flags — every one drifts independently):
-     - **Agent roster / Model Routing Matrix** — the enumerated list of structured roles (TechLead, QA, Reviewer, TechWriter, Arbiter, PO/SA/TPM). A new agent role MUST be added here.
+     - **Agent roster / Model Routing Matrix** — the enumerated list of structured roles (TechLead, QA, Reviewer, TechWriter, Arbiter, DevOps, PO/SA/TPM). A new agent role MUST be added here.
      - **Numbered capabilities list** — the "Custom FSM Engine / Model Routing / … / Fast-Fail Guardrail / Autonomous Contract Self-Healing" items; a new engine behavior gets a new item or extends one.
      - **Environment variables / tunable constants** — NOT only CLI flags: new `*_MODEL`, budgets, and FSM knobs (`PIPELINE_MAX_RETRIES`, `ARBITER_TRIGGER_ATTEMPT`, `MAX_CONTRACT_AMENDMENTS`, `ARBITER_AMENDMENT_RETRY_BONUS`, etc.) belong in the relevant prose. Name each env var explicitly.
      - **Directory structure tree** — new modules/dirs (e.g. a new `src/.../<role>.py` agent or a new `src/shared/core/*.py`) and the per-line role/file comments.

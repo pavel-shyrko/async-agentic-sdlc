@@ -10,7 +10,8 @@ from unittest.mock import AsyncMock, call
 
 from src.executor.nodes.gates import (
     run_qa_unit_tests, run_security_scan, run_build_gate, run_format_pass, run_test_compile_gate,
-    build_failure_is_test_only, build_failure_is_environmental, _has_test_files,
+    run_lint_gate, classify_lint_findings, _has_eslint_config,
+    build_failure_is_test_only, build_failure_is_environmental, _has_test_files, _FILE_REF_RE,
 )
 from src.shared.core.environments import SUPPORTED_ENVIRONMENTS, SAST_IMAGE, SAST_CMD
 
@@ -20,6 +21,7 @@ _SETUP = SUPPORTED_ENVIRONMENTS[_ENV]["setup_cmd"]
 _TEST = SUPPORTED_ENVIRONMENTS[_ENV]["test_cmd"]
 _BUILD = SUPPORTED_ENVIRONMENTS[_ENV]["build_cmd"]
 _TCOMPILE = SUPPORTED_ENVIRONMENTS[_ENV]["test_compile_cmd"]
+_LINT = SUPPORTED_ENVIRONMENTS[_ENV]["lint_cmd"]
 
 
 class RunQaUnitTestsTests(unittest.IsolatedAsyncioTestCase):
@@ -301,6 +303,127 @@ class EnvironmentalBuildFailureTests(unittest.TestCase):
         # A genuine code defect must fall through to the normal compile-gate reroute.
         self.assertFalse(build_failure_is_environmental(self._DOTNET, ["Program.cs(12,9): error CS0103: The name 'Foo' does not exist"]))
         self.assertFalse(build_failure_is_environmental("go-1.23-cli", ["internal/converter/processor.go:10:2: undefined: Foo"]))
+
+
+class RunLintGateTests(unittest.IsolatedAsyncioTestCase):
+    """The HARD lint gate restores deps (network ON) then runs the registry `lint_cmd` (network OFF);
+    no-op pass when the env has no `lint_cmd`, and (node) when the clone carries no eslint config."""
+
+    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    async def test_restore_then_lint_with_network_phasing(self, mock_sandbox: AsyncMock) -> None:
+        mock_sandbox.side_effect = [(0, "restored", ""), (0, "All checks passed!", "")]
+
+        ok, log_lines = await run_lint_gate(environment_id=_ENV, repo_root=_REPO)
+
+        self.assertTrue(ok)
+        self.assertEqual(mock_sandbox.await_args_list, [
+            call(_ENV, _SETUP, _REPO, network="bridge", cache_writable=True),
+            call(_ENV, _LINT, _REPO, network="none"),
+        ])
+
+    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    async def test_lint_violation_reports_failure(self, mock_sandbox: AsyncMock) -> None:
+        mock_sandbox.side_effect = [
+            (0, "", ""),
+            (1, "tests/test_cli.py:26:71: F841 Local variable `mock_stdout` is assigned to but never used", ""),
+        ]
+
+        ok, log_lines = await run_lint_gate(environment_id=_ENV, repo_root=_REPO)
+
+        self.assertFalse(ok)
+        self.assertTrue(any("F841" in ln for ln in log_lines))
+
+    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    async def test_noop_when_no_lint_cmd(self, mock_sandbox: AsyncMock) -> None:
+        env_id = "no-lint-env"
+        with mock.patch.dict(SUPPORTED_ENVIRONMENTS, {env_id: {"image": "x", "language_id": "python"}}, clear=False):
+            ok, log_lines = await run_lint_gate(environment_id=env_id, repo_root=_REPO)
+        self.assertTrue(ok)
+        mock_sandbox.assert_not_awaited()
+
+    @mock.patch("src.executor.nodes.gates._has_eslint_config", return_value=False)
+    @mock.patch("src.executor.nodes.gates.execute_in_sandbox", new_callable=AsyncMock)
+    async def test_node_noop_when_no_eslint_config(self, mock_sandbox: AsyncMock, _cfg: mock.Mock) -> None:
+        # A node project with no eslint config must NOT hard-fail — the gate is a no-op pass.
+        ok, log_lines = await run_lint_gate(environment_id="node-20-web", repo_root=_REPO)
+        self.assertTrue(ok)
+        mock_sandbox.assert_not_awaited()
+
+
+class HasEslintConfigTests(unittest.TestCase):
+    """Host-side eslint-config detection gates the node lint run (Risk 3)."""
+
+    def test_flat_config_detected(self) -> None:
+        import tempfile, os as _os
+        with tempfile.TemporaryDirectory() as d:
+            open(_os.path.join(d, "eslint.config.js"), "w").close()
+            self.assertTrue(_has_eslint_config(d))
+
+    def test_legacy_rc_detected(self) -> None:
+        import tempfile, os as _os
+        with tempfile.TemporaryDirectory() as d:
+            open(_os.path.join(d, ".eslintrc.json"), "w").close()
+            self.assertTrue(_has_eslint_config(d))
+
+    def test_package_json_key_detected(self) -> None:
+        import tempfile, os as _os
+        with tempfile.TemporaryDirectory() as d:
+            with open(_os.path.join(d, "package.json"), "w") as fh:
+                fh.write('{"name": "x", "eslintConfig": {"root": true}}')
+            self.assertTrue(_has_eslint_config(d))
+
+    def test_absent_when_no_config(self) -> None:
+        import tempfile, os as _os
+        with tempfile.TemporaryDirectory() as d:
+            with open(_os.path.join(d, "package.json"), "w") as fh:
+                fh.write('{"name": "x"}')
+            self.assertFalse(_has_eslint_config(d))
+
+
+class ClassifyLintFindingsTests(unittest.TestCase):
+    """`classify_lint_findings` buckets findings prod-vs-test (so prod → Developer, test → QA),
+    handling both `path:line:col` output AND bare-path output (gofmt -l), statefully."""
+
+    _GO = "go-1.23-cli"
+
+    def test_python_splits_prod_and_test(self) -> None:
+        lines = [
+            "src/converter.py:10:5: F401 `os` imported but unused",
+            "tests/test_converter.py:26:71: F841 Local variable `x` is unused",
+            "Found 2 errors.",   # trailing summary inherits the last file's bucket (test)
+        ]
+        prod, test = classify_lint_findings(_ENV, lines)
+        self.assertEqual(prod, ["src/converter.py:10:5: F401 `os` imported but unused"])
+        self.assertIn("tests/test_converter.py:26:71: F841 Local variable `x` is unused", test)
+
+    def test_gofmt_bare_path_is_classified(self) -> None:
+        # gofmt -l prints ONLY the path (no :line:col) — Risk 2.
+        prod, test = classify_lint_findings(self._GO, ["cmd/json2csv/main.go", "internal/conv/conv_test.go"])
+        self.assertEqual(prod, ["cmd/json2csv/main.go"])
+        self.assertEqual(test, ["internal/conv/conv_test.go"])
+
+    def test_eslint_grouped_detail_lines_inherit_file_bucket(self) -> None:
+        # eslint 'stylish': the path is a header line; indented detail lines have no path of their own.
+        lines = [
+            "src/app.ts:0:0",
+            "  3:7  error  'x' is assigned a value but never used  no-unused-vars",
+        ]
+        prod, test = classify_lint_findings("node-20-web", lines)
+        self.assertEqual(len(prod), 2)   # header + its detail line both bucketed to prod
+        self.assertEqual(test, [])
+
+    def test_preamble_before_any_file_is_dropped(self) -> None:
+        prod, test = classify_lint_findings(_ENV, ["ruff 0.3.0", "checking 4 files"])
+        self.assertEqual((prod, test), ([], []))
+
+
+class FileRefRegexUnchangedTests(unittest.TestCase):
+    """Pin: adding the bare-path classifier must NOT have loosened the shared compile-error regex
+    (`_FILE_REF_RE` still requires `:line`, so a bare path does NOT match it)."""
+
+    def test_requires_line_number(self) -> None:
+        self.assertIsNotNone(_FILE_REF_RE.match("src/converter.py:10:5: F401 unused"))
+        self.assertIsNone(_FILE_REF_RE.match("src/converter.py"))   # bare path is NOT a compile-error ref
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ QA_MODEL = GEMINI_3_5_FLASH
 REVIEWER_MODEL = GEMINI_3_5_FLASH
 TECHWRITER_MODEL = GEMINI_3_5_FLASH   # Living-ADR maintainer; matches the other Gemini worker roles.
 ARBITER_MODEL = GEMINI_3_5_FLASH      # Failure-triage / contract-conflict classifier (see runner FSM).
+DEVOPS_MODEL = GEMINI_3_5_FLASH       # Deploy-scaffolding finalizer (E4); matches the other Gemini worker roles.
 # Nexus Control Plane roles (Product Owner / Solution Architect / TPM). Defaulted to the
 # cheap flash-lite tier to match the worker roles and keep the PoC inexpensive; SA/TPM can be
 # bumped to GEMINI_2_5_PRO for deeper architectural reasoning.
@@ -109,6 +110,7 @@ ROLE_MODELS = {
     "reviewer":  (REVIEWER_MODEL,  "Reviewer Agent"),
     "techwriter": (TECHWRITER_MODEL, "Technical Writer Agent"),
     "arbiter":   (ARBITER_MODEL,   "Arbiter Agent"),
+    "devops":    (DEVOPS_MODEL,    "DevOps Agent"),
     # Nexus Control Plane roles.
     "po":      (PO_MODEL,      "Product Owner Agent"),
     "sa":      (SA_MODEL,      "Solution Architect Agent"),

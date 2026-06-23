@@ -19,6 +19,28 @@ from src.shared.core.models import (
     TechLeadContract, GlobalPipelineContext, ReviewReport, WorkspacePaths, ArbiterVerdict,
 )
 
+# Step-3.6's HARD lint gate calls run_format_pass + run_lint_gate INSIDE the FSM cycle. Default them
+# module-wide to a clean no-op pass so every existing cycle test neither hits Docker nor blows CPython's
+# parenthesized-with nesting limit (a per-block patch would); LintGateLoopTests overrides run_lint_gate
+# locally to exercise the failing paths.
+_LINT_GATE_PATCHERS: list = []
+
+
+def setUpModule() -> None:
+    for target, value in (
+        ("run_format_pass", AsyncMock(return_value=None)),
+        ("run_lint_gate", AsyncMock(return_value=(True, []))),
+    ):
+        patcher = mock.patch.object(orchestrator, target, new=value)
+        patcher.start()
+        _LINT_GATE_PATCHERS.append(patcher)
+
+
+def tearDownModule() -> None:
+    for patcher in _LINT_GATE_PATCHERS:
+        patcher.stop()
+    _LINT_GATE_PATCHERS.clear()
+
 
 class ParseArgsResumeTests(unittest.TestCase):
     """CLI parser must accept --resume without requiring repo/ticket/description input."""
@@ -123,6 +145,15 @@ class ParseArgsProjectVerbsTests(unittest.TestCase):
         plain = self._parse("--idea", "an app", "--repo", "r")
         self.assertFalse(plain.auto_merge)
         self.assertFalse(plain.push)
+
+    def test_scaffold_deploy_flag_threads_into_idea_and_resume(self) -> None:
+        # E4: --scaffold-deploy is carried on the batch paths (--idea --auto-execute and a bare --resume).
+        idea = self._parse("--idea", "an app", "--repo", "r", "--auto-execute", "--scaffold-deploy")
+        self.assertTrue(idea.scaffold_deploy)
+        resume = self._parse("--resume", "my-proj", "--scaffold-deploy")
+        self.assertTrue(resume.scaffold_deploy)
+        # Off by default.
+        self.assertFalse(self._parse("--idea", "an app", "--repo", "r", "--auto-execute").scaffold_deploy)
 
     def test_run_project_requires_ticket(self) -> None:
         with self.assertRaises(SystemExit) as ctx:
@@ -1100,6 +1131,35 @@ class RunBatchTests(unittest.IsolatedAsyncioTestCase):
             batch = BatchState.load_checkpoint(orchestrator._batch_state_path(nexus_dir))
             self.assertEqual(batch.completed, ["TASK-01"])
             self.assertEqual(batch.failed, "TASK-02")
+
+    async def test_scaffold_deploy_runs_after_a_complete_batch(self) -> None:
+        # E4: a fully-merged batch with --scaffold-deploy runs the post-batch DevOps terminal phase once.
+        with TemporaryDirectory() as td:
+            projects, project, cfg, nexus_dir = self._fixtures(td)
+            cfg.scaffold_deploy = True
+            scaffold = AsyncMock()
+            with (
+                mock.patch.object(orchestrator, "prepare_ticket_run",
+                                  side_effect=lambda _p, _pr, _c, t: Path(td) / f"exec_{t}"),
+                mock.patch.object(orchestrator, "run_executor", new=AsyncMock(return_value=True)),
+                mock.patch.object(orchestrator, "run_devops_scaffold", new=scaffold),
+            ):
+                await orchestrator.run_batch(projects, project, cfg, nexus_dir, ["TASK-01", "TASK-02"])
+            scaffold.assert_awaited_once_with(projects, project, cfg, nexus_dir)
+
+    async def test_scaffold_deploy_skipped_when_flag_off(self) -> None:
+        with TemporaryDirectory() as td:
+            projects, project, cfg, nexus_dir = self._fixtures(td)
+            cfg.scaffold_deploy = False
+            scaffold = AsyncMock()
+            with (
+                mock.patch.object(orchestrator, "prepare_ticket_run",
+                                  side_effect=lambda _p, _pr, _c, t: Path(td) / f"exec_{t}"),
+                mock.patch.object(orchestrator, "run_executor", new=AsyncMock(return_value=True)),
+                mock.patch.object(orchestrator, "run_devops_scaffold", new=scaffold),
+            ):
+                await orchestrator.run_batch(projects, project, cfg, nexus_dir, ["TASK-01"])
+            scaffold.assert_not_awaited()
 
 
 class BatchResumeRoutingTests(unittest.IsolatedAsyncioTestCase):
@@ -2181,6 +2241,128 @@ class TestCollectionTriageRoutingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(reviewer.await_count, 2)  # Reviewer reached every cycle (never bypassed)
             self.assertIn("ImportError", captured["qa_log"])  # failing log forwarded to the Reviewer
             self.assertTrue(stale.exists())            # orchestrator did NOT purge the failing test file
+
+
+class LintGateLoopTests(unittest.IsolatedAsyncioTestCase):
+    """Step-3.6 HARD lint gate: a residual finding fast-fail-reroutes to the offending channel (prod →
+    Developer, test → QA) with the lint preamble and NO functional budget; a persistent finding folds
+    into the budgeted cycle WITHOUT tripping the deadlock guard (the Reviewer is lint-blind)."""
+
+    @staticmethod
+    def _resume_ctx(base: Path) -> GlobalPipelineContext:
+        paths = WorkspacePaths(logs_dir=base / "logs", reports_dir=base / "reports", repo_dir=base)
+        ctx = GlobalPipelineContext(
+            pr_description="resume run", workspace_paths=paths, test_code_snapshot="existing tests",
+        )
+        ctx.contract = TechLeadContract(
+            files_to_modify=["src/core/models.py"], instruction="noop", function_signatures="noop",
+            strict_type_validation_rules="noop", techlead_reasoning="noop",
+            environment_id="python-3.12-core",
+            topology_contract=[{"file_path": "src/core/models.py", "exports": [], "depends_on": []}],
+        )
+        return ctx
+
+    @staticmethod
+    def _approve_both(ctx: GlobalPipelineContext):
+        async def _approve(*_a, **_k) -> None:
+            ctx.review_report = ReviewReport(
+                code_quality_analysis="ok", test_integrity_analysis="ok", log_verification_analysis="ok",
+                code_quality_approved=True, test_integrity_approved=True,
+                dev_diagnostic_payload="", qa_diagnostic_payload="",
+            )
+        return _approve
+
+    def _common_patches(self, ctx, lint_gate, reviewer_side_effect):
+        # The shared mock set for a single-cycle lint test (snapshot present ⇒ no step-2 QA regen).
+        return [
+            mock.patch.object(orchestrator, "check_environment"),
+            mock.patch.object(orchestrator, "reconfigure_logging"),
+            mock.patch.object(orchestrator, "build_production_snapshot"),
+            mock.patch.object(orchestrator, "run_format_pass", new=AsyncMock(return_value=None)),
+            mock.patch.object(orchestrator, "run_lint_gate", new=lint_gate),
+            mock.patch.object(orchestrator, "run_build_gate", new=AsyncMock(return_value=(True, []))),
+            mock.patch.object(orchestrator, "_missing_contract_files", return_value=[]),
+            mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
+                description=None, base_branch="main", resume=Path("cp.json"), reset_attempts=False)),
+            mock.patch.object(GlobalPipelineContext, "load_checkpoint", return_value=ctx),
+            mock.patch.object(orchestrator, "run_techlead_node", new_callable=AsyncMock),
+            mock.patch.object(orchestrator, "enforce_documentation_guardrail", new=AsyncMock(return_value=None)),
+            mock.patch.object(orchestrator, "run_reviewer_node", new=AsyncMock(side_effect=reviewer_side_effect)),
+            mock.patch.object(orchestrator, "run_qa_unit_tests", new=AsyncMock(return_value=(True, []))),
+            mock.patch.object(orchestrator, "run_security_scan", new=AsyncMock(return_value=(True, []))),
+            mock.patch.object(orchestrator, "finalize_transaction", new_callable=AsyncMock),
+            mock.patch.object(orchestrator, "run_techwriter_node", new_callable=AsyncMock),
+        ]
+
+    async def test_test_finding_reroutes_qa_for_free_then_passes(self) -> None:
+        with TemporaryDirectory() as td:
+            ctx = self._resume_ctx(Path(td))
+            lint_gate = AsyncMock(side_effect=[
+                (False, ["tests/test_models.py:5:9: F841 Local variable `x` is assigned but never used"]),
+                (True, []),
+            ])
+            with ExitStack() as stack:
+                for cm in self._common_patches(ctx, lint_gate, self._approve_both(ctx)):
+                    stack.enter_context(cm)
+                qa = stack.enter_context(mock.patch.object(orchestrator, "run_qa_agent_node", new_callable=AsyncMock))
+                developer = stack.enter_context(mock.patch.object(orchestrator, "run_developer_node", new_callable=AsyncMock))
+                await orchestrator.main()
+
+            self.assertEqual(lint_gate.await_count, 2)            # fail → reroute → pass
+            qa.assert_awaited_once()                              # the test finding rerouted to QA
+            self.assertIn("[LINT GATE FAILURE]", qa.await_args_list[0].args[1])
+            developer.assert_awaited_once()                       # only the cycle-1 dev pass (test lint ≠ dev)
+            self.assertEqual(ctx.current_attempt, 2)              # ONE functional cycle (reroute spent no budget)
+
+    async def test_prod_finding_reroutes_developer_for_free_then_passes(self) -> None:
+        with TemporaryDirectory() as td:
+            ctx = self._resume_ctx(Path(td))
+            lint_gate = AsyncMock(side_effect=[
+                (False, ["src/core/models.py:1:1: F401 `os` imported but unused"]),
+                (True, []),
+            ])
+            with ExitStack() as stack:
+                for cm in self._common_patches(ctx, lint_gate, self._approve_both(ctx)):
+                    stack.enter_context(cm)
+                qa = stack.enter_context(mock.patch.object(orchestrator, "run_qa_agent_node", new_callable=AsyncMock))
+                developer = stack.enter_context(mock.patch.object(orchestrator, "run_developer_node", new_callable=AsyncMock))
+                await orchestrator.main()
+
+            self.assertEqual(lint_gate.await_count, 2)
+            self.assertEqual(developer.await_count, 2)            # cycle-1 pass + the prod-lint reroute
+            self.assertIn("[LINT GATE FAILURE]", developer.await_args_list[-1].args[1])
+            qa.assert_not_awaited()                               # a prod finding never routes to QA
+            self.assertEqual(ctx.current_attempt, 2)
+
+    async def test_persistent_lint_failure_folds_into_budget_without_deadlock_halt(self) -> None:
+        # Lint stays red with the SAME finding (no-progress) while qa/sec pass and the Reviewer approves
+        # BOTH sides. The deadlock guard must NOT fire (lint is not in gate_failed); instead lint folds
+        # into all_gates_passed and the run ends on a clean "Retries exhausted" — never a misconfiguration halt.
+        with TemporaryDirectory() as td:
+            ctx = self._resume_ctx(Path(td))
+            lint_gate = AsyncMock(return_value=(
+                False, ["tests/test_models.py:5:9: F841 Local variable `x` is assigned but never used"]))
+            abort_msgs: list[str] = []
+
+            def _capture_abort(_ctx, message, *a, **k):
+                abort_msgs.append(message)
+                raise SystemExit(1)
+
+            with ExitStack() as stack:
+                for cm in self._common_patches(ctx, lint_gate, self._approve_both(ctx)):
+                    stack.enter_context(cm)
+                stack.enter_context(mock.patch.object(orchestrator, "run_qa_agent_node", new_callable=AsyncMock))
+                stack.enter_context(mock.patch.object(orchestrator, "run_developer_node", new_callable=AsyncMock))
+                stack.enter_context(mock.patch.object(orchestrator, "MAX_FUNCTIONAL_RETRIES", 1))
+                stack.enter_context(mock.patch.object(orchestrator, "ARBITER_TRIGGER_ATTEMPT", 99))  # keep the Arbiter out
+                stack.enter_context(mock.patch.object(orchestrator, "_abort_with_incident", side_effect=_capture_abort))
+                with self.assertRaises(SystemExit):
+                    await orchestrator.main()
+
+            self.assertEqual(len(abort_msgs), 1)
+            self.assertIn("Retries exhausted", abort_msgs[0])           # budgeted exhaustion, not …
+            self.assertNotIn("MISCONFIGURATION", abort_msgs[0])         # … the deadlock-guard halt
+            self.assertEqual(lint_gate.await_count, 2)                  # no-progress broke the fast-fail loop early
 
 
 class FinOpsReportTests(unittest.TestCase):

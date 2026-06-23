@@ -2,7 +2,7 @@
 
 Two parts:
 
-- **Part I — Capability Roadmap (Epics `E1`–`E4`)**: the forward-looking work to close the autonomy loop
+- **Part I — Capability Roadmap (Epics `E1`–`E5`)**: the forward-looking work to close the autonomy loop
   (idea → working, merged code in `main` → deployable). Larger than a single fix; each has its own
   Goal / Current state / Design / Dependencies / Risks / Acceptance.
 - **Part II — Defects & Refinements (`#4`–`#26`)**: granular fixes surfaced across pipeline runs, grouped by
@@ -29,6 +29,11 @@ Two parts:
 > FinOps budget) added from the E3 4-ticket validation run — the financial breaker is still per-ticket, so
 > a batch can overspend `N×` the intended ceiling; the fix is one app budget threaded as the remaining
 > limit into each cycle.
+>
+> Updated 2026-06-23: **E4 shipped** (`--scaffold-deploy` deploy-scaffolding via mechanism (a) generate
+> CI/CD config, v0.20.0 / ADR 0020), together with a companion **engine lint gate** (`run_lint_gate`, FSM
+> step 3.6) whose per-env `lint_cmd` is the SSOT the generated CI runs verbatim (engine-green ⇒ CI-green).
+> New follow-ups noted under the lint-gate work: mypy/type-checking and node-eslint auto-provisioning.
 
 ---
 
@@ -46,7 +51,7 @@ branch that is **never merged**.
 E1 ✅ Nexus auto-dispatches Executor (one ticket)   — DONE (v0.17.0 / ADR 0017)
       └─► E2 ✅ Close the loop to main (auto-approved PR + merge)  — DONE (v0.18.0 / ADR 0018)
               └─► E3 ✅ Cyclical multi-ticket orchestration (all tasks, each building on the last)  — DONE (v0.19.0 / ADR 0019)
-                      ├─► E4  DevOps / deployment   (scope only — decision deferred)
+                      ├─► E4 ✅ DevOps deploy-scaffolding (--scaffold-deploy)  — DONE (v0.20.0 / ADR 0020)
                       └─► E5  Application-wide FinOps budget (one ceiling, remaining-budget threaded per cycle)
 ```
 
@@ -176,7 +181,20 @@ cleanly per ticket) and **#26** (per-ticket retry budget).
 the batch cleanly with an incident, and `--resume` continues from the failed ticket without redoing merged
 ones.
 
-## E4. [EPIC] DevOps / deployment — SCOPE ONLY (decision deferred)
+## E4. [✅ DONE — v0.20.0 / ADR 0020] DevOps deploy-scaffolding (`--scaffold-deploy`)
+
+> **Delivered** ([ADR 0020](decisions/0020-deploy-scaffolding-and-lint-gate.md),
+> [iteration 20](releases/iteration_20/iteration_20_README.md)): chosen mechanism **(a) generate CI/CD
+> config**. A `devops` agent emits structured `DevOpsManifests` — archetype-aware (web service → multi-stage
+> non-root `Dockerfile` + Cloud Run workflow; CLI/library → **no Dockerfile** + a build/release matrix),
+> authenticated via **Workload Identity Federation** (org secrets/variables; see
+> [docs/guides/devops_setup.md](guides/devops_setup.md)), never embedded keys. It runs **once after the batch**
+> (`run_devops_scaffold`, behind opt-in `--scaffold-deploy`), static-lints the manifests (`run_devops_gate`,
+> 1 self-heal retry), and lands them through the **same E2 forge flow** on `chore/devops-scaffold` — so
+> **where in the loop** resolved to *once per completed application*, not per ticket. A companion **engine
+> lint gate** (`run_lint_gate`, FSM step 3.6) makes the generated strict CI green by construction: the per-env
+> `lint_cmd` is the SSOT both the gate and the generated workflow run. **Deferred:** mechanisms (b) build+push
+> image / (c) live cloud deploy; mypy/type-checking and node-eslint auto-provisioning for the lint gate.
 
 **Goal:** record the epic and its decision space; **do not pick the mechanism yet** (user choice:
 "только зафиксировать scope" — needs refinement on *how and where* to deploy).

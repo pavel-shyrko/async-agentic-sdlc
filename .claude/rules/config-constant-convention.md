@@ -10,6 +10,8 @@ paths:
 Every cap, budget, and limit in the engine is declared as an UPPER_CASE module-level constant, and the
 runtime-tunable ones read an env override: `PIPELINE_BUDGET_TOKENS`, `MAX_FUNCTIONAL_RETRIES`
 (env `PIPELINE_MAX_RETRIES`), `GUARDRAIL_MAX_REROUTES`, `QA_GATE_MAX_REROUTES`, `QA_LINT_MAX_REROUTES`,
+`LINT_GATE_MAX_REROUTES` (env `PIPELINE_LINT_MAX_REROUTES`, default 2 — the step-3.6 style/lint-gate
+fast-fail budget), `DEVOPS_MAX_RETRIES` (E4 deploy-manifest static-lint self-heal budget, default 1),
 `MAX_FILE_SIZE_BYTES`, `FEEDBACK_TAIL_LINES`, `FEEDBACK_MAX_CHARS`, `GIT_NETWORK_TIMEOUT`,
 `GEMINI_REQUEST_TIMEOUT` (per-request wall-clock ceiling on every structured Gemini call, wired into the
 shared genai client as `http_options.timeout`), `RUNS_BASE`.

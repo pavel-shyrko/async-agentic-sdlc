@@ -11,8 +11,8 @@ model boundaries are mocked:
   AND the per-skill ``SkillRelevance`` gate — every ``response_model`` must be handled or the call
   raises, ``with_api_retry`` swallows it after 2+4s backoff per attempt, and the run crawls)
 * Claude  -> ``src.executor.agents.developer.run_claude_cli`` (file mutation)
-* docker gates -> ``run_build_gate`` / ``run_qa_unit_tests`` / ``run_security_scan`` are all stubbed
-  (docker cannot be assumed portable in a hermetic test)
+* docker gates -> ``run_build_gate`` / ``run_qa_unit_tests`` / ``run_security_scan`` / ``run_lint_gate``
+  (and the ``run_format_pass`` autofix) are all stubbed (docker cannot be assumed portable in a hermetic test)
 
 ``reconfigure_logging`` is stubbed so the per-session log handler never pins an open file inside the
 auto-cleaned temp tree.
@@ -187,6 +187,16 @@ class PipelineEndToEndTests(unittest.IsolatedAsyncioTestCase):
                     orchestrator,
                     "run_security_scan",
                     new=AsyncMock(return_value=(True, [])),
+                ),
+                mock.patch.object(
+                    orchestrator,
+                    "run_lint_gate",
+                    new=AsyncMock(return_value=(True, [])),
+                ),
+                mock.patch.object(
+                    orchestrator,
+                    "run_format_pass",
+                    new=AsyncMock(return_value=None),
                 ),
             ):
                 # Act — real bootstrap (shallow clone + feature branch) + real agents. The sandboxed

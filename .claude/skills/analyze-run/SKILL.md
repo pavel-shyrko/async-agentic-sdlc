@@ -1,6 +1,6 @@
 ---
 name: analyze-run
-description: Diagnose a pipeline run (executor or Nexus) from its persisted artifacts — classify root cause, cite evidence, and point the fix at the engine/prompts (never the clone). Use when the user asks to analyze/diagnose a run, explain a CIRCUIT BREAKER / "Retries exhausted" halt, a looping or stuck cycle, a Gemini RECITATION/SAFETY block, a PR/merge (forge) failure under `--auto-merge`, a non-halt crash/hang (an `embedded null byte` traceback or a stalled agent call that printed no incident), or "what happened" in a runs/<project>/<NNN>_... run. Accepts a run dir, a project slug, or pasted run log output.
+description: Diagnose a pipeline run (executor or Nexus) from its persisted artifacts — classify root cause, cite evidence, and point the fix at the engine/prompts (never the clone). Use when the user asks to analyze/diagnose a run, explain a CIRCUIT BREAKER / "Retries exhausted" halt, a looping or stuck cycle, a Gemini RECITATION/SAFETY block, a PR/merge (forge) failure under `--auto-merge`, a lint-gate reroute loop or an E4 deploy-scaffolding (`--scaffold-deploy`) static-lint halt, a non-halt crash/hang (an `embedded null byte` traceback, a Jinja-in-system-message `ValueError`, or a stalled agent call that printed no incident), or "what happened" in a runs/<project>/<NNN>_... run. Accepts a run dir, a project slug, or pasted run log output.
 ---
 
 # Pipeline Run Analysis
@@ -22,6 +22,10 @@ flaw, then recommend a fix in `src/`/`prompts/` — NEVER edit the generated clo
   run), and `completed` confirms the merged ones. A batch with `failed: null` and a `🏁 Batch complete` line
   is a clean success (the per-ticket cost is *each* run's GRAND TOTAL, not a batch total — there is no
   app-wide budget yet, BACKLOG E5).
+- **Deploy-scaffolding (`--scaffold-deploy`, E4):** the deploy phase is its own `<NNN>_devops_scaffold_…`
+  run dir (cloned on `chore/devops-scaffold`), separate from the ticket runs. A persistent `run_devops_gate`
+  failure writes an `incident_report.json` *there*; a forge merge failure of the scaffold PR is a
+  loop-closure failure (no incident). The merged application code is untouched on any deploy-phase failure.
 
 ## Step 2 — Gather state (in this order)
 1. **Checkpoint** — `reports/checkpoint.json`. Executor (`GlobalPipelineContext`): `current_attempt`,
@@ -67,12 +71,25 @@ Map the evidence to one class (decisive — pick the dominant one and say so):
   `gh pr merge` failure (`sys.exit(1)`, no incident), a missing `gh`/`GITHUB_TOKEN` (preflight), an
   approval skipped for want of a separate `GITHUB_REVIEWER_TOKEN` (best-effort, expected), or a merge
   refused by *remote* required checks (falls back to a queued `--auto` merge). Fix the forge seam / env, not
-  any agent — the generated code already passed.
+  any agent — the generated code already passed. The E4 deploy-scaffold PR (`chore/devops-scaffold`) uses the
+  same flow, so the same failure modes apply to a `<NNN>_devops_scaffold_…` run.
+- **Lint-gate failure (engine quality bar, step 3.6)** — the HARD lint gate (`run_lint_gate`) found a
+  style/lint violation the agents couldn't clear within `LINT_GATE_MAX_REROUTES`, so it folded into the
+  budgeted cycle and rode to "Retries exhausted". **Tell:** the `[LINT GATE FAILURE]` preamble in
+  `error_trace`/`qa_error_trace` + a `🔶 Lint gate failed` audit line. NOT the deadlock guard (lint is
+  excluded from it). Decide: is the finding genuinely unfixable by the agent (then the engine's `format_cmd`
+  autofix should cover it — fix `environments.py`), or is the per-env `lint_cmd` itself wrong/too strict?
+  Distinct from a *post-merge* red CI — if a generated repo's CI reddens on lint, the cause is an
+  engine/CI `lint_cmd` mismatch (the `format_cmd`↔`lint_cmd` SSOT in `environments.py`, ADR 0020), never the
+  clone.
 - **Boundary crash / hang (escaped to `main()`, no incident)** — an `embedded null byte` `ValueError` from a
   control char in agent-authored text reaching a subprocess argv (fixed at the boundary by
-  `sanitize_for_argv`; a *new* occurrence means a call site bypassed it), or a structured-LLM call that hung
-  (now bounded by `GEMINI_REQUEST_TIMEOUT`; a hang past that ceiling points at the client/timeout wiring).
-  Both are engine-boundary bugs, never an "LLM failure".
+  `sanitize_for_argv`; a *new* occurrence means a call site bypassed it); a `ValueError: Jinja templating is
+  not supported in system messages with Google GenAI` from `{{ }}`/`{% %}` in a system prompt (fixed at the
+  `llm.py` seam by `_relocate_jinja_system_messages`; a *new* occurrence means a role's system prompt grew a
+  marker the relocation missed); or a structured-LLM call that hung (now bounded by `GEMINI_REQUEST_TIMEOUT`;
+  a hang past that ceiling points at the client/timeout wiring). All are engine-boundary bugs, never an
+  "LLM failure".
 
 ## Step 4 — Trace to the systemic flaw (never blame "the LLM")
 Look for engine/prompt causes per the debugging-protocol: path-routing conflicts, strict-validation

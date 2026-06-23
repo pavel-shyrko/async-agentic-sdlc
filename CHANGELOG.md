@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each release maps to a completed SDLC iteration; the corresponding Architecture
 Decision Record (ADR) is linked from the version heading.
 
+## [v0.20.0] - 2026-06-23 — Deployability Closure: DevOps Deploy-Scaffolding (E4) + the Engine Lint Gate
+
+ADR: [0020-deploy-scaffolding-and-lint-gate](./docs/decisions/0020-deploy-scaffolding-and-lint-gate.md)
+(extends [0011](./docs/decisions/0011-secure-sandbox-and-finops-telemetry.md),
+[0012](./docs/decisions/0012-virtual-separation-monorepo-planes.md),
+[0018](./docs/decisions/0018-auto-merge-pr-loop-closure.md),
+[0019](./docs/decisions/0019-cyclical-multi-ticket-orchestration.md))
+
+Archive: [iteration_20](./docs/releases/iteration_20/iteration_20_README.md)
+
+### Added
+- **`--scaffold-deploy` makes the finished app deployable (E4).** A new **`devops` agent**
+  (`src/executor/agents/devops.py`, `prompts/system/devops.md` + three archetype skills
+  `prompts/skills/devops_{rest_api,crud_app,cli_tool}.md`) classifies the merged application and emits
+  structured `DevOpsManifests` (`src/shared/core/models.py`): a multi-stage non-root `Dockerfile` + a Cloud
+  Run deploy workflow for a **web service**, or **no Dockerfile + a build/release matrix** for a
+  **CLI/library**. Auth is **Workload Identity Federation** (org secrets `GCP_WIF_PROVIDER`/
+  `GCP_SERVICE_ACCOUNT` + variables `GCP_PROJECT_ID`/`GCP_REGION`/`GCP_REGISTRY_NAME`; see
+  `docs/guides/devops_setup.md`) — never embedded keys.
+- **`run_devops_scaffold` — a post-batch terminal phase** (`src/executor/runner.py`): runs once after
+  `run_batch` merges every ticket, clones the base branch fresh onto **`chore/devops-scaffold`**, generates →
+  **statically lints** the manifests (`run_devops_gate`) → self-heals `DEVOPS_MAX_RETRIES` (default 1) times →
+  lands them through the **same E2 forge flow** (open → approve → squash-merge), never a raw push. An
+  empty-state guard skips a sourceless clone.
+- **HARD engine lint gate (`run_lint_gate`, FSM step 3.6).** A per-environment `lint_cmd`
+  (`src/shared/core/environments.py`) is now verified inside the cycle: a residual finding fast-fail-reroutes
+  **production → Developer, test → QA** (`classify_lint_findings`, no functional budget), bounded by
+  `LINT_GATE_MAX_REROUTES` (env `PIPELINE_LINT_MAX_REROUTES`, default 2) with a no-progress break;
+  `lint_success` folds into `all_gates_passed`. `lint_cmd` is the **SSOT the DevOps-generated CI runs
+  verbatim**, so **engine-green ⇒ CI-green** — closing the gap where a generated `ruff check` reddened on a
+  finding every engine gate had tolerated.
+
+### Changed
+- **`format_cmd` now auto-applies what the lint gate verifies** (python gains `ruff format`), so only
+  genuinely-unfixable findings (e.g. `F841`) reach an agent.
+- **`run_structured_llm` relocates Jinja-marker system messages to a user turn** (`src/shared/utils/llm.py`,
+  `_relocate_jinja_system_messages`) — a fast-path no-op for every marker-free role; fixes the deterministic
+  `instructor`/Google-GenAI `ValueError` crash on the DevOps prompt's `${{ secrets.* }}` expressions.
+- **Docs & meta-rules synced** — `docs/ARCHITECTURE.md` (the `devops` role + the deploy-scaffolding terminal
+  phase + the step-3.6 lint gate); `.claude/rules/{repo-module-map,pipeline-fsm-loops,run-layout-and-cli,config-constant-convention,agent-provider-model-map}.md`
+  and the `analyze-run` skill (lint-gate / CI-strictness and GenAI-Jinja root-cause classes); `docs/BACKLOG.md`
+  (E4 → DONE; mypy/type-checking + node-eslint provisioning tracked as follow-ups).
+
 ## [v0.19.0] - 2026-06-22 — Cyclical Multi-Ticket Orchestration: Drive Every Ticket to `main` (`--auto-execute`, E3)
 
 ADR: [0019-cyclical-multi-ticket-orchestration](./docs/decisions/0019-cyclical-multi-ticket-orchestration.md)
