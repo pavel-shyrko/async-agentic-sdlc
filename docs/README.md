@@ -1,6 +1,6 @@
 # Documentation
 
-The front door to the **async-agentic-sdlc** docs. Start with the architecture, then drill into setup,
+The front door to the **token-burners-factory** docs. Start with the architecture, then drill into setup,
 decisions, or release history as needed.
 
 ## 🧭 Start here

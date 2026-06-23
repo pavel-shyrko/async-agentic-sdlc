@@ -1,10 +1,19 @@
 import asyncio
 import re
+import time
+from contextvars import ContextVar
 from typing import Any, Type
 
 from src.shared.core.config import instructor_client, ROLE_MODELS
 from src.shared.core.observability import log, finish_reason_name
 from src.shared.utils.api_retry import with_api_retry
+
+# Wall-clock (s) of the most recent run_structured_llm call, published per-task so log_token_usage can
+# attribute time to the agent WITHOUT changing run_structured_llm's 2-tuple return (which dozens of agent
+# tests hard-mock). ContextVars are copied per asyncio task, so the QA fan-out (one task per module) stays
+# isolated; the set→read pair runs sequentially in the same coroutine. Defaults to 0.0 when unset (e.g.
+# under a mocked run_structured_llm), so existing mocked tests are unaffected. See E5 / ADR 0022.
+LAST_LLM_ELAPSED_S: ContextVar[float] = ContextVar("LAST_LLM_ELAPSED_S", default=0.0)
 
 # instructor's Google-GenAI path hard-rejects a SYSTEM message containing Jinja-style markers
 # ({{ }} / {% %}) — extract_genai_system_message in instructor/providers/gemini/utils.py raises
@@ -72,11 +81,16 @@ async def run_structured_llm(
             ),
         )
 
+    start = time.perf_counter()
     try:
-        return await _invoke(messages)
-    except Exception as e:
-        if finish_reason_name(e) != "RECITATION":
-            raise
-        log.warning(f"{agent_name} blocked by RECITATION — retrying once with a paraphrase directive.")
-        guarded = messages + [{"role": "user", "content": RECITATION_GUARD}]
-        return await _invoke(guarded)
+        try:
+            return await _invoke(messages)
+        except Exception as e:
+            if finish_reason_name(e) != "RECITATION":
+                raise
+            log.warning(f"{agent_name} blocked by RECITATION — retrying once with a paraphrase directive.")
+            guarded = messages + [{"role": "user", "content": RECITATION_GUARD}]
+            return await _invoke(guarded)
+    finally:
+        # Publish total wall-clock (incl. retries/backoff) for log_token_usage to attribute to this role.
+        LAST_LLM_ELAPSED_S.set(time.perf_counter() - start)

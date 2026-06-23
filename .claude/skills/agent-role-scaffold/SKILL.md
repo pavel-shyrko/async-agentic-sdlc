@@ -19,9 +19,11 @@ Control plane (`src/nexus/`) or worker plane (`src/development/`)? Does it intro
 context and its structured output model?
 
 ## Steps — the registration checklist (apply each)
-1. **Model + label** — `src/shared/core/config.py`: add `XYZ_MODEL = GEMINI_3_5_FLASH` near the other role
-   models AND an entry in `ROLE_MODELS`: `"xyz": (XYZ_MODEL, "Xyz Agent")`. The dict key is the `role` slug
-   passed to `run_structured_llm`; the label is the human name in logs/telemetry.
+1. **Model + label + plane** — `src/shared/core/config.py`: add `XYZ_MODEL = GEMINI_3_5_FLASH` near the other
+   role models AND an entry in `ROLE_MODELS`: `"xyz": (XYZ_MODEL, "Xyz Agent")`. The dict key is the `role` slug
+   passed to `run_structured_llm`; the label is the human name in logs/telemetry. **ALSO map that exact label
+   in `AGENT_PLANE`** (`nexus`/`development`/`deployment`) — E5 per-plane FinOps derives the rollup from this by
+   label, so a missing entry mis-buckets the role's spend into the default `development` plane.
 2. **System prompt** — `prompts/system/<role>.md`. **⚠ Editing/creating files under `prompts/system/`
    requires explicit Human authorization (CLAUDE.md guardrail) — confirm before writing.** Single-section
    (loaded by `get_system_prompt` + `build_agent_context`, like reviewer/techlead) unless it needs a

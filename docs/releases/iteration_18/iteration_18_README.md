@@ -88,4 +88,4 @@ avoid GitHub lock-in.
   `build_agent_context → fallback_semantic_search` path that previously hung, confirming the timeout fix.
 
 > Validate locally via WSL:
-> `wsl -e bash -lc "cd /mnt/c/code/async-agentic-sdlc && source venv/bin/activate && GEMINI_API_KEY=test-key python3 -m unittest discover -s tests"`
+> `wsl -e bash -lc "cd /mnt/c/code/token-burners-factory && source venv/bin/activate && GEMINI_API_KEY=test-key python3 -m unittest discover -s tests"`

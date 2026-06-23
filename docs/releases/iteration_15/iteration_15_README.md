@@ -97,4 +97,4 @@ budget into a circuit-breaker halt.
   `with_api_retry` backoff.
 
 > Validate locally via WSL:
-> `wsl -e bash -lc "cd /mnt/c/code/async-agentic-sdlc && source venv/bin/activate && python3 -m unittest discover -s tests"`
+> `wsl -e bash -lc "cd /mnt/c/code/token-burners-factory && source venv/bin/activate && python3 -m unittest discover -s tests"`

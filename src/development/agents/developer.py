@@ -1,3 +1,5 @@
+import time
+
 from src.shared.core.observability import log
 from src.shared.core.config import DEVELOPER_MODEL, DEVELOPER_EFFORT, DEVELOPER_CLI_TIMEOUT, DEVELOPER_CLI_IDLE_TIMEOUT
 from src.shared.core.models import GlobalPipelineContext
@@ -66,10 +68,12 @@ async def run_developer_node(
     # the agent on them; they stay under allowed_root so _assert_within_root passes.
     if focus_files:
         code_files += [str(repo_dir_path / f) for f in focus_files]
+    _cli_start = time.perf_counter()
     returncode, usage = await run_claude_cli(
         prompt, code_files, allowed_root=repo_dir, model=DEVELOPER_MODEL, effort=DEVELOPER_EFFORT,
         timeout=DEVELOPER_CLI_TIMEOUT, idle_timeout=DEVELOPER_CLI_IDLE_TIMEOUT,
     )
+    _cli_elapsed = time.perf_counter() - _cli_start
 
     if usage:
         ctx.telemetry.record(
@@ -77,6 +81,8 @@ async def run_developer_node(
             provider="claude",
             cache_read_tokens=usage["cache_read_tokens"],
             cache_write_tokens=usage["cache_write_tokens"],
+            plane="development",
+            duration_seconds=_cli_elapsed,
         )
         log.info(
             f"   [TOKENS] Developer Agent | Input(fresh): {usage['input_tokens']} | "

@@ -99,9 +99,15 @@ def log_token_usage(telemetry: Any, agent_name: str, raw_response: Any, model_na
             if model_name:
                 from src.shared.core.config import estimate_gemini_cost_usd  # lazy: avoid config↔observability cycle
                 cost_usd = estimate_gemini_cost_usd(model_name, usage)
+            # Plane attribution (report-time rollup) + per-call wall-clock — both sourced WITHOUT changing
+            # run_structured_llm's return contract (lazy imports avoid the config/llm ↔ observability cycles).
+            from src.shared.core.config import AGENT_PLANE
+            from src.shared.utils.llm import LAST_LLM_ELAPSED_S
             telemetry.record(
                 agent_name, fresh_in, out_tokens, cost_usd, provider="gemini",
                 cache_read_tokens=cached,  # Gemini implicit caching reports no separate write count
+                plane=AGENT_PLANE.get(agent_name, "development"),
+                duration_seconds=LAST_LLM_ELAPSED_S.get(),
             )
             cache_part = f"Cache-read: {cached} | " if cached else ""
             log.info(
@@ -114,15 +120,25 @@ def log_token_usage(telemetry: Any, agent_name: str, raw_response: Any, model_na
         log.debug(f"Failed to parse token usage for {agent_name}: {e}")
 
 
-def log_finops_summary(telemetry: Any, budget_usd: Any, budget_tokens: int) -> None:
-    """Print the end-of-run ``📊 [FINOPS] GRAND TOTAL`` block: per-agent, per-provider, and budget
-    utilisation. Telemetry-first + explicit budgets so the executor and the Nexus control plane render
-    the identical block from the same code (no ``GlobalPipelineContext`` / module-constant coupling).
+def log_finops_summary(telemetry: Any, budget_usd: Any) -> None:
+    """Print the end-of-run ``📊 [FINOPS] GRAND TOTAL`` block: per-agent (tokens/cost/time), per-plane and
+    per-provider subtotals, and the money budget utilisation. Telemetry-first + explicit budget so the
+    executor, the Nexus control plane, and the E3 batch render the identical block from the same code.
+
+    Budget is money-only (E5): tokens + time are reported, the USD ceiling is the sole gate.
     """
     tel = telemetry
     log.info("📊 [FINOPS] GRAND TOTAL")
     for name, u in tel.by_agent.items():
-        log.info(f"   ├─ {name} ({u.provider}) | {u.total_tokens}t | ${u.cost_usd:.4f} | calls: {u.calls}")
+        log.info(
+            f"   ├─ {name} ({u.provider}, {u.plane}) | {u.total_tokens}t | ${u.cost_usd:.4f} "
+            f"| {u.duration_seconds:.1f}s | calls: {u.calls}"
+        )
+    for plane, agg in tel.by_plane().items():
+        log.info(
+            f"   ├─ Σ plane:{plane} | {int(agg['tokens'])}t | ${agg['cost_usd']:.4f} "
+            f"| {agg['duration_seconds']:.1f}s | calls: {agg['calls']}"
+        )
     for prov, agg in tel.by_provider().items():
         label = "Gemini (est.)" if prov == "gemini" else "Claude (actual)"
         log.info(f"   ├─ Σ {label} | {int(agg['tokens'])}t | ${agg['cost_usd']:.4f}")
@@ -132,10 +148,9 @@ def log_finops_summary(telemetry: Any, budget_usd: Any, budget_tokens: int) -> N
             f"| write {tel.total_cache_write_tokens}t"
         )
     used_pct_usd = (100.0 * float(tel.total_cost_usd) / float(budget_usd)) if budget_usd else 0.0
-    used_pct = (100.0 * tel.total_tokens / budget_tokens) if budget_tokens else 0.0
     log.info(
         f"   └─ TOTAL | ${tel.total_cost_usd:.4f} / ${budget_usd:.2f} budget ({used_pct_usd:.1f}%) "
-        f"| {tel.total_tokens}t / {budget_tokens}t ({used_pct:.1f}%, cache-excluded)"
+        f"| {tel.total_tokens}t (reported) | {tel.total_duration_seconds:.1f}s"
     )
 
 

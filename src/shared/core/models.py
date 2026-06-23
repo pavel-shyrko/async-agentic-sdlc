@@ -126,37 +126,44 @@ class TechLeadContract(BaseModel):
 
 class AgentUsage(BaseModel):
     provider: str = "gemini"   # "gemini" (cost estimated) | "claude" (cost authoritative from CLI)
+    plane: str = "development" # control plane this agent belongs to: nexus | development | deployment
     input_tokens: int = 0      # fresh, uncached prompt tokens
     output_tokens: int = 0
     cache_read_tokens: int = 0   # cheap re-reads of a cached prompt (agentic CLI re-sends) — NOT budgeted
     cache_write_tokens: int = 0  # one-time cache population — NOT budgeted
     total_tokens: int = 0        # budgeted footprint: fresh input + output ONLY (cache excluded)
     cost_usd: Decimal = Decimal("0")
+    duration_seconds: float = 0.0  # cumulative wall-clock spent in this agent's LLM/CLI calls
     calls: int = 0
 
 class PipelineTelemetry(BaseModel):
-    """Cumulative, checkpoint-persisted token/cost telemetry across all agent calls.
+    """Cumulative, checkpoint-persisted token/cost/time telemetry across all agent calls.
 
-    ``total_tokens`` (the value the token Circuit Breaker reads) counts only the real new footprint —
-    fresh input + output — and DELIBERATELY EXCLUDES cache read/write tokens: the agentic Claude CLI
-    re-sends its prompt every internal turn, so cache reads would otherwise dominate the budget while
-    costing ~10% of fresh input. Cache tokens are tracked separately for transparency. ``cost_usd``
-    mixes Gemini (estimated from a price table) and Claude (authoritative, reported by the CLI) and is
-    the money-accurate spend signal. Persisted in the context so both budgets survive ``--resume``.
+    ``cost_usd`` is the ONLY budget gate (money-only breaker, ADR 0022): it mixes Gemini (estimated from a
+    price table) and Claude (authoritative, reported by the CLI). ``total_tokens`` is REPORTED, not capped —
+    it counts only the real new footprint (fresh input + output) and DELIBERATELY EXCLUDES cache read/write
+    tokens: the agentic Claude CLI re-sends its prompt every internal turn, so cache reads would otherwise
+    dominate the count while costing ~10% of fresh input. Cache tokens are tracked separately for
+    transparency. ``duration_seconds`` rolls up per-call wall-clock; ``by_plane()`` aggregates by control
+    plane; ``merge()`` builds the application-wide total. Persisted in the context so spend survives
+    ``--resume``.
     """
     total_tokens: int = 0
     total_cache_read_tokens: int = 0
     total_cache_write_tokens: int = 0
     total_cost_usd: Decimal = Decimal("0")
+    total_duration_seconds: float = 0.0  # cumulative wall-clock across all recorded agent calls
     by_agent: dict[str, AgentUsage] = Field(default_factory=dict)
 
     def record(self, agent: str, input_tokens: int, output_tokens: int,
                cost_usd: Decimal | float = Decimal("0"), provider: str = "gemini",
-               cache_read_tokens: int = 0, cache_write_tokens: int = 0) -> None:
+               cache_read_tokens: int = 0, cache_write_tokens: int = 0,
+               plane: str = "development", duration_seconds: float = 0.0) -> None:
         # Coerce at the boundary so float callers stay safe while precision is preserved exactly.
         cost = cost_usd if isinstance(cost_usd, Decimal) else Decimal(str(cost_usd))
-        slot = self.by_agent.setdefault(agent, AgentUsage(provider=provider))
+        slot = self.by_agent.setdefault(agent, AgentUsage(provider=provider, plane=plane))
         slot.provider = provider
+        slot.plane = plane
         # Budgeted total excludes cache — cache reads are cheap re-sends, not new spend footprint.
         budgeted = input_tokens + output_tokens
         slot.input_tokens += input_tokens
@@ -165,11 +172,13 @@ class PipelineTelemetry(BaseModel):
         slot.cache_write_tokens += cache_write_tokens
         slot.total_tokens += budgeted
         slot.cost_usd += cost
+        slot.duration_seconds += duration_seconds
         slot.calls += 1
         self.total_tokens += budgeted
         self.total_cache_read_tokens += cache_read_tokens
         self.total_cache_write_tokens += cache_write_tokens
         self.total_cost_usd += cost
+        self.total_duration_seconds += duration_seconds
 
     def by_provider(self) -> dict[str, dict]:
         """Aggregate tokens + cost per provider (e.g. ``{"gemini": {...}, "claude": {...}}``)."""
@@ -180,25 +189,64 @@ class PipelineTelemetry(BaseModel):
             slot["cost_usd"] += usage.cost_usd
         return agg
 
-    def finops_report(self, budget_tokens: int, budget_usd: Decimal | float = Decimal("0")) -> dict:
-        """Serializable FinOps summary: totals, budget utilisation, and per-provider/-agent breakdown.
+    def by_plane(self) -> dict[str, dict]:
+        """Aggregate tokens + cost + time + calls per control plane (nexus | development | deployment)."""
+        agg: dict[str, dict] = {}
+        for usage in self.by_agent.values():
+            slot = agg.setdefault(
+                usage.plane,
+                {"tokens": 0, "cost_usd": Decimal("0"), "duration_seconds": 0.0, "calls": 0},
+            )
+            slot["tokens"] += usage.total_tokens
+            slot["cost_usd"] += usage.cost_usd
+            slot["duration_seconds"] += usage.duration_seconds
+            slot["calls"] += usage.calls
+        return agg
 
-        Reports the USD budget as the primary spend signal and the (cache-excluded) token budget as the
-        secondary ceiling. Cache read/write totals are surfaced separately — the full footprint stays
-        auditable even though it is not counted against the token budget.
+    def merge(self, other: "PipelineTelemetry") -> None:
+        """Fold another telemetry's totals + per-agent slots into this one.
+
+        Used to build the application-wide aggregate (E5): the batch merges each finished ticket's
+        telemetry (and the Nexus planning + DevOps phases) into a single ``BatchState.app_telemetry`` so the
+        cross-plane spend, per-role/per-plane breakdown, and the running budget total survive ``--resume``.
+        Sums every cumulative field; per-agent slots accumulate by name (same agent across runs coalesces).
+        """
+        for name, ou in other.by_agent.items():
+            slot = self.by_agent.setdefault(name, AgentUsage(provider=ou.provider, plane=ou.plane))
+            slot.provider = ou.provider
+            slot.plane = ou.plane
+            slot.input_tokens += ou.input_tokens
+            slot.output_tokens += ou.output_tokens
+            slot.cache_read_tokens += ou.cache_read_tokens
+            slot.cache_write_tokens += ou.cache_write_tokens
+            slot.total_tokens += ou.total_tokens
+            slot.cost_usd += ou.cost_usd
+            slot.duration_seconds += ou.duration_seconds
+            slot.calls += ou.calls
+        self.total_tokens += other.total_tokens
+        self.total_cache_read_tokens += other.total_cache_read_tokens
+        self.total_cache_write_tokens += other.total_cache_write_tokens
+        self.total_cost_usd += other.total_cost_usd
+        self.total_duration_seconds += other.total_duration_seconds
+
+    def finops_report(self, budget_usd: Decimal | float = Decimal("0")) -> dict:
+        """Serializable FinOps summary: money spend vs the budget, plus per-plane/-provider/-agent breakdown.
+
+        Budget is **money-only** (E5): the USD ceiling is the sole gate. Tokens are reported as raw counts
+        (cache read/write surfaced separately) but no longer carry a budget — the token total is auditable,
+        not a limit. Time (``duration_seconds``) is rolled up per agent and per plane.
         """
         budget_usd_dec = budget_usd if isinstance(budget_usd, Decimal) else Decimal(str(budget_usd))
-        used_pct = round(100.0 * self.total_tokens / budget_tokens, 2) if budget_tokens else 0.0
         used_pct_usd = round(100.0 * float(self.total_cost_usd) / float(budget_usd_dec), 2) if budget_usd_dec else 0.0
         return {
             "total_cost_usd": round(self.total_cost_usd, 6),
             "budget_usd": round(budget_usd_dec, 6),
             "budget_used_pct_usd": used_pct_usd,
             "total_tokens": self.total_tokens,
-            "budget_tokens": budget_tokens,
-            "budget_used_pct": used_pct,
             "total_cache_read_tokens": self.total_cache_read_tokens,
             "total_cache_write_tokens": self.total_cache_write_tokens,
+            "total_duration_seconds": round(self.total_duration_seconds, 3),
+            "by_plane": self.by_plane(),
             "by_provider": self.by_provider(),
             "by_agent": {name: usage.model_dump() for name, usage in self.by_agent.items()},
         }
@@ -354,6 +402,13 @@ class BatchState(BaseModel):
     tickets: list[str] = Field(default_factory=list)    # full ordered ticket snapshot (TPM order)
     completed: list[str] = Field(default_factory=list)  # tickets already merged to the base branch
     failed: str | None = None          # the ticket that halted the batch (cleared on its later success)
+    # E5 — application-wide FinOps. app_telemetry is the merged Nexus + every ticket + DevOps total, so the
+    # running spend (app_telemetry.total_cost_usd), per-role/per-plane breakdown, and time survive --resume.
+    # The budget CEILING is deliberately NOT stored here — it is re-resolved per invocation (env / --budget),
+    # so re-passing a larger --budget on a resume "adds money" and continues a budget-halted batch.
+    app_telemetry: PipelineTelemetry = Field(default_factory=PipelineTelemetry)
+    nexus_merged: bool = False         # guards against folding the Nexus planning telemetry in twice on resume
+    budget_marker: str | None = None   # set on a clean budget-exhaustion stop; cleared when a resume continues
 
     def save_checkpoint(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

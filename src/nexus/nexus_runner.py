@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 from src.shared.core.boilerplate import build_baseline_block
-from src.shared.core.config import PIPELINE_BUDGET_USD, PIPELINE_BUDGET_TOKENS
+from src.shared.core.config import effective_budget_usd
 from src.shared.core.models import PipelineTelemetry
 from src.shared.core.observability import log, log_finops_summary, describe_finish_reason
 from src.shared.utils.redaction import redact
@@ -123,7 +123,7 @@ async def run_nexus(
         log.error(f"🚨 CRITICAL: Nexus halted at the {phase} phase — {reason}")
         _write_incident_report(state)
         _write_finops_report(state)
-        log_finops_summary(state.telemetry, PIPELINE_BUDGET_USD, PIPELINE_BUDGET_TOKENS)
+        log_finops_summary(state.telemetry, effective_budget_usd())
         sys.exit(1)
 
     # Materialise every planned task as a discrete Markdown ticket under artifacts/. TASK-01 (the
@@ -143,7 +143,7 @@ async def run_nexus(
 
     log.info(f"✅ [NEXUS] Wrote epic.md, blueprint.md, and {len(written)} ticket(s): {written}")
     _write_finops_report(state)
-    log_finops_summary(state.telemetry, PIPELINE_BUDGET_USD, PIPELINE_BUDGET_TOKENS)
+    log_finops_summary(state.telemetry, effective_budget_usd())
     return state.run_dir
 
 
@@ -151,7 +151,7 @@ def _write_finops_report(state: NexusState) -> None:
     """Persist the cumulative FinOps breakdown to ``reports/finops_report.json`` (executor parity).
     Non-fatal: a reporting hiccup must never mask the real run outcome."""
     try:
-        report = state.telemetry.finops_report(PIPELINE_BUDGET_TOKENS, PIPELINE_BUDGET_USD)
+        report = state.telemetry.finops_report(effective_budget_usd())
         # default=str serialises Decimal money as exact strings (json can't encode Decimal natively).
         (state.reports_dir / "finops_report.json").write_text(
             json.dumps(report, indent=2, default=str), encoding="utf-8"

@@ -14,14 +14,14 @@ Entrypoint is `main.py` (→ `src/nexus/runner.py` `main()`). There is no `orche
 toolchain (orchestrator, tests, bandit) runs through **WSL + the project `venv/`** — the Windows
 interpreter lacks the dependencies and the venv is WSL-only.
 
-* **New project (Nexus planning)**: `python3 main.py --idea "<idea>" [--repo <url|path>] [--auto-execute] [--scaffold-deploy]`  (`--auto-execute` plans then drives the Executor over **all** planned tickets to `main` in TPM order via `run_batch` (E3) — **implies `--auto-merge`**; requires `--repo`)
+* **New project (Nexus planning)**: `python3 main.py --idea "<idea>" [--repo <url|path>] [--auto-execute] [--scaffold-deploy] [--budget <usd>]`  (`--auto-execute` plans then drives the Executor over **all** planned tickets to `main` in TPM order via `run_batch` (E3) — **implies `--auto-merge`**; requires `--repo`. `--budget <usd>` sets the application-wide money ceiling for the whole build (E5; overrides `PIPELINE_APP_BUDGET_USD`); the breaker is money-only — re-pass a larger `--budget` on `--resume` to add budget and continue a halted batch)
 * **Execute a ticket**: `python3 main.py --run <project> -f TASK-01 [--auto-merge]`
 * **Close the loop to `main` (E2)**: add `--auto-merge` to any run path → on success open + (best-effort) approve + squash-merge a PR `feat/ticket-<id>` → base. **Implies `--push`**; needs the `gh` CLI + `GITHUB_TOKEN` (and a separate `GITHUB_REVIEWER_TOKEN` for a real approval). Seam: `src/shared/utils/forge.py`.
 * **Scaffold deploy config (E4)**: add `--scaffold-deploy` to an `--auto-execute` run → after the batch merges every ticket, the `devops` agent generates + merges the app's CI/CD config (archetype-aware Dockerfile + GitHub Actions deploy workflow, GCP Cloud Run via WIF) on `chore/devops-scaffold` (`run_devops_scaffold`). Needs the forge env (`gh` + `GITHUB_TOKEN`); one-time org setup in `docs/guides/devops_setup.md`.
 * **Resume a run**: `python3 main.py --resume <project> [NNN]`  (slug alone → latest Nexus run; re-pass `--scaffold-deploy` to run the deploy phase)
 * **Legacy direct run**: `python3 main.py --repo <url|path> --ticket <ID> -f <ticket_path>`
-* **Run Tests**: `wsl -e bash -lc "cd /mnt/c/code/async-agentic-sdlc && source venv/bin/activate && python3 -m unittest discover -s tests"`
-* **Check Lint/Security**: `wsl -e bash -lc "cd /mnt/c/code/async-agentic-sdlc && venv/bin/bandit -r src/"`
+* **Run Tests**: `wsl -e bash -lc "cd /mnt/c/code/token-burners-factory && source venv/bin/activate && python3 -m unittest discover -s tests"`
+* **Check Lint/Security**: `wsl -e bash -lc "cd /mnt/c/code/token-burners-factory && venv/bin/bandit -r src/"`
 
 ## Project Knowledge & Procedures
 * Project knowledge lives in `.claude/rules/*.md` — auto-loaded by Claude Code (path-scoped rules load only when you touch matching files; cross-cutting ones load every session). No manual step needed.

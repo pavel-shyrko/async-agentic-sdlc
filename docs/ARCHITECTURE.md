@@ -23,15 +23,15 @@ Who operates the engine and which external systems it depends on.
 flowchart TB
     human(["👤 Human Operator<br/>(developer / maintainer)"])
 
-    engine["⚙️ Agentic SDLC Engine<br/>Python asyncio FSM · 3 planes + shared<br/>(control · worker · infra)"]
+    engine["⚙️ Token Burners Factory<br/>Python asyncio FSM · 3 planes + shared<br/>(control · worker · infra)"]
 
     gemini["☁️ Google Gemini API<br/>structured output via instructor"]
     claude["🤖 Claude Code CLI<br/>agentic file-editing (Developer)"]
     docker["🐳 Docker Engine<br/>sandboxed build / test / SAST"]
     github["🔗 Git / GitHub remote<br/>+ target repository"]
 
-    human -->|"--idea [--auto-execute] / --run / --resume (CLI)"| engine
-    engine -->|"epic, blueprint, tickets;<br/>logs, FinOps, atomic commit"| human
+    human -->|"--idea [--auto-execute] [--budget] / --run / --resume (CLI)"| engine
+    engine -->|"epic, blueprint, tickets;<br/>per-role/plane/time FinOps, atomic commit"| human
 
     engine -->|"prompts → structured JSON<br/>(PO/SA/TPM, TechLead, QA, Reviewer,<br/>TechWriter, Arbiter, DevOps)"| gemini
     engine -->|"prompt + tools → file edits<br/>(Developer only)"| claude
@@ -50,7 +50,8 @@ flowchart TB
 - **Human Operator** drives everything through one CLI (`main.py` → `src/nexus/runner.py` `main()`):
   `--idea` plans a new project (add `--auto-execute` to then drive the Executor over **all** planned tickets
   to `main` in order, in the same invocation — E3), `--run <project> -f <ticket>` executes one ticket,
-  `--resume` recovers.
+  `--resume` recovers. `--budget <usd>` sets the application-wide money ceiling for the whole build (E5);
+  re-passing a larger value on a `--resume` "adds money" and continues a budget-halted batch.
 - **Google Gemini API** — every *structured* agent (forced Pydantic output via `instructor`):
   PO/SA/TPM (planning) and TechLead/QA/Reviewer/TechWriter/Arbiter/DevOps (execution + deploy-scaffolding).
 - **Claude Code CLI** — the *Developer* agent only; agentic, edits files directly in the run's clone.
@@ -213,6 +214,10 @@ flowchart TB
   retry-budget bonus per amendment.
 - **Terminals:** SUCCESS (commit), deadlock-guard incident, Arbiter halt, or the Financial Circuit Breaker
   / "retries exhausted" hard-halt — each writes `reports/incident_report.json`.
+- **Money-only breaker (E5, ADR [0022](decisions/0022-application-wide-finops-budget.md)):** the 💰 checkpoints
+  call `enforce_financial_circuit_breaker(ctx, budget_usd)` where `budget_usd` is the *remaining* application
+  budget threaded in by `run_batch` (`app_budget − spent`); it gates on **USD only** — tokens are reported,
+  never a ceiling.
 
 ---
 
@@ -230,14 +235,15 @@ sequenceDiagram
     participant C as Claude CLI
     participant R as Git/GitHub
 
-    H->>N: main.py --idea "<idea>" [--auto-execute]
+    H->>N: main.py --idea "<idea>" [--auto-execute] [--budget <usd>]
     N->>G: PO→SA→TPM (structured)
     N->>FS: artifacts/{epic,blueprint,TASK-*}.md + checkpoint
     N-->>H: planned tickets
 
-    Note over H,X: --run <project> -f TASK-01 (one ticket)<br/>OR --auto-execute drives ALL tickets (run_batch, E3)
+    Note over H,X: --run <project> -f TASK-01 (one ticket)<br/>OR --auto-execute drives ALL tickets (run_batch, E3)<br/>under ONE money budget; halts cleanly if exhausted (E5)
     loop each planned ticket → main, in TPM order (--auto-execute)
-        H->>X: execute ticket
+        X->>X: remaining = app_budget − spent; stop cleanly if ≤ floor
+        H->>X: execute ticket (breaker ceiling = remaining)
         X->>R: shallow-clone latest main → feat/ticket-<id>
         X->>G: TechLead → contract
         loop until gates pass or budget exhausted
@@ -250,7 +256,7 @@ sequenceDiagram
         opt --auto-merge (implied by --auto-execute)
             X->>R: open PR → approve (reviewer token) → squash-merge into base
         end
-        X->>FS: batch_state.json (completed += ticket)
+        X->>FS: batch_state.json (completed += ticket; app_telemetry += spend)
     end
     opt --scaffold-deploy (once, after the whole batch — E4 / ADR 0020)
         X->>R: shallow-clone main → chore/devops-scaffold
@@ -258,8 +264,54 @@ sequenceDiagram
         X->>X: run_devops_gate (static-lint the manifests)
         X->>R: open PR → approve → squash-merge deploy config into main
     end
-    X-->>H: ✅ all tickets merged (+ deploy config) + FinOps total
+    X-->>H: ✅ all tickets merged (+ deploy config) + app-wide FinOps (per-role/plane/time)
 ```
+
+---
+
+## FinOps & the application budget (E5)
+
+A single **money** ceiling governs a whole `--idea --auto-execute` build (ADR
+[0022](decisions/0022-application-wide-finops-budget.md)) — `PIPELINE_APP_BUDGET_USD` (default `$25`,
+env-overridable) or the per-invocation `--budget <usd>` flag. The Financial Circuit Breaker is **money-only**:
+tokens are measured and reported, but never a ceiling (the agentic Claude CLI re-sends its prompt each turn,
+so cache-heavy token counts are a poor gate — USD, authoritative for Claude and estimated for Gemini, is the
+honest signal).
+
+```mermaid
+flowchart LR
+    subgraph batch["run_batch — one app budget across N tickets"]
+        direction TB
+        rem["remaining = app_budget − app_telemetry.spent"]
+        gate{"remaining ≤ floor?"}
+        tick["run_executor(budget_usd_ceiling = remaining)<br/>💰 breaker gates on USD only"]
+        merge["app_telemetry.merge(ticket telemetry)"]
+        rem --> gate
+        gate -->|"no"| tick --> merge --> rem
+        gate -->|"yes"| stop(["🛑 clean stop: budget_marker<br/>(resume with a larger --budget to continue)"])
+    end
+    merge -.->|"every batch exit (finally)"| rep[["app_finops_report.json<br/>per-role · per-plane · per-time"]]
+    stop -.-> rep
+
+    classDef stop fill:#9d0208,stroke:#6a040f,color:#fff;
+    classDef dec fill:#e9c46a,stroke:#b08900,color:#000;
+    classDef store fill:#2d6a4f,stroke:#1b4332,color:#fff;
+    class stop stop;
+    class gate dec;
+    class rep store;
+```
+
+**Key:**
+- **One ceiling, threaded remaining.** `run_batch` keeps the running spend in `BatchState.app_telemetry`
+  (Nexus planning + every ticket + DevOps, via `PipelineTelemetry.merge`) and threads `remaining` into each
+  ticket's breaker. Below `PIPELINE_APP_BUDGET_FLOOR_USD` it stops cleanly **before** spending more.
+- **Resume-safe + re-budgetable.** `app_telemetry` persists; the ceiling is **never** persisted (re-resolved
+  per invocation), so `--resume … --budget <larger>` adds money and continues past a `budget_marker`.
+- **Three-dimensional reporting.** Each agent call records `cost / tokens (in/out/cache, cache excluded from
+  the budgeted total) / duration / plane`; `finops_report` rolls these up `by_agent`, `by_plane`
+  (nexus/development/deployment) and `by_provider`. The per-run `reports/finops_report.json` and the
+  batch-level `reports/app_finops_report.json` (written in a `finally`, so it survives any halt) carry the
+  full breakdown; `log_finops_summary` prints the GRAND TOTAL with per-plane subtotals + total wall-clock.
 
 ---
 
@@ -283,9 +335,9 @@ for the full module map and [agent-contracts](../.claude/rules/agent-contracts.m
 | Development | Gates | `src/development/gates.py` | Build / unit-test / **lint** (`run_lint_gate` + `classify_lint_findings`) / SAST in the sandbox. |
 | Deployment | DevOps | `src/deployment/agents/devops.py` | Generate `DevOpsManifests` (archetype-aware Dockerfile + GitHub Actions deploy workflow, WIF) for the finished app (`--scaffold-deploy`, E4). |
 | Deployment | Deploy-scaffold | `src/deployment/provision/scaffold.py` `run_devops_scaffold` | Post-batch terminal phase: clone `main` → DevOps node → `run_devops_gate` (`provision/gates.py`) → merge `chore/devops-scaffold` via the forge flow. |
-| Shared | Models | `src/shared/core/models.py` | `GlobalPipelineContext`, `TechLeadContract`, `ReviewReport`, `ArbiterVerdict`, `BatchState` (E3 batch checkpoint), `DevOpsManifests` (E4 deploy config), telemetry. |
-| Shared | Config | `src/shared/core/config.py` | `ROLE_MODELS`, budgets, pricing, FSM constants. |
-| Shared | Observability | `src/shared/core/observability.py` | Logging, token/FinOps telemetry, finish-reason diagnostics. |
+| Shared | Models | `src/shared/core/models.py` | `GlobalPipelineContext`, `TechLeadContract`, `ReviewReport`, `ArbiterVerdict`, `BatchState` (E3 batch checkpoint + E5 `app_telemetry`/`budget_marker`/`nexus_merged`), `DevOpsManifests` (E4 deploy config), `PipelineTelemetry` (per-agent tokens/cost/**plane**/**time** + `by_plane()`/`merge()`/`finops_report()`). |
+| Shared | Config | `src/shared/core/config.py` | `ROLE_MODELS`, `AGENT_PLANE` (label→plane), the app-wide money budget (`PIPELINE_APP_BUDGET_USD` + floor), pricing, FSM constants. |
+| Shared | Observability | `src/shared/core/observability.py` | Logging, per-role/**plane**/**time** FinOps telemetry (`log_token_usage` reads per-call time from the `run_structured_llm` ContextVar), money-only `log_finops_summary`, finish-reason diagnostics. |
 | Shared | Run layout | `src/shared/core/runs.py` | `Projects` store + `allocate_run_dir` (run-layout SSOT). |
 | Shared | Docker adapter | `src/shared/core/docker_adapter.py` | Least-privilege `run_in_image` / `execute_in_sandbox`. |
 | Shared | Environments | `src/shared/core/environments.py` | `SUPPORTED_ENVIRONMENTS` (image + build/test/**lint** cmds + gitignore); `lint_cmd` is the SSOT shared with the generated CI. |
@@ -295,7 +347,8 @@ for the full module map and [agent-contracts](../.claude/rules/agent-contracts.m
 
 ---
 
-*Diagrams reflect the engine as of the three-plane-split iteration ([CHANGELOG](../CHANGELOG.md) v0.21.0 —
-physical `nexus` / `development` / `deployment` planes, ADR [0021](decisions/0021-physical-three-plane-split.md)).
-For the "why" behind each decision see [decisions/](decisions/README.md); for what's still open see
-[BACKLOG.md](BACKLOG.md).*
+*Diagrams reflect the engine as of the application-wide FinOps-budget iteration ([CHANGELOG](../CHANGELOG.md)
+v0.22.0 — money-only app budget + per-role/plane/time reporting, ADR
+[0022](decisions/0022-application-wide-finops-budget.md); over the three-plane split of v0.21.0, ADR
+[0021](decisions/0021-physical-three-plane-split.md)). For the "why" behind each decision see
+[decisions/](decisions/README.md); for what's still open see [BACKLOG.md](BACKLOG.md).*

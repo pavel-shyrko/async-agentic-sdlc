@@ -6,7 +6,7 @@ paths:
 
 # Plane import direction & cycle-break invariant
 
-The 3-plane split (ADR [0021](../../docs/decisions/0021-physical-three-plane-split.md)) introduces one unavoidable back-edge: the **Deployment** plane's `run_devops_scaffold` reuses the **Nexus** plane's transaction/forge/FinOps/incident SSOTs (`RunConfig`, `bootstrap_session`, `finalize_transaction`, `finalize_pr`, `_abort_with_incident`, `write_finops_report`, `log_finops_summary`). The dependency direction is correct (`deployment → nexus`), but it creates a module-load cycle: `scaffold.py` imports from `runner.py`, and `run_batch` in `runner.py` calls `run_devops_scaffold`.
+The 3-plane split (ADR [0021](../../docs/decisions/0021-physical-three-plane-split.md)) introduces one unavoidable back-edge: the **Deployment** plane's `run_devops_scaffold` reuses the **Nexus** plane's transaction/forge/FinOps/incident SSOTs (`RunConfig`, `bootstrap_session`, `finalize_transaction`, `finalize_pr`, `_abort_with_incident`, `write_finops_report`, `log_finops_summary`, and — since E5 — `enforce_financial_circuit_breaker`). The dependency direction is correct (`deployment → nexus`), but it creates a module-load cycle: `scaffold.py` imports from `runner.py`, and `run_batch` in `runner.py` calls `run_devops_scaffold`.
 
 This rule enforces the **one breaking seam** that makes the cycle safe: a **lazy, call-time import** at the single use site.
 
@@ -17,7 +17,9 @@ This rule enforces the **one breaking seam** that makes the cycle safe: a **lazy
 ```python
 if cfg.scaffold_deploy:
     from src.deployment.provision.scaffold import run_devops_scaffold
-    await run_devops_scaffold(projects, project, cfg, nexus_run_dir)
+    devops_remaining = app_budget - batch.app_telemetry.total_cost_usd  # E5: thread the remaining budget
+    await run_devops_scaffold(projects, project, cfg, nexus_run_dir,
+                              budget_usd_ceiling=devops_remaining, app_telemetry=batch.app_telemetry)
 ```
 
 **Why:** at module import time, `src/nexus/runner.py` is still being loaded; a top-level `from src.deployment.provision.scaffold import run_devops_scaffold` would trigger `scaffold.py`'s imports (including `from src.nexus.runner import …`), creating a cycle that Python's import system blocks with a stale `ModuleNotFoundError` or incomplete module object. A call-time import defers the resolution until *after* `src/nexus/runner` is fully initialized, breaking the cycle. This is the **same pattern** `main()` already uses to import `nexus_runner` — a documented seam, not a workaround.

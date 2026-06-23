@@ -324,29 +324,35 @@ class PipelineTelemetryTests(unittest.TestCase):
         self.assertEqual(tel.total_cost_usd, Decimal("0.14"))   # money is the real spend signal
 
     def test_by_provider_and_finops_report(self) -> None:
-        # Arrange — two providers with distinct token/cost footprints.
+        # Arrange — two providers with distinct token/cost footprints (+ plane/time, E5).
         tel = PipelineTelemetry()
-        tel.record("TechLead", 100, 20, 0.0003, provider="gemini")
-        tel.record("QA Agent", 50, 10, 0.0002, provider="gemini")
-        tel.record("Developer Agent", 1000, 200, 0.1328, provider="claude", cache_read_tokens=50_000)
+        tel.record("TechLead", 100, 20, 0.0003, provider="gemini", plane="development", duration_seconds=1.5)
+        tel.record("QA Agent", 50, 10, 0.0002, provider="gemini", plane="development", duration_seconds=2.0)
+        tel.record("Developer Agent", 1000, 200, 0.1328, provider="claude", cache_read_tokens=50_000,
+                   plane="development", duration_seconds=4.0)
         # Act
         bp = tel.by_provider()
-        report = tel.finops_report(budget_tokens=10_000, budget_usd=Decimal("1.00"))
+        report = tel.finops_report(budget_usd=Decimal("1.00"))  # money-only signature (E5)
         # Assert — per-provider aggregation (cache excluded from token totals).
         self.assertEqual(bp["gemini"]["tokens"], 180)
         self.assertEqual(bp["gemini"]["cost_usd"], Decimal("0.0005"))
         self.assertEqual(bp["claude"]["tokens"], 1200)
         self.assertEqual(bp["claude"]["cost_usd"], Decimal("0.1328"))
-        # Assert — token budget math (1380 / 10000 = 13.8%), cache surfaced separately.
+        # Assert — tokens reported (no token budget anymore), cache surfaced separately.
         self.assertEqual(report["total_tokens"], 1380)
-        self.assertEqual(report["budget_tokens"], 10_000)
-        self.assertAlmostEqual(report["budget_used_pct"], 13.8)
+        self.assertNotIn("budget_tokens", report)       # token budget removed (money-only)
+        self.assertNotIn("budget_used_pct", report)
         self.assertEqual(report["total_cache_read_tokens"], 50_000)
-        # Assert — USD budget is the primary signal: $0.1333 / $1.00 = 13.33%.
+        # Assert — USD budget is the sole gate: $0.1333 / $1.00 = 13.33%.
         self.assertEqual(report["budget_usd"], Decimal("1.000000"))
         self.assertAlmostEqual(report["budget_used_pct_usd"], 13.33)
         self.assertIn("gemini", report["by_provider"])
         self.assertEqual(report["by_agent"]["Developer Agent"]["provider"], "claude")
+        # Assert — time + per-plane rollup (E5).
+        self.assertAlmostEqual(report["total_duration_seconds"], 7.5)
+        self.assertEqual(report["by_plane"]["development"]["tokens"], 1380)
+        self.assertEqual(report["by_plane"]["development"]["calls"], 3)
+        self.assertAlmostEqual(float(report["by_plane"]["development"]["duration_seconds"]), 7.5)
 
     def test_telemetry_survives_checkpoint_round_trip(self) -> None:
         # Arrange
@@ -497,6 +503,50 @@ class BatchStateCheckpointTests(unittest.TestCase):
         self.assertEqual(batch.tickets, [])
         self.assertEqual(batch.completed, [])
         self.assertIsNone(batch.failed)
+        # E5 — application-wide accounting defaults.
+        self.assertEqual(batch.app_telemetry.total_cost_usd, Decimal("0"))
+        self.assertFalse(batch.nexus_merged)
+        self.assertIsNone(batch.budget_marker)
+
+    def test_app_telemetry_and_markers_survive_round_trip(self) -> None:
+        # E5 — the running application spend + resume markers must persist for --resume re-budgeting.
+        with TemporaryDirectory() as td:
+            path = Path(td) / "reports" / "batch_state.json"
+            batch = BatchState(project_slug="p", nexus_run="001_nexus_plan",
+                               tickets=["TASK-01", "TASK-02"], completed=["TASK-01"],
+                               nexus_merged=True, budget_marker="App budget exhausted before 'TASK-02'.")
+            batch.app_telemetry.record("Developer Agent", 1000, 200, "0.42",
+                                       provider="claude", plane="development", duration_seconds=5.0)
+            batch.save_checkpoint(path)
+
+            loaded = BatchState.load_checkpoint(path)
+            self.assertTrue(loaded.nexus_merged)
+            self.assertEqual(loaded.budget_marker, "App budget exhausted before 'TASK-02'.")
+            self.assertEqual(loaded.app_telemetry.total_cost_usd, Decimal("0.42"))
+            self.assertAlmostEqual(loaded.app_telemetry.total_duration_seconds, 5.0)
+            self.assertEqual(loaded.app_telemetry.by_plane()["development"]["calls"], 1)
+
+
+class PipelineTelemetryMergeTests(unittest.TestCase):
+    """E5 — merge() folds a run's telemetry into the application-wide accumulator (totals + per-agent)."""
+
+    def test_merge_sums_totals_and_coalesces_agents(self) -> None:
+        app = PipelineTelemetry()
+        app.record("Developer Agent", 100, 20, "0.10", provider="claude", plane="development", duration_seconds=1.0)
+
+        ticket = PipelineTelemetry()
+        ticket.record("Developer Agent", 200, 40, "0.20", provider="claude", plane="development", duration_seconds=2.0)
+        ticket.record("QA Agent", 50, 10, "0.01", provider="gemini", plane="development", duration_seconds=0.5)
+
+        app.merge(ticket)
+        # Totals sum across both telemetries.
+        self.assertEqual(app.total_cost_usd, Decimal("0.31"))
+        self.assertEqual(app.total_tokens, 100 + 20 + 200 + 40 + 50 + 10)
+        self.assertAlmostEqual(app.total_duration_seconds, 3.5)
+        # Same-named agent coalesces; a new agent is added.
+        self.assertEqual(app.by_agent["Developer Agent"].calls, 2)
+        self.assertEqual(app.by_agent["Developer Agent"].cost_usd, Decimal("0.30"))
+        self.assertIn("QA Agent", app.by_agent)
 
 
 class DevOpsManifestsModelTests(unittest.TestCase):

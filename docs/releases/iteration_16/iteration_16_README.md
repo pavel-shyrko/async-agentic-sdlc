@@ -93,4 +93,4 @@ agent-fixable, so a contract-level contradiction was an invisible infinite loop.
   exercised end-to-end.
 
 > Validate locally via WSL:
-> `wsl -e bash -lc "cd /mnt/c/code/async-agentic-sdlc && source venv/bin/activate && GEMINI_API_KEY=test-key python3 -m unittest discover -s tests"`
+> `wsl -e bash -lc "cd /mnt/c/code/token-burners-factory && source venv/bin/activate && GEMINI_API_KEY=test-key python3 -m unittest discover -s tests"`

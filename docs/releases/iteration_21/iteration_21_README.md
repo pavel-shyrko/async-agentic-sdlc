@@ -85,4 +85,4 @@ calls; observing exactly 2 proves the *guard*, not the cap, fired, leaving the g
   `deployment → nexus` cycle with no top-level circular import.
 
 > Validate locally via WSL:
-> `wsl -e bash -lc "cd /mnt/c/code/async-agentic-sdlc && source venv/bin/activate && GEMINI_API_KEY=test-key python3 -m unittest discover -s tests"`
+> `wsl -e bash -lc "cd /mnt/c/code/token-burners-factory && source venv/bin/activate && GEMINI_API_KEY=test-key python3 -m unittest discover -s tests"`

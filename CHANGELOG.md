@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each release maps to a completed SDLC iteration; the corresponding Architecture
 Decision Record (ADR) is linked from the version heading.
 
+## [v0.22.0] - 2026-06-23 — Application-wide FinOps Budget (money-only) + per-role/plane/time reporting
+
+ADR: [0022-application-wide-finops-budget](./docs/decisions/0022-application-wide-finops-budget.md)
+(extends [0011](./docs/decisions/0011-secure-sandbox-and-finops-telemetry.md),
+[0019](./docs/decisions/0019-cyclical-multi-ticket-orchestration.md))
+
+### Added
+- **One application-wide money budget (E5).** `PIPELINE_APP_BUDGET_USD` (env, default `$25.00`) — overridable
+  per-invocation by the new **`--budget <usd>`** flag — governs a whole `--idea --auto-execute` build instead
+  of each ticket in isolation. `run_batch` accumulates spend into `BatchState.app_telemetry`, threads the
+  *remaining* budget into each ticket's breaker (`run_executor(budget_usd_ceiling=…)`), and stops cleanly
+  with a `budget_marker` once the remaining budget hits `PIPELINE_APP_BUDGET_FLOOR_USD` (default `$0.01`).
+- **Re-budgeting on resume.** The ceiling is never persisted, so `--resume <project> --budget <larger>`
+  continues a batch that stopped on exhaustion.
+- **Per-role / per-plane / per-time FinOps.** `AgentUsage` gains `plane` + `duration_seconds`;
+  `PipelineTelemetry` gains `total_duration_seconds`, `by_plane()`, and `merge()`. A new
+  `app_finops_report.json` (in the Nexus run dir) merges Nexus + every ticket + DevOps spend, and the
+  GRAND TOTAL block now prints per-plane subtotals and wall-clock. Plane is attributed from the `AGENT_PLANE`
+  SSOT; per-call time is collected via a `ContextVar` set in `run_structured_llm` (no return-shape change).
+
+### Changed
+- **The Financial Circuit Breaker is money-only.** `enforce_financial_circuit_breaker(ctx, budget_usd)` takes
+  the effective ceiling as a parameter and gates on USD alone; the token-budget branch is removed.
+  `PIPELINE_BUDGET_TOKENS` is now a report-only figure (cache still excluded). `run_executor` returns the
+  final `GlobalPipelineContext` (was `bool`) so the batch can fold its telemetry into the app total.
+- The E4 DevOps phase (`run_devops_scaffold`) enforces the remaining budget and folds its (even partial)
+  spend into the app total via a `finally`-merge, so a budget halt mid-self-heal stays accounted for.
+
+### Fixed
+- **GRAND TOTAL / `finops_report.json` now render against the effective `--budget` ceiling, not the
+  `PIPELINE_APP_BUDGET_USD` default.** The per-ticket and Nexus summaries hard-coded the module default
+  (e.g. `/ $25.00`) even under `--budget 8.50` — the breaker always *enforced* the real ceiling, only the
+  *displayed* denominator was wrong. The effective ceiling is published via a runtime-only
+  `EFFECTIVE_BUDGET_USD` `ContextVar` (`effective_budget_usd()` SSOT, never persisted, so re-budgeting is
+  unaffected): set to the app budget in `main()` and to each ticket's *remaining* ceiling in `run_executor`
+  / `run_devops_scaffold`, and read by the report/summary wrappers in `src/nexus/runner.py` +
+  `src/nexus/nexus_runner.py`. Enforcement behaviour is unchanged.
+
 ## [v0.21.0] - 2026-06-23 — Physical Three-Plane Split: nexus / development / deployment
 
 ADR: [0021-physical-three-plane-split](./docs/decisions/0021-physical-three-plane-split.md)

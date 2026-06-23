@@ -77,4 +77,4 @@ a second caller could reuse.
   (cache-excluded). The remaining 3 tickets correctly did **not** run (E1 single-ticket scope).
 
 > Validate locally via WSL:
-> `wsl -e bash -lc "cd /mnt/c/code/async-agentic-sdlc && source venv/bin/activate && GEMINI_API_KEY=test-key python3 -m unittest discover -s tests"`
+> `wsl -e bash -lc "cd /mnt/c/code/token-burners-factory && source venv/bin/activate && GEMINI_API_KEY=test-key python3 -m unittest discover -s tests"`

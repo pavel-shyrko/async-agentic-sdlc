@@ -9,7 +9,11 @@ paths:
 # Tunable limits are named module constants
 
 Every cap, budget, and limit in the engine is declared as an UPPER_CASE module-level constant, and the
-runtime-tunable ones read an env override: `PIPELINE_BUDGET_TOKENS`, `MAX_FUNCTIONAL_RETRIES`
+runtime-tunable ones read an env override: `PIPELINE_APP_BUDGET_USD` (the single application-wide money
+ceiling governing a whole `--idea --auto-execute` build, threaded per-ticket as the remaining budget — ADR
+0022 / E5; overridable per-invocation by the `--budget` CLI flag), `PIPELINE_APP_BUDGET_FLOOR_USD` (the
+batch stops cleanly before dispatching a ticket once the remaining budget drops to this), `PIPELINE_BUDGET_TOKENS`
+(report-only since E5 — the breaker is money-only, no token ceiling), `MAX_FUNCTIONAL_RETRIES`
 (env `PIPELINE_MAX_RETRIES`), `GUARDRAIL_MAX_REROUTES`, `QA_GATE_MAX_REROUTES`, `QA_LINT_MAX_REROUTES`,
 `LINT_GATE_MAX_REROUTES` (env `PIPELINE_LINT_MAX_REROUTES`, default 2 — the step-3.6 style/lint-gate
 fast-fail budget), `DEVOPS_MAX_RETRIES` (E4 deploy-manifest static-lint self-heal budget, default 1),

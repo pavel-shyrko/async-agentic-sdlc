@@ -76,6 +76,14 @@ push would bypass branch protection + the audited PR trail every ticket uses. Th
 untouched on any deploy-phase failure (a persistent gate failure writes an incident in the
 `NNN_devops_scaffold_…` run dir).
 
+**E5 budget (ADR 0022):** `run_batch` threads the *remaining* application budget into
+`run_devops_scaffold(budget_usd_ceiling=…)`, and the deploy phase enforces it via
+`enforce_financial_circuit_breaker(ctx, budget_usd)` **after every DevOps generation** — including inside the
+`DEVOPS_MAX_RETRIES` self-heal loop — so an exhaustion mid-generation halts correctly. It also receives the
+`app_telemetry` accumulator by reference and merges its spend into it in its **own `finally`**, so even a
+budget `PipelineHalt` mid-self-heal still folds the partial DevOps spend into the application total before the
+batch's `finally` writes `app_finops_report.json`. See [[finops-app-budget]].
+
 Related: [[repo-module-map]] (where the symbols live), [[pipeline-fsm-loops]] (the step-3.6 lint loop +
 the post-batch devops phase), [[agent-provider-model-map]] (the `devops` Gemini role),
 [[config-constant-convention]] (`LINT_GATE_MAX_REROUTES` / `DEVOPS_MAX_RETRIES`),

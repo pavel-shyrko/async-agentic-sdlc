@@ -42,6 +42,7 @@ with the `/adr-generation` skill (next free sequence number).
 | [0012](0012-virtual-separation-monorepo-planes.md) | Virtual separation: `nexus` / `executor` / `shared` planes by import discipline (logical before physical). *(superseded by 0021.)* |
 | [0015](0015-unified-project-run-topology.md) | One run-layout SSOT + self-describing checkpoint (`kind`); per-project `project.json` umbrella. |
 | [0021](0021-physical-three-plane-split.md) | Physical split: `nexus` (control + FSM) / `development` (dev agents + gates) / `deployment` (devops + scaffold); `src/executor/` removed, lazy-import seam for the `deployment → nexus` SSOT back-edge (supersedes 0012). |
+| [0022](0022-application-wide-finops-budget.md) | Application-wide **money-only** FinOps budget: one `PIPELINE_APP_BUDGET_USD` (or `--budget`) threaded as the remaining budget per ticket, accumulated in `BatchState.app_telemetry` (resume-safe + re-budgetable); token ceiling removed; per-role/per-plane/time reporting (`app_finops_report.json`). |
 
 ## QA Test Maintenance
 | ADR | Decision |

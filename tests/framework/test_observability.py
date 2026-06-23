@@ -115,6 +115,40 @@ class LogTokenUsageTests(unittest.TestCase):
         self.assertEqual(telemetry.total_cache_read_tokens, 1500)
         qa = telemetry.by_agent["QA Agent"]
         self.assertEqual((qa.input_tokens, qa.output_tokens, qa.cache_read_tokens), (500, 400, 1500))
+        # E5 — plane is derived from AGENT_PLANE (no per-agent-call change); QA is a development-plane role.
+        self.assertEqual(qa.plane, "development")
+
+    def test_plane_and_duration_recorded_from_contextvar(self) -> None:
+        # E5 — log_token_usage attributes the plane (via AGENT_PLANE) and reads the per-call wall-clock from
+        # the ContextVar set by run_structured_llm, WITHOUT any change to its 2-tuple return.
+        from src.shared.utils.llm import LAST_LLM_ELAPSED_S
+        telemetry = PipelineTelemetry()
+        raw = SimpleNamespace(usage_metadata=SimpleNamespace(
+            prompt_token_count=100, candidates_token_count=20,
+            cached_content_token_count=0, total_token_count=120, prompt_tokens_details=None,
+        ))
+        token = LAST_LLM_ELAPSED_S.set(3.5)
+        try:
+            log_token_usage(telemetry, "Product Owner Agent", raw, model_name=None)
+        finally:
+            LAST_LLM_ELAPSED_S.reset(token)
+        po = telemetry.by_agent["Product Owner Agent"]
+        self.assertEqual(po.plane, "nexus")               # PO is a control-plane role
+        self.assertAlmostEqual(po.duration_seconds, 3.5)  # wall-clock sourced from the ContextVar
+        self.assertAlmostEqual(telemetry.total_duration_seconds, 3.5)
+
+    def test_duration_defaults_to_zero_when_contextvar_unset(self) -> None:
+        # The mocked-call path (no run_structured_llm) leaves the var at its default → duration 0.0,
+        # so existing agent-node tests that mock the LLM are unaffected (no return-shape regression).
+        from src.shared.utils.llm import LAST_LLM_ELAPSED_S
+        LAST_LLM_ELAPSED_S.set(0.0)
+        telemetry = PipelineTelemetry()
+        raw = SimpleNamespace(usage_metadata=SimpleNamespace(
+            prompt_token_count=10, candidates_token_count=5,
+            cached_content_token_count=0, total_token_count=15, prompt_tokens_details=None,
+        ))
+        log_token_usage(telemetry, "Reviewer Agent", raw, model_name=None)
+        self.assertEqual(telemetry.by_agent["Reviewer Agent"].duration_seconds, 0.0)
 
 
 class DescribeFinishReasonTests(unittest.TestCase):
