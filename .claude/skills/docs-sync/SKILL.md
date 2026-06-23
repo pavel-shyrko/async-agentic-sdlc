@@ -8,6 +8,10 @@ description: Factually synchronize CHANGELOG.md (Keep a Changelog format), READM
 ## Context
 Update factual project-state tracking after code changes. Focus strictly on "What" changed.
 
+> **Out of scope — NEVER touch `docs/hackathon/`.** That directory is a human-gated, manually curated
+> competition dossier; it is excluded from every sync surface and must not be read from or written to by
+> this skill. See [hackathon-docs-are-human-gated](../../rules/hackathon-docs-are-human-gated.md).
+
 ## Protocol
 1. **Diff Analysis**: Read the recent commits or `git diff`.
 2. **CHANGELOG Update**:
