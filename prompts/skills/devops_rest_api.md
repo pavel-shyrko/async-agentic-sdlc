@@ -14,6 +14,7 @@ ARCHETYPE: REST API / web service — deploy to Google Cloud Run.
 
 ## deploy.yml (GitHub Actions → Cloud Run)
 - Trigger on push to the default branch.
+- If you add a pre-deploy build/test/lint step, run the **canonical project commands supplied in the prompt verbatim** (the given `build_cmd`/`test_cmd`/`lint_cmd`). Do NOT invent extra linters/formatters/type-checkers the project was not validated against.
 - `permissions: { id-token: write, contents: read }` (required for WIF).
 - Authenticate with `google-github-actions/auth` using `workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}` and `service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}` — NO key JSON.
 - Build + deploy with `google-github-actions/deploy-cloudrun` (source or image deploy), passing the service name, `${{ vars.GCP_PROJECT_ID }}`, and `${{ vars.GCP_REGION }}`. For an image deploy, build the Artifact Registry path from `${{ vars.GCP_REGION }}`, `${{ vars.GCP_PROJECT_ID }}`, and `${{ vars.GCP_REGISTRY_NAME }}`.

@@ -1,9 +1,35 @@
 import asyncio
+import re
 from typing import Any, Type
 
 from src.shared.core.config import instructor_client, ROLE_MODELS
 from src.shared.core.observability import log, finish_reason_name
 from src.shared.utils.api_retry import with_api_retry
+
+# instructor's Google-GenAI path hard-rejects a SYSTEM message containing Jinja-style markers
+# ({{ }} / {% %}) — extract_genai_system_message in instructor/providers/gemini/utils.py raises
+# unconditionally on a match. A few of our agents legitimately teach a templated-config language in
+# their system prompt (the DevOps agent's GitHub Actions `${{ secrets.* }}` / `${{ vars.* }}`
+# expressions). We never pass a Jinja `context`, so instructor renders nothing (templating short-circuits
+# on an empty context) — the markers are pure literals and the guard is the only obstacle. Since the
+# guard inspects ONLY system-role content, relocating such a system message into a user turn (where it is
+# neither guard-checked nor rendered) lets the literal `{{ }}` reach the model verbatim. The pattern
+# mirrors the guard's exactly (no DOTALL) so we relocate precisely the messages it would reject.
+_JINJA_MARKER = re.compile(r"{{.*?}}|{%.*?%}")
+
+
+def _relocate_jinja_system_messages(messages: list[dict]) -> list[dict]:
+    """Demote any Jinja-marker-bearing system message to a user turn (see note above).
+
+    Fast-path no-op for every role whose system prompt is marker-free (the list is returned unchanged),
+    so existing structured calls are byte-identical; only a config-generating role is rewritten.
+    """
+    def _tainted(m: dict) -> bool:
+        return m.get("role") == "system" and bool(_JINJA_MARKER.search(m.get("content") or ""))
+
+    if not any(_tainted(m) for m in messages):
+        return messages
+    return [{**m, "role": "user"} if _tainted(m) else m for m in messages]
 
 # Appended as an extra user turn after a RECITATION block: Gemini refused because the output reproduced
 # text verbatim, so the only useful recovery is to redo the task without copying. Follows the hint in
@@ -35,13 +61,14 @@ async def run_structured_llm(
 
     @with_api_retry(max_retries=3, agent_name=agent_name)
     async def _invoke(msgs: list[dict]) -> tuple:
+        safe_msgs = _relocate_jinja_system_messages(msgs)
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None,
             lambda: instructor_client.chat.completions.create_with_completion(
                 model=model_name,
                 response_model=response_model,
-                messages=msgs,
+                messages=safe_msgs,
             ),
         )
 

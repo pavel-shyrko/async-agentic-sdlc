@@ -5,6 +5,7 @@ read/classify/write/stage logic against a real TemporaryDirectory; the gate test
 validation (YAML well-formedness + Dockerfile directives) with no Docker/sandbox.
 """
 import os
+import re
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -18,6 +19,7 @@ os.environ.setdefault("GEMINI_API_KEY", "test-key")
 from src.executor.agents import devops
 from src.executor.nodes.gates import run_devops_gate
 from src.shared.core.models import DevOpsManifests, GlobalPipelineContext, WorkspacePaths
+from src.shared.utils.llm import _relocate_jinja_system_messages
 
 
 def _ctx(repo: Path) -> GlobalPipelineContext:
@@ -107,6 +109,33 @@ class RunDevopsNodeTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertIn("deploy.yml is not valid YAML", captured["user"])
 
+    async def test_ci_commands_injected_into_prompt(self) -> None:
+        # The canonical env commands (the SSOT the CI must run verbatim) reach the user prompt with the
+        # "MUST run EXACTLY these" framing — so the generated CI mirrors the engine's own gates.
+        with TemporaryDirectory() as td:
+            repo = Path(td)
+            ctx = _ctx(repo)
+            captured: dict[str, str] = {}
+
+            def _capture(role, model, messages):
+                captured["user"] = messages[1]["content"]
+                return (DevOpsManifests(archetype="cli_tool", workflow_content="name: x\non: push\n",
+                                        engineering_reasoning="r"),
+                        SimpleNamespace(usage_metadata=None))
+
+            with (
+                mock.patch.object(devops, "run_structured_llm", new=AsyncMock(side_effect=_capture)),
+                mock.patch.object(devops.subprocess, "run"),
+            ):
+                await devops.run_devops_node(
+                    ctx, blueprint_text="b", repo_map="m",
+                    environment_ids="python-3.12-core",
+                    ci_commands="- environment_id: python-3.12-core\n    lint_cmd: ruff check --no-cache . && ruff format --check .",
+                )
+
+            self.assertIn("ruff check --no-cache", captured["user"])
+            self.assertIn("MUST run EXACTLY these", captured["user"])
+
 
 class RunDevopsGateTests(unittest.TestCase):
     """Static lint: deploy.yml must be well-formed YAML; a Dockerfile (if present) needs FROM + CMD."""
@@ -153,6 +182,47 @@ class RunDevopsGateTests(unittest.TestCase):
             problems = run_devops_gate(repo)
             self.assertTrue(any("FROM" in p for p in problems), problems)
             self.assertTrue(any("CMD/ENTRYPOINT" in p for p in problems), problems)
+
+
+class JinjaSystemMessageRelocationTests(unittest.TestCase):
+    """Regression for the instructor GenAI guard that rejects {{ }} / {% %} in a SYSTEM message.
+
+    The DevOps agent's prompt teaches GitHub Actions `${{ secrets.* }}` / `${{ vars.* }}` syntax, which
+    tripped extract_genai_system_message and crashed E4 deterministically (3 identical retries). The
+    run_structured_llm seam relocates such a system message into a user turn — where the marker is
+    neither guard-checked nor (absent a Jinja context) rendered — so the literal reaches the model intact.
+    """
+
+    def test_clean_messages_pass_through_unchanged(self) -> None:
+        msgs = [{"role": "system", "content": "plain instructions, no templates"},
+                {"role": "user", "content": "do the thing"}]
+        self.assertIs(_relocate_jinja_system_messages(msgs), msgs)   # identity: no-op for marker-free roles
+
+    def test_jinja_system_message_is_demoted_to_user(self) -> None:
+        msgs = [{"role": "system", "content": "auth via ${{ secrets.GCP_WIF_PROVIDER }}"},
+                {"role": "user", "content": "ship it"}]
+        out = _relocate_jinja_system_messages(msgs)
+        self.assertEqual(out[0]["role"], "user")                            # demoted off the system role
+        self.assertIn("${{ secrets.GCP_WIF_PROVIDER }}", out[0]["content"])  # literal preserved verbatim
+        self.assertEqual(out[1], {"role": "user", "content": "ship it"})    # the real user turn untouched
+        self.assertFalse(any(m["role"] == "system" for m in out))          # nothing left for the guard
+        self.assertIsNot(out, msgs)                                        # original list not mutated
+
+    def test_statement_marker_also_triggers_relocation(self) -> None:
+        msgs = [{"role": "system", "content": "loop {% for x in y %}{% endfor %}"}]
+        self.assertEqual(_relocate_jinja_system_messages(msgs)[0]["role"], "user")
+
+    def test_real_devops_system_prompt_is_cleared_by_the_seam(self) -> None:
+        # The exact system message the node assembles (system prompt + the three archetype skills). Proves
+        # the crash trigger is real, and that after the seam no system message would trip instructor's guard.
+        system_prompt = f"{devops.get_system_prompt('devops')}\n\n{devops._archetype_guidance()}"
+        self.assertRegex(system_prompt, r"{{.*?}}")   # the real prompt genuinely carries the marker
+        out = _relocate_jinja_system_messages(
+            [{"role": "system", "content": system_prompt}, {"role": "user", "content": "go"}]
+        )
+        self.assertFalse(
+            any(m["role"] == "system" and re.search(r"{{.*?}}|{%.*?%}", m["content"]) for m in out)
+        )
 
 
 if __name__ == "__main__":

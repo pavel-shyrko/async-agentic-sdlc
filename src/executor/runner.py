@@ -16,7 +16,7 @@ from src.shared.core.observability import log_finops_summary as _render_finops_s
 from src.shared.core.config import check_environment, PIPELINE_BUDGET_TOKENS, PIPELINE_BUDGET_USD
 from src.shared.core.models import GlobalPipelineContext, WorkspacePaths, RUNS_BASE, BatchState
 from src.shared.core.runs import Projects
-from src.shared.core.environments import is_test_file, get_qa_profile
+from src.shared.core.environments import is_test_file, get_qa_profile, SUPPORTED_ENVIRONMENTS
 from src.shared.core.prompts import generate_repo_map
 from src.shared.utils.git_helpers import get_git_root, get_pipeline_snapshot_files
 from src.shared.utils.redaction import redact
@@ -28,7 +28,7 @@ from src.executor.agents.reviewer import run_reviewer_node
 from src.executor.agents.arbiter import run_arbiter_node
 from src.executor.agents.techwriter import run_techwriter_node
 from src.executor.agents.devops import run_devops_node
-from src.executor.nodes.gates import run_qa_unit_tests, run_security_scan, run_build_gate, run_test_compile_gate, build_failure_is_test_only, build_failure_is_environmental, run_devops_gate
+from src.executor.nodes.gates import run_qa_unit_tests, run_security_scan, run_build_gate, run_test_compile_gate, build_failure_is_test_only, build_failure_is_environmental, run_devops_gate, run_lint_gate, classify_lint_findings, run_format_pass
 
 # ==========================================
 # CONTROL-FLOW SIGNALS
@@ -433,7 +433,18 @@ GUARDRAIL_TOP_LINES = 15        # top-of-file window scanned for a justification
 GUARDRAIL_MAX_REROUTES = 2      # local guardrail_retries cap: free reroutes before a Hard Halt
 QA_GATE_MAX_REROUTES = 2        # free QA regenerations on a test-compile failure (Reviewer bypassed)
 QA_LINT_MAX_REROUTES = 2        # free QA regenerations on a contract-signature lint hit (Reviewer bypassed)
+# Free fast-fail reroutes on a STYLE/LINT-gate failure (run_lint_gate) before lint folds into the budgeted
+# cycle. prod findings → Developer, test findings → QA; Reviewer bypassed, no functional-retry consumed.
+LINT_GATE_MAX_REROUTES = int(os.environ.get("PIPELINE_LINT_MAX_REROUTES", "2"))
 DEVOPS_MAX_RETRIES = int(os.environ.get("DEVOPS_MAX_RETRIES", "1"))  # E4: self-heal retries on a deploy-manifest static-lint failure before Hard Halt
+
+# Framing wrapper prepended to lint-gate findings when seeding the Developer/QA channels — those prompts
+# are tuned for compiler tracebacks/pytest failures, so raw ruff/gofmt/eslint/dotnet-format output is
+# labelled as a style/lint task with an explicit "fix ONLY these, don't change behaviour" instruction.
+_LINT_FEEDBACK_PREAMBLE = (
+    "[LINT GATE FAILURE] The project's style/lint checker rejected the code. Fix ONLY these specific "
+    "style/lint violations — do not change behaviour, signatures, or logic. The exact findings:\n"
+)
 
 # ==========================================
 # FUNCTIONAL RETRY BUDGET + ARBITER (contract self-healing)
@@ -857,6 +868,23 @@ def _nexus_environment_ids(nexus_run_dir: Path) -> str:
         return ""
 
 
+def _env_ci_commands(environment_ids: str) -> str:
+    """The CANONICAL build/test/lint commands for the finished app's environment(s), formatted for the
+    DevOps prompt. This is the SSOT coupling: the generated CI MUST run exactly these (the same commands
+    the engine's own gates ran), so engine-green ⇒ CI-green. Unknown/blank ids yield ''."""
+    blocks: list[str] = []
+    for env_id in [e.strip() for e in environment_ids.split(",") if e.strip()]:
+        spec = SUPPORTED_ENVIRONMENTS.get(env_id)
+        if not spec:
+            continue
+        lines = [f"- environment_id: {env_id}"]
+        for key in ("setup_cmd", "build_cmd", "test_cmd", "lint_cmd"):
+            if spec.get(key):
+                lines.append(f"    {key}: {spec[key]}")
+        blocks.append("\n".join(lines))
+    return "\n".join(blocks)
+
+
 async def run_devops_scaffold(projects: Projects, project, cfg: RunConfig, nexus_run_dir: Path) -> None:
     """E4: after the batch has merged every ticket, scaffold deploy config for the finished application.
 
@@ -889,6 +917,7 @@ async def run_devops_scaffold(projects: Projects, project, cfg: RunConfig, nexus
     blueprint_text = blueprint.read_text(encoding="utf-8") if blueprint.exists() else "(no blueprint available)"
     repo_map = generate_repo_map(ws.repo_dir)
     environment_ids = _nexus_environment_ids(nexus_run_dir)
+    ci_commands = _env_ci_commands(environment_ids)  # SSOT: CI must run these exact commands
 
     # Self-heal loop: exactly DEVOPS_MAX_RETRIES retries (default 1). Generate → static-lint; on a gate
     # failure feed the errors back and regenerate; only a persistently invalid manifest Hard-Halts.
@@ -897,7 +926,7 @@ async def run_devops_scaffold(projects: Projects, project, cfg: RunConfig, nexus
     for attempt in range(1, DEVOPS_MAX_RETRIES + 2):
         await run_devops_node(
             ctx, blueprint_text=blueprint_text, repo_map=repo_map,
-            environment_ids=environment_ids, gate_feedback=gate_feedback,
+            environment_ids=environment_ids, ci_commands=ci_commands, gate_feedback=gate_feedback,
         )
         problems = run_devops_gate(ws.repo_dir)
         if not problems:
@@ -1336,6 +1365,70 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
             enforce_financial_circuit_breaker(ctx)
         ctx.qa_error_trace = ""  # consumed by the rebound loop; don't leak into the Reviewer's channels
 
+        # 3.6 Lint/style gate (HARD): the engine's own quality bar so a STRICT CI stays green — `lint_cmd`
+        #     is the SSOT the DevOps-generated workflow also runs (engine-green ⇒ CI-green). Cheap
+        #     deterministic autofix (format_cmd) FIRST, then VERIFY (lint_cmd); a residual finding the
+        #     autofix could not apply (e.g. F841 unused-local) fast-fail-reroutes to the offending channel
+        #     — production → Developer, test → QA — with NO functional-retry consumed. `lint_success` folds
+        #     into all_gates_passed below, so anything still red after LINT_GATE_MAX_REROUTES rides the
+        #     budgeted cycle (the classified findings are re-applied to the channels AFTER the Reviewer's
+        #     routing). Deliberately NOT in the deadlock guard: a lint nit is always agent-fixable in
+        #     principle, never an environment misconfiguration.
+        lint_success = True
+        lint_prod_feedback = ""
+        lint_test_feedback = ""
+        lint_prod_findings: list[str] = []
+        lint_test_findings: list[str] = []
+        prev_lint_findings: tuple | None = None
+        for lint_retries in range(LINT_GATE_MAX_REROUTES + 1):
+            await run_format_pass(ctx.contract.environment_id, str(ctx.workspace_paths.repo_dir))
+            lint_ok, lint_lines = await run_lint_gate(
+                ctx.contract.environment_id, str(ctx.workspace_paths.repo_dir)
+            )
+            if lint_ok:
+                break
+            lint_prod_findings, lint_test_findings = classify_lint_findings(
+                ctx.contract.environment_id, lint_lines
+            )
+            findings_key = (tuple(lint_prod_findings), tuple(lint_test_findings))
+            # Stop the fast-fail loop at the cap, on no-progress (agent rewrote but the SAME findings remain
+            # — e.g. a format↔lint flip-flop), or when nothing classified to a channel — and hand the
+            # residual to the budgeted cycle below.
+            if (lint_retries == LINT_GATE_MAX_REROUTES or findings_key == prev_lint_findings
+                    or not (lint_prod_findings or lint_test_findings)):
+                lint_success = False
+                break
+            prev_lint_findings = findings_key
+            log.warning(
+                f"🔶 Lint gate failed — fast-fail reroute {lint_retries + 1}/{LINT_GATE_MAX_REROUTES} "
+                f"(prod={len(lint_prod_findings)}, test={len(lint_test_findings)}; no budget spent), Reviewer bypassed."
+            )
+            if lint_prod_findings:
+                ctx.error_trace = _cap_text(_LINT_FEEDBACK_PREAMBLE + "\n".join(lint_prod_findings))
+                await run_developer_node(ctx, ctx.error_trace, None)
+                build_production_snapshot(ctx)
+                ctx.repository_map = generate_repo_map(ctx.workspace_paths.repo_dir)
+            if lint_test_findings:
+                ctx.qa_error_trace = _cap_text(_LINT_FEEDBACK_PREAMBLE + "\n".join(lint_test_findings))
+                await run_qa_agent_node(ctx, ctx.qa_error_trace)  # its format pass re-runs over the new tests
+            enforce_financial_circuit_breaker(ctx)
+        # Keep the Reviewer's snapshot consistent with the autofixed/rerouted working tree, then clear the
+        # live channels so lint feedback never leaks into the Reviewer's own diagnostic routing.
+        build_production_snapshot(ctx)
+        ctx.repository_map = generate_repo_map(ctx.workspace_paths.repo_dir)
+        ctx.error_trace = ""
+        ctx.qa_error_trace = ""
+        if not lint_success:
+            # Stash the residual findings; re-applied to the channels AFTER the Reviewer routes (the
+            # Reviewer is lint-blind and may have emptied the channels by approving).
+            lint_prod_feedback = (
+                _cap_text(_LINT_FEEDBACK_PREAMBLE + "\n".join(lint_prod_findings)) if lint_prod_findings else ""
+            )
+            lint_test_feedback = (
+                _cap_text(_LINT_FEEDBACK_PREAMBLE + "\n".join(lint_test_findings)) if lint_test_findings else ""
+            )
+            log.warning("🔶 Lint gate still failing after the fast-fail budget — folding into the budgeted cycle.")
+
         # 4. Automated Validation Phase (Runtime gates).
         #    DUMB PIPE: the orchestrator never inspects the test exit code to alter FSM state — no test
         #    purging, no cycle skipping. All runner logs (stdout+stderr) flow to the Reviewer, the sole
@@ -1372,6 +1465,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
         all_gates_passed = (
             qa_success
             and sec_success
+            and lint_success
             and ctx.review_report.code_quality_approved
             and ctx.review_report.test_integrity_approved
         )
@@ -1450,6 +1544,16 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
             ctx.error_trace = _cap_text(ctx.review_report.dev_diagnostic_payload)
             ctx.qa_error_trace = _cap_text(ctx.review_report.qa_diagnostic_payload)
             log.warning(f"🔶 Cycle {attempt} failed. Routing reviewer diagnostics to isolated channels.")
+
+            # Lint stayed red after its fast-fail budget: those classified findings are the authoritative
+            # feedback for the next budgeted cycle. The Reviewer is lint-blind and may have approved both
+            # sides (emptying the payloads above), so re-apply the lint feedback over whatever it routed.
+            if not lint_success:
+                if lint_prod_feedback:
+                    ctx.error_trace = lint_prod_feedback
+                if lint_test_feedback:
+                    ctx.qa_error_trace = lint_test_feedback
+                    regenerate_tests = True   # ensure QA actually re-runs next cycle to fix the test lint
 
         # Advance the persisted attempt counter so a resumed run cannot exceed the
         # original retry budget. The counter is bumped before saving so the next

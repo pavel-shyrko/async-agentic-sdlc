@@ -457,6 +457,17 @@ class DevOpsPromptTests(unittest.TestCase):
         self.assertIn("${{ secrets.* }}", prompt)
         self.assertIn("${{ vars.* }}", prompt)
 
+    def test_devops_prompt_mandates_canonical_commands_no_invented_linters(self) -> None:
+        # The lint-gate epic's CI SSOT: the generated CI must run the project's canonical commands and
+        # must NOT invent stricter gates (the cause of the red `ruff check` CI). Pin the rule in the
+        # system prompt and the CLI skill (the archetype whose workflow runs test/lint steps).
+        prompt = get_system_prompt("devops")
+        self.assertIn("CANONICAL", prompt)
+        self.assertIn("do not invent it", prompt)
+        cli = get_skill("devops_cli_tool")
+        self.assertIn("canonical project commands", cli)
+        self.assertIn("lint_cmd", cli)
+
 
 if __name__ == "__main__":
     unittest.main()

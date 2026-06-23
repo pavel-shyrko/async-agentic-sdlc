@@ -35,6 +35,7 @@ async def run_devops_node(
     blueprint_text: str,
     repo_map: str,
     environment_ids: str = "",
+    ci_commands: str = "",
     gate_feedback: str = "",
 ) -> None:
     """Generate deploy manifests for the finished app and stage them (E4 deploy-scaffolding).
@@ -54,8 +55,14 @@ async def run_devops_node(
     user_content = (
         f"=== APPLICATION BLUEPRINT ===\n{blueprint_text}\n\n"
         f"=== PLATFORM / ENVIRONMENT ID(S) ===\n{environment_ids or '(unknown)'}\n\n"
-        f"=== FINISHED REPOSITORY MAP (base branch) ===\n{repo_map}"
     )
+    if ci_commands:
+        user_content += (
+            "=== CANONICAL PROJECT COMMANDS (the CI build/test/lint steps MUST run EXACTLY these — they are\n"
+            "the same commands the engine validated this code with; do NOT invent extra linters/type-checkers) ===\n"
+            f"{ci_commands}\n\n"
+        )
+    user_content += f"=== FINISHED REPOSITORY MAP (base branch) ===\n{repo_map}"
     if gate_feedback:
         user_content += (
             "\n\n=== STATIC-VALIDATION ERRORS FROM YOUR PREVIOUS ATTEMPT (fix exactly these) ===\n"
