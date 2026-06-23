@@ -1,9 +1,10 @@
 ---
 paths:
   - "src/shared/core/config.py"
-  - "src/executor/agents/*.py"
+  - "src/development/agents/*.py"
+  - "src/deployment/agents/*.py"
   - "src/nexus/*.py"
-  - "src/executor/runner.py"
+  - "src/nexus/agents/*.py"
 ---
 
 # Adding a new structured (Gemini/instructor) agent role
@@ -27,8 +28,8 @@ exception (agentic Claude CLI). See [agent-provider-model-map](agent-provider-mo
 3. **Output model** — a Pydantic model in `src/shared/core/models.py` (e.g. `ArbiterVerdict`). Use
    `Literal[...]` for closed enums so an invalid value fails at deserialization. If it carries an
    `environment_id`, reuse the shared `_validate_environment_id` validator.
-4. **Agent node** — `src/executor/agents/<role>.py` (worker plane) or `src/nexus/<role>.py` (control
-   plane). Mirror [reviewer.py](../../src/executor/agents/reviewer.py): build `sys_prompt =
+4. **Agent node** — `src/development/agents/<role>.py` (worker plane) or `src/nexus/agents/<role>.py` (control
+   plane). Mirror [reviewer.py](../../src/development/agents/reviewer.py): build `sys_prompt =
    get_system_prompt(role) + "\n\n" + await build_agent_context(role, ctx)`, call
    `run_structured_llm(role, Model, [...])`, store the result on `ctx`, then **always**
    `log_token_usage(ctx.telemetry, "<Label>", raw_response, XYZ_MODEL)` — telemetry parity is mandatory
@@ -36,7 +37,7 @@ exception (agentic Claude CLI). See [agent-provider-model-map](agent-provider-mo
 5. **State + persistence** — if the node's output must survive `--resume`, add a field to
    `GlobalPipelineContext` (worker) or `NexusState` (control). Both checkpoint via
    `model_dump_json`/`model_validate_json`, so a new field auto-persists — no extra plumbing.
-6. **FSM wiring** — import the node in `src/executor/runner.py` (or the Nexus runner) and call it at the
+6. **FSM wiring** — import the node in `src/nexus/runner.py` and call it at the
    right point in the cycle; gate it so existing flows are unaffected. New caps/limits go in as
    UPPER_CASE env-overridable constants ([config-constant-convention](config-constant-convention.md)),
    never inline literals. Control flow: [pipeline-fsm-loops](pipeline-fsm-loops.md).

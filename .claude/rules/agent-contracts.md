@@ -2,7 +2,9 @@
 paths:
   - "src/shared/core/models.py"
   - "src/nexus/*.py"
-  - "src/executor/agents/*.py"
+  - "src/nexus/agents/*.py"
+  - "src/development/agents/*.py"
+  - "src/deployment/agents/*.py"
 ---
 
 # Agent output contracts & the environment_id chain
@@ -13,9 +15,9 @@ Every agent except the Developer returns a forced-structured Pydantic model via 
 unless noted. Loop that consumes these: [pipeline-fsm-loops](pipeline-fsm-loops.md).
 
 ## Models (output → consumer)
-- **PO** → `EpicDocument{markdown}` (`src/nexus/po.py`). Stack-agnostic, no env_id. `get_system_prompt("po")`. Persisted `artifacts/epic.md`.
-- **SA** → `Blueprint{environment_id, markdown}` (`src/nexus/sa.py`). `get_system_prompt_with_platforms("sa")`. `run_sa` returns ONLY `markdown` → the structured `environment_id` is **discarded**; only `blueprint.md` persists.
-- **TPM** → `ProjectPlan{tasks: list[TaskTicket{ticket_id, title, environment_id, description}]}` (`src/nexus/tpm.py`). `get_system_prompt_with_platforms("tpm")`. Each ticket materialized as `artifacts/TASK-XX.md`. Behavior-driving: `environment_id` (validated), `ticket_id` (filename); free-text: `title`, `description`.
+- **PO** → `EpicDocument{markdown}` (`src/nexus/agents/po.py`). Stack-agnostic, no env_id. `get_system_prompt("po")`. Persisted `artifacts/epic.md`.
+- **SA** → `Blueprint{environment_id, markdown}` (`src/nexus/agents/sa.py`). `get_system_prompt_with_platforms("sa")`. `run_sa` returns ONLY `markdown` → the structured `environment_id` is **discarded**; only `blueprint.md` persists.
+- **TPM** → `ProjectPlan{tasks: list[TaskTicket{ticket_id, title, environment_id, description}]}` (`src/nexus/agents/tpm.py`). `get_system_prompt_with_platforms("tpm")`. Each ticket materialized as `artifacts/TASK-XX.md`. Behavior-driving: `environment_id` (validated), `ticket_id` (filename); free-text: `title`, `description`.
 - **TechLead** → `TechLeadContract` with `TopologyNode{file_path, exports, depends_on}`. Behavior-driving: `files_to_modify` (scope gate), `topology_contract` (import SSOT for Dev+QA), `environment_id` (sandbox/gates/QA-profile selector), `domain_tags` (skill router; first = language), `strict_type_validation_rules` (injected into skills+QA), `core_libraries`/`architectural_constraints`/`function_signatures`/`instruction` (Developer prompt). Observability only: `shared_context`, `techlead_reasoning`.
 - **QA** → `QATestSuite{overwrite_existing, new_imports, new_test_code, files_to_delete}` (per module). `files_to_delete` = QA-self-identified obsolete tests (separate from the Reviewer's `zombie_tests_to_delete`).
 - **Reviewer** → `ReviewReport{code_quality_analysis, test_integrity_analysis, log_verification_analysis, code_quality_approved, test_integrity_approved, dev_diagnostic_payload, qa_diagnostic_payload, zombie_tests_to_delete}`. Booleans gate `all_gates_passed`; payloads route to the two isolated channels; `zombie_tests_to_delete` is deleted deterministically in `qa.py` before regeneration. Analysis fields are observability only.

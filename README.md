@@ -32,7 +32,7 @@ Full docs live under **[docs/](./docs/README.md)** (start there). Highlights:
 
 * **[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)** — C4 diagrams (System Context, Containers, Executor FSM) + end-to-end sequence, in Mermaid.
 * **[docs/guides/](./docs/guides/setup.md)** — environment setup (WSL2, Docker, venv, Gemini key).
-* **[docs/decisions/](./docs/decisions/README.md)** — the ADR log (0000–0020), indexed by theme.
+* **[docs/decisions/](./docs/decisions/README.md)** — the ADR log (0000–0021), indexed by theme.
 * **[CHANGELOG.md](./CHANGELOG.md)** · **[PRACTICUM.md](./PRACTICUM.md)** · **[docs/BACKLOG.md](./docs/BACKLOG.md)** — release history, distilled lessons, open work.
 
 ---
@@ -60,14 +60,18 @@ This repository is strictly organized to provide 100% traceability for evaluatio
 
 ```text
 async-agentic-sdlc/
-├── src/                        # Source code, split into logical planes (Virtual Separation)
-│   ├── nexus/                  # Control Plane — idea→plan: po.py / sa.py / tpm.py agents,
-│   │                           #   nexus_runner.py (run_nexus) + state.py (NexusState checkpoint)
-│   ├── executor/               # Worker Plane — runs one SDLC session
-│   │   ├── runner.py           # main() dispatcher + run_executor FSM; --auto-execute / --scaffold-deploy bridges, resume routing
-│   │   ├── agents/             # TechLead, Developer, QA, Reviewer, TechWriter, Arbiter, DevOps logic
-│   │   └── nodes/              # FSM gates (build/test-compile/lint gates, SAST, deploy-manifest static lint)
-│   └── shared/                 # Shared Plane — common foundations reused across planes
+├── src/                        # Source code, split into 3 physical planes (control / worker / infra) + shared
+│   ├── nexus/                  # Control Plane — orchestration + FSM + planning
+│   │   ├── runner.py           # main() dispatcher + run_executor FSM + run_batch (E3); resume routing, --auto-execute/--scaffold-deploy bridges
+│   │   ├── nexus_runner.py     # run_nexus (idea→epic→blueprint→tickets); state.py = NexusState checkpoint
+│   │   └── agents/             # Planning agents: po.py / sa.py / tpm.py
+│   ├── development/            # Worker Plane — code generation + quality gates
+│   │   ├── gates.py            # FSM gates (build / test-compile / lint / SAST + format pass)
+│   │   └── agents/             # TechLead, Developer, QA, Reviewer, TechWriter, Arbiter logic
+│   ├── deployment/             # Infra Plane — CI/CD scaffolding (--scaffold-deploy)
+│   │   ├── agents/             # DevOps agent (archetype-aware Dockerfile + GH Actions deploy workflow)
+│   │   └── provision/          # scaffold.py (run_devops_scaffold) + gates.py (deploy-manifest static lint)
+│   └── shared/                 # Shared Plane — common foundations reused across all planes
 │       ├── core/               # Pydantic models, observability, env config, run topology, prompt loader, baseline files
 │       └── utils/              # Subprocess, git, PR-forge (gh), and workspace-path-safe helpers
 ├── prompts/                    # Runtime agent instructions (decoupled from src/ logic)
@@ -97,10 +101,10 @@ async-agentic-sdlc/
 │   ├── README.md               # Docs index / front door (navigation table)
 │   ├── ARCHITECTURE.md         # C4 diagrams: context / container / executor-FSM (Mermaid)
 │   ├── guides/                 # setup.md · docker-on-windows.md (environment bring-up)
-│   ├── decisions/              # Architecture Decision Records (MADR) 0000–0020 + index README
+│   ├── decisions/              # Architecture Decision Records (MADR) 0000–0021 + index README
 │   ├── releases/               # Per-iteration release write-ups (iteration_NN/)
 │   └── BACKLOG.md              # Capability roadmap (E1–E5) + open defects & refinements
-├── main.py                     # Root CLI entrypoint: runs src/executor/runner.py:main()
+├── main.py                     # Root CLI entrypoint: runs src/nexus/runner.py:main()
 ├── CLAUDE.md                   # Claude Code project governance: CLI economy, dev commands, guardrails
 ├── CHANGELOG.md                # Release history (Keep a Changelog), linked to ADRs
 ├── PRACTICUM.md                # Project manifest & Key Engineering Takeaways

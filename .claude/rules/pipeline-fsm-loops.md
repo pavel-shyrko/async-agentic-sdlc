@@ -1,11 +1,12 @@
 ---
 paths:
-  - "src/executor/runner.py"
+  - "src/nexus/runner.py"
+  - "src/deployment/provision/scaffold.py"
 ---
 
 # Executor FSM: cycle, loops, channels, termination
 
-SSOT: `src/executor/runner.py` `run_executor()` — the per-ticket FSM (bootstrap/resume → TechLead → the
+SSOT: `src/nexus/runner.py` `run_executor()` — the per-ticket FSM (bootstrap/resume → TechLead → the
 self-heal cycle → finalize). `main()` is now a thin dispatcher that resolves the run and calls it. For
 `--idea --auto-execute` (E3, ADR 0019) the bridge is **`run_batch`**, an outer loop *above* `run_executor`:
 it drives ALL planned tickets to `main` in TPM order (one merged ticket at a time, `--auto-merge` implied),

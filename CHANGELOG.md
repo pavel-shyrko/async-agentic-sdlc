@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each release maps to a completed SDLC iteration; the corresponding Architecture
 Decision Record (ADR) is linked from the version heading.
 
+## [v0.21.0] - 2026-06-23 — Physical Three-Plane Split: nexus / development / deployment
+
+ADR: [0021-physical-three-plane-split](./docs/decisions/0021-physical-three-plane-split.md)
+(supersedes [0012](./docs/decisions/0012-virtual-separation-monorepo-planes.md); relocates the code from
+[0017](./docs/decisions/0017-nexus-executor-auto-dispatch.md)–[0020](./docs/decisions/0020-deploy-scaffolding-and-lint-gate.md))
+
+Archive: [iteration_21](./docs/releases/iteration_21/iteration_21_README.md)
+
+### Changed
+- **The virtual ADR-0012 plane separation is now physical** — `src/executor/` is split along its three
+  concerns and removed. A pure lift-and-shift (history-preserving `git mv`); **no** FSM/agent/gate/prompt/
+  lint behaviour change. `src/shared/` is unchanged (SSOT for all planes).
+  - **`src/nexus/` (control plane)** now owns ALL orchestration + the FSM — `src/nexus/runner.py`
+    (`main`, `parse_args`, `run_executor`, `run_batch`, `finalize_transaction`/`finalize_pr`, the financial
+    breaker, incident writer, and resume helpers) — and the planning agents moved under
+    `src/nexus/agents/` (`po`, `sa`, `tpm`).
+  - **`src/development/` (worker plane)** — the six dev agents under `src/development/agents/`
+    (developer, qa, reviewer, arbiter, techlead, techwriter) + `src/development/gates.py`
+    (build / test-compile / unit-test / **lint** / SAST + `run_format_pass`, flattened from `nodes/gates.py`).
+  - **`src/deployment/` (infra plane)** — the `devops` agent under `src/deployment/agents/devops.py` +
+    `src/deployment/provision/` (`scaffold.py` = `run_devops_scaffold` + `_env_ci_commands` +
+    `_repo_has_source` + `_nexus_environment_ids` + `DEVOPS_MAX_RETRIES`; `gates.py` = `run_devops_gate`).
+- **`run_batch` imports `run_devops_scaffold` lazily** to break the one unavoidable `deployment → nexus`
+  back-edge (the scaffold reuses nexus's transaction/forge/FinOps/incident SSOTs rather than forking them) —
+  the same lazy-import pattern `main()` already uses for `nexus_runner`.
+- **Entrypoint** — `main.py` now imports `main`/`PipelineHalt` from `src.nexus.runner`.
+
+### Added
+- **Edge Case C unit test** (`LintGateLoopTests`, `tests/framework/test_orchestrator.py`): pins the
+  step-3.6 lint **no-progress guard** — byte-identical findings across two iterations break the fast-fail
+  loop on the **2nd** iteration (with `LINT_GATE_MAX_REROUTES` raised to 5 so a cap-driven stop would be 6
+  lint calls; observing exactly 2 proves the guard, not the cap, fired) without exhausting the global budget.
+
+### Removed
+- **`src/executor/`** in its entirety (contents redistributed to `nexus` / `development` / `deployment`),
+  and the inert `src/nexus/deployer.py` placeholder ADR 0012 had left as a control-plane seam.
+
 ## [v0.20.0] - 2026-06-23 — Deployability Closure: DevOps Deploy-Scaffolding (E4) + the Engine Lint Gate
 
 ADR: [0020-deploy-scaffolding-and-lint-gate](./docs/decisions/0020-deploy-scaffolding-and-lint-gate.md)

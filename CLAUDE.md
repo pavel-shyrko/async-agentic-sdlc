@@ -10,7 +10,7 @@
 * **Plan Mode**: For multi-file changes or ambiguous errors, ALWAYS outline a 3-line plan before mutating code.
 
 ## Development Commands
-Entrypoint is `main.py` (→ `src/executor/runner.py` `main()`). There is no `orchestrator.py`. The
+Entrypoint is `main.py` (→ `src/nexus/runner.py` `main()`). There is no `orchestrator.py`. The
 toolchain (orchestrator, tests, bandit) runs through **WSL + the project `venv/`** — the Windows
 interpreter lacks the dependencies and the venv is WSL-only.
 

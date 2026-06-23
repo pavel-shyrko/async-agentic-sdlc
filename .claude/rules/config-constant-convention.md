@@ -1,6 +1,7 @@
 ---
 paths:
-  - "src/executor/runner.py"
+  - "src/nexus/runner.py"
+  - "src/deployment/provision/scaffold.py"
   - "src/shared/core/config.py"
   - "src/shared/utils/forge.py"
 ---
