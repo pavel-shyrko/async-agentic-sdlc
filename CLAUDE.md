@@ -14,7 +14,7 @@ Entrypoint is `main.py` (→ `src/nexus/runner.py` `main()`). There is no `orche
 toolchain (orchestrator, tests, bandit) runs through **WSL + the project `venv/`** — the Windows
 interpreter lacks the dependencies and the venv is WSL-only.
 
-* **New project (Nexus planning)**: `python3 main.py --idea "<idea>" [--repo <url|path>] [--auto-execute] [--auto-merge]`  (`--auto-execute` also runs the Executor for the first ticket; requires `--repo`)
+* **New project (Nexus planning)**: `python3 main.py --idea "<idea>" [--repo <url|path>] [--auto-execute] [--scaffold-deploy]`  (`--auto-execute` plans then drives the Executor over **all** planned tickets to `main` in TPM order via `run_batch` (E3) — **implies `--auto-merge`**; requires `--repo`)
 * **Execute a ticket**: `python3 main.py --run <project> -f TASK-01 [--auto-merge]`
 * **Close the loop to `main` (E2)**: add `--auto-merge` to any run path → on success open + (best-effort) approve + squash-merge a PR `feat/ticket-<id>` → base. **Implies `--push`**; needs the `gh` CLI + `GITHUB_TOKEN` (and a separate `GITHUB_REVIEWER_TOKEN` for a real approval). Seam: `src/shared/utils/forge.py`.
 * **Scaffold deploy config (E4)**: add `--scaffold-deploy` to an `--auto-execute` run → after the batch merges every ticket, the `devops` agent generates + merges the app's CI/CD config (archetype-aware Dockerfile + GitHub Actions deploy workflow, GCP Cloud Run via WIF) on `chore/devops-scaffold` (`run_devops_scaffold`). Needs the forge env (`gh` + `GITHUB_TOKEN`); one-time org setup in `docs/guides/devops_setup.md`.

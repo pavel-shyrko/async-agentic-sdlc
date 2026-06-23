@@ -1,6 +1,6 @@
 ---
 name: agent-role-scaffold
-description: Scaffold a new structured (Gemini/instructor) agent role end-to-end across every touch point — config/ROLE_MODELS, system prompt, Pydantic output model, agent node, checkpoint persistence, FSM wiring, tests, and the ADR. Use when the user asks to add a new agent/role to the Nexus or Executor plane. Operationalizes the agent-role-registration rule; the Developer is the one role this does NOT fit (it is the agentic Claude CLI, not structured).
+description: Scaffold a new structured (Gemini/instructor) agent role end-to-end across every touch point — config/ROLE_MODELS, system prompt, Pydantic output model, agent node, checkpoint persistence, FSM wiring, tests, and the ADR. Use when the user asks to add a new agent/role to any plane (Nexus control / Development worker / Deployment infra). Operationalizes the agent-role-registration rule; the Developer is the one role this does NOT fit (it is the agentic Claude CLI, not structured).
 ---
 
 # Scaffold a New Structured Agent Role
