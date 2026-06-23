@@ -6,8 +6,8 @@ first ticket, ADR 0017). Four planes under `src/` (ADR 0021 physical split — c
 shared; supersedes ADR 0012's virtual separation):
 
 **`src/shared/core/`** — engine SSOTs:
-- `models.py` — `RUNS_BASE`, `WorkspacePaths`, `PipelineTelemetry`, `GlobalPipelineContext` (`save_checkpoint`/`load_checkpoint`), `BatchState` (E3 batch checkpoint, `kind="batch"` → `reports/batch_state.json`), `DevOpsManifests` (E4 deploy config: `archetype`/`dockerfile_content`/`workflow_content`/`env_scaffold_content`).
-- `config.py` — `ROLE_MODELS` (role→(model, label)), `PIPELINE_BUDGET_USD/TOKENS`, `MODEL_PRICING_MATRIX`, `estimate_gemini_cost_usd`, `instructor_client` (built with a `GEMINI_REQUEST_TIMEOUT` `http_options` ceiling — every structured call is wall-clock-bounded), `check_environment(require_forge=…)` (with `--auto-merge` also requires `gh` + `GITHUB_TOKEN`).
+- `models.py` — `RUNS_BASE`, `WorkspacePaths`, `PipelineTelemetry` (per-agent tokens/cost/**plane**/**duration** + `by_plane()`/`merge()`/money-only `finops_report()`), `GlobalPipelineContext` (`save_checkpoint`/`load_checkpoint`), `BatchState` (E3 batch checkpoint, `kind="batch"` → `reports/batch_state.json`; E5 adds `app_telemetry`/`nexus_merged`/`budget_marker`), `DevOpsManifests` (E4 deploy config: `archetype`/`dockerfile_content`/`workflow_content`/`env_scaffold_content`).
+- `config.py` — `ROLE_MODELS` (role→(model, label)), `AGENT_PLANE` (label→plane, E5 FinOps rollup), `PIPELINE_APP_BUDGET_USD`/`PIPELINE_APP_BUDGET_FLOOR_USD` (the money-only application budget — ADR 0022; `PIPELINE_BUDGET_TOKENS` is report-only since E5), `MODEL_PRICING_MATRIX`, `estimate_gemini_cost_usd`, `instructor_client` (built with a `GEMINI_REQUEST_TIMEOUT` `http_options` ceiling — every structured call is wall-clock-bounded), `check_environment(require_forge=…)` (with `--auto-merge` also requires `gh` + `GITHUB_TOKEN`).
 - `observability.py` — `log`, `reconfigure_logging`, `log_token_usage` (telemetry-first), `log_finops_summary`, `describe_finish_reason`.
 - `runs.py` — `Projects` store + `allocate_run_dir` + `slugify` (run-layout SSOT; see [run-layout-and-cli](run-layout-and-cli.md)).
 - `docker_adapter.py` — `run_in_image` / `execute_in_sandbox` (sandbox least-privilege; see [qa-sandbox-hardening](qa-sandbox-hardening.md)).
@@ -22,7 +22,11 @@ shared; supersedes ADR 0012's virtual separation):
 `run_executor` per-ticket FSM + `prepare_ticket_run` cfg-wiring/allocation, shared by `--run`/`--auto-execute`
 + `finalize_pr` — the E2 success-path PR step (open→approve→merge via `forge`, behind `--auto-merge`) +
 `run_batch` / `_load_or_init_batch` — the E3 multi-ticket loop driving ALL tickets to `main` (with
-`--auto-execute`, which now implies `--auto-merge`) + `PipelineHalt` — the catchable FSM-halt exception
+`--auto-execute`, which now implies `--auto-merge`) + `enforce_financial_circuit_breaker(ctx, budget_usd)` —
+the **money-only** breaker (ADR 0022 / E5), gated on the *remaining* application budget threaded into
+`run_executor(budget_usd_ceiling=…)`; `run_batch` accumulates spend in `BatchState.app_telemetry`, stops
+cleanly at `PIPELINE_APP_BUDGET_FLOOR_USD`, and `write_app_finops_report` writes `app_finops_report.json`
+(per-role/plane/time) in a `finally` + `PipelineHalt` — the catchable FSM-halt exception
 `_abort_with_incident` raises (so the batch records `failed` and stops; `main.py` maps an uncaught one to
 exit 1) + the step-3.6 lint loop (`LINT_GATE_MAX_REROUTES`, `_LINT_FEEDBACK_PREAMBLE`); `run_batch` lazily
 imports `run_devops_scaffold` to break the `deployment → nexus` cycle, ADR 0021), `agents/{po,sa,tpm}.py`

@@ -207,9 +207,24 @@ The orchestrator natively extracts and logs token usage for Google GenAI models 
 
 The Developer Agent (Claude CLI) runs out-of-band via localized shell processes, but its token usage is now tracked **in real time** inside `GlobalPipelineContext` — the orchestrator parses the Claude CLI `--output-format json` result envelope (token counts, including cache, plus `total_cost_usd`) and accumulates a per-agent telemetry breakdown that is persisted into `checkpoint.json` (so the budget survives `--resume`).
 
-This live signal feeds a **Financial Circuit Breaker**. Its **primary** gate is USD spend (`PIPELINE_BUDGET_USD`, default `$10.00`, env-overridable) — authoritative for Claude (CLI `total_cost_usd`) and estimated for Gemini — with the cumulative **fresh** token total (`PIPELINE_BUDGET_TOKENS`, default `1_000_000`, env-overridable) retained as a secondary ceiling. Cache read/write tokens are tracked separately and **excluded** from the token budget (the agentic Claude CLI re-sends its prompt each internal turn, so cheap cache reads would otherwise inflate the count). When either threshold is breached, the FSM performs a deterministic hard-halt after the offending node, dumping the full telemetry breakdown to `incident_report.json` instead of draining the API budget to exhaustion during a Developer/Reviewer/QA retry loop.
+This live signal feeds a **Financial Circuit Breaker** that is **money-only** (ADR 0022). For a whole
+`--idea --auto-execute` build a single application-wide ceiling — `PIPELINE_APP_BUDGET_USD` (default `$25.00`,
+env-overridable) or the per-invocation `--budget <usd>` flag — governs total spend: `run_batch` accumulates
+each ticket's cost into `BatchState.app_telemetry` and threads the **remaining** budget (`app_budget − spent`)
+into the next ticket's breaker, halting the batch cleanly (a `budget_marker`, exit 1) once the remainder
+drops below `PIPELINE_APP_BUDGET_FLOOR_USD` — before spending more. The ceiling is never persisted, so
+re-passing a larger `--budget` on a `--resume` "adds money" and continues. USD is the sole gate (authoritative
+for Claude, estimated for Gemini); the token total (`PIPELINE_BUDGET_TOKENS`) is now **reported, not capped**,
+with cache read/write tracked separately and excluded (the agentic Claude CLI re-sends its prompt each turn,
+so cheap cache reads would otherwise inflate the count). A breach hard-halts after the offending node, dumping
+the full telemetry breakdown to `incident_report.json` instead of draining the API budget during a retry loop.
 
-Cost is reported **per provider** so estimate and fact are never conflated: each cycle logs a sub-total line `[FINOPS] Gemini est. $X | Claude $Y | Σ $Z` (Gemini estimated from `MODEL_PRICING`, Claude authoritative from the CLI), and the run ends with a **GRAND TOTAL** block (per-agent + per-provider + % of budget). The full breakdown is persisted to that run's `reports/finops_report.json` (under `runs/<project>/<NNN>_<plane>_<label>_<ts>_<uid>/`) on both success and hard-halt, for the Nexus control plane as well as the executor.
+Cost is reported **per agent role, per control plane, and per provider** (with wall-clock time) so estimate
+and fact are never conflated: each cycle logs `[FINOPS] Gemini est. $X | Claude $Y | Σ $Z`, and the run ends
+with a **GRAND TOTAL** block (per-agent + per-plane subtotals + per-provider + % of the money budget + total
+time). Each run's breakdown is persisted to its `reports/finops_report.json`; a batch additionally writes an
+application-wide `reports/app_finops_report.json` in the Nexus run dir — the merged Nexus + every ticket +
+DevOps spend — refreshed on every batch exit (success, halt, or budget stop).
 
 For historical billing reconciliation across days and sessions, the full report is still available out-of-band:
 

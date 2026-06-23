@@ -7,14 +7,15 @@ import argparse
 import asyncio
 # subprocess: only fixed-argument `git` exec with no shell=True, never untrusted input as a command.
 import subprocess  # nosec B404
+from decimal import Decimal
 from pathlib import Path
 from typing import NoReturn
 from dataclasses import dataclass
 
 from src.shared.core.observability import log, reconfigure_logging
 from src.shared.core.observability import log_finops_summary as _render_finops_summary
-from src.shared.core.config import check_environment, PIPELINE_BUDGET_TOKENS, PIPELINE_BUDGET_USD
-from src.shared.core.models import GlobalPipelineContext, WorkspacePaths, RUNS_BASE, BatchState
+from src.shared.core.config import check_environment, PIPELINE_APP_BUDGET_USD, PIPELINE_APP_BUDGET_FLOOR_USD
+from src.shared.core.models import GlobalPipelineContext, WorkspacePaths, RUNS_BASE, BatchState, PipelineTelemetry
 from src.shared.core.runs import Projects
 from src.shared.core.environments import is_test_file, get_qa_profile
 from src.shared.core.prompts import generate_repo_map
@@ -63,6 +64,7 @@ class RunConfig:
     auto_execute: bool = False  # --idea --auto-execute: after planning, run the Executor for the first ticket
     auto_merge: bool = False  # --auto-merge: on success, open a PR into base_branch and squash-merge it (E2; implies push)
     scaffold_deploy: bool = False  # --scaffold-deploy: after a batch merges all tickets, generate + merge deploy manifests (E4)
+    budget_usd: Decimal | None = None  # --budget: app-wide money ceiling override for this invocation (E5); None → PIPELINE_APP_BUDGET_USD
 
 
 def parse_args() -> RunConfig:
@@ -75,6 +77,11 @@ def parse_args() -> RunConfig:
     parser.add_argument("--repo", help="Git URL or local path to the target repository (required for a fresh direct run / first --run of a project).")
     parser.add_argument("--ticket", help="Ticket ID or feature name; names the session and feat/ticket-<id> branch (direct run).")
     parser.add_argument("--base-branch", default="main", help="Base branch of the repository.")
+    parser.add_argument("--budget", type=Decimal, metavar="USD",
+                        help="Application-wide money ceiling (USD) for this invocation; overrides "
+                             "PIPELINE_APP_BUDGET_USD. On a --resume, re-pass a larger value to add budget "
+                             "and continue a batch that stopped on exhaustion (the ceiling is never "
+                             "persisted — only the spend is).")
     parser.add_argument("--run", dest="run_project", metavar="PROJECT",
                         help="Execute a ticket under an existing project: --run <project> -f <ticket> (e.g. -f TASK-01).")
     parser.add_argument("--resume", nargs="+", metavar="TARGET",
@@ -117,7 +124,7 @@ def parse_args() -> RunConfig:
         return RunConfig(
             description=None, base_branch=args.base_branch, resume=None, reset_attempts=False,
             idea=args.idea, repo=args.repo, push=(push or auto_merge), auto_execute=args.auto_execute,
-            auto_merge=auto_merge, scaffold_deploy=args.scaffold_deploy,
+            auto_merge=auto_merge, scaffold_deploy=args.scaffold_deploy, budget_usd=args.budget,
         )
 
     # Execute a ticket under an existing project: --run <project> -f <ticket>.
@@ -127,7 +134,7 @@ def parse_args() -> RunConfig:
         return RunConfig(
             description=None, base_branch=args.base_branch, resume=None,
             reset_attempts=args.reset_attempts, push=push, auto_merge=args.auto_merge,
-            run_project=args.run_project, ticket=args.file, repo=args.repo,
+            run_project=args.run_project, ticket=args.file, repo=args.repo, budget_usd=args.budget,
         )
 
     # Resume: either an explicit checkpoint PATH (legacy, incl. old run_<uuid>), or a project slug
@@ -138,12 +145,13 @@ def parse_args() -> RunConfig:
             return RunConfig(
                 description=None, base_branch=args.base_branch, resume=Path(first),
                 reset_attempts=args.reset_attempts, push=push, auto_merge=args.auto_merge,
+                budget_usd=args.budget,
             )
         return RunConfig(
             description=None, base_branch=args.base_branch, resume=None,
             reset_attempts=args.reset_attempts, push=push, auto_merge=args.auto_merge,
             resume_project=first, resume_number=(args.resume[1] if len(args.resume) > 1 else None),
-            scaffold_deploy=args.scaffold_deploy,
+            scaffold_deploy=args.scaffold_deploy, budget_usd=args.budget,
         )
 
     # Fresh DIRECT run: a target repo and ticket are mandatory for git-anchored bootstrapping.
@@ -173,6 +181,7 @@ def parse_args() -> RunConfig:
         push=push,
         auto_merge=args.auto_merge,
         file=args.file,
+        budget_usd=args.budget,
     )
 
 
@@ -662,28 +671,24 @@ async def enforce_documentation_guardrail(ctx: GlobalPipelineContext) -> str | N
     return "\n".join(_GUARDRAIL_MESSAGE.format(file_name=v) for v in violations)
 
 
-def enforce_financial_circuit_breaker(ctx: GlobalPipelineContext) -> None:
-    """Financial Circuit Breaker: hard-halt the FSM once spend breaches budget.
+def enforce_financial_circuit_breaker(ctx: GlobalPipelineContext, budget_usd: Decimal) -> None:
+    """Financial Circuit Breaker: hard-halt the FSM once spend breaches the budget (money-only, E5).
 
-    Primary gate is USD spend (authoritative for Claude, estimated for Gemini); the token total is a
-    secondary ceiling and counts only the real new footprint (cache read/write are excluded, so the
-    agentic CLI's cheap cache reads can't drain the token budget). Checked after every cost-accruing
-    node so a pathological retry loop cannot drain the API budget. Reuses the incident machinery —
-    ``incident_report.json`` carries the full per-agent telemetry breakdown for audit. Totals are
-    persisted in the checkpoint, so both budgets are enforced consistently across ``--resume``.
+    The sole gate is USD spend (authoritative for Claude, estimated for Gemini) — tokens are reported but
+    NOT a ceiling (gating on money keeps the breaker honest even when the agentic CLI's cheap cache reads
+    inflate the raw token count). ``budget_usd`` is the EFFECTIVE ceiling for THIS ticket: on a batch it is
+    the remaining application budget (``app_budget − spent``) threaded in by ``run_batch``; on a single-ticket
+    path it is the full app budget. Checked after every cost-accruing node so a pathological retry loop
+    cannot drain the API budget. Reuses the incident machinery — ``incident_report.json`` carries the full
+    per-agent telemetry breakdown for audit. The ticket's spend is persisted in the checkpoint, so the
+    ceiling is enforced consistently across ``--resume``.
     """
     tel = ctx.telemetry
-    if tel.total_cost_usd >= PIPELINE_BUDGET_USD:
+    if tel.total_cost_usd >= budget_usd:
         _abort_with_incident(
             ctx,
             f"\n🚨 FINANCIAL CIRCUIT BREAKER OPEN: cumulative spend ${tel.total_cost_usd:.4f} "
-            f"≥ budget ${PIPELINE_BUDGET_USD:.4f}. Halting before further spend.",
-        )
-    if tel.total_tokens >= PIPELINE_BUDGET_TOKENS:
-        _abort_with_incident(
-            ctx,
-            f"\n🚨 FINANCIAL CIRCUIT BREAKER OPEN: cumulative {tel.total_tokens} tokens "
-            f"(cache-excluded) ≥ budget {PIPELINE_BUDGET_TOKENS}. Halting before further spend.",
+            f"≥ budget ${budget_usd:.4f}. Halting before further spend.",
         )
 
 
@@ -703,22 +708,22 @@ def _finops_subtotals(ctx: GlobalPipelineContext) -> str:
 
 
 def write_finops_report(ctx: GlobalPipelineContext) -> None:
-    """Persist the cumulative FinOps breakdown to ``reports/finops_report.json``."""
+    """Persist the cumulative FinOps breakdown to ``reports/finops_report.json`` (money-only, E5)."""
     report_file = ctx.workspace_paths.reports_dir / "finops_report.json"
     report_file.parent.mkdir(parents=True, exist_ok=True)
     with open(report_file, "w", encoding="utf-8") as f:
         # default=str serialises Decimal money as exact strings (json can't encode Decimal natively).
         json.dump(
-            ctx.telemetry.finops_report(PIPELINE_BUDGET_TOKENS, PIPELINE_BUDGET_USD),
+            ctx.telemetry.finops_report(PIPELINE_APP_BUDGET_USD),
             f, indent=2, default=str,
         )
     log.debug(f"FinOps report written to {report_file}")
 
 
 def log_finops_summary(ctx: GlobalPipelineContext) -> None:
-    """Print the end-of-run GRAND TOTAL block against the pipeline budgets. Thin wrapper over the
+    """Print the end-of-run GRAND TOTAL block against the app budget. Thin wrapper over the
     shared telemetry-first renderer (also used by the Nexus control plane) so the block is identical."""
-    _render_finops_summary(ctx.telemetry, PIPELINE_BUDGET_USD, PIPELINE_BUDGET_TOKENS)
+    _render_finops_summary(ctx.telemetry, PIPELINE_APP_BUDGET_USD)
 
 
 def _abort_with_incident(ctx: GlobalPipelineContext, header: str) -> NoReturn:
@@ -789,52 +794,140 @@ def _load_or_init_batch(nexus_run_dir: Path, project, tickets: list[str]) -> Bat
     return BatchState(project_slug=project.slug, nexus_run=nexus_run_dir.name, tickets=tickets)
 
 
+def _telemetry_from_state_dump(path: Path) -> PipelineTelemetry | None:
+    """Best-effort load of a ``PipelineTelemetry`` from a run's ``checkpoint.json`` / ``incident_report.json``.
+
+    Both are full state dumps (``GlobalPipelineContext`` / ``NexusState``) carrying a ``telemetry`` sub-object,
+    so the E3 batch can recover a finished/halted run's spend to fold into the application-wide total even
+    when ``run_executor`` raised instead of returning. Returns ``None`` if the file/field is absent or
+    unreadable (the spend is simply not folded — a degraded report beats a crash)."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        tel = data.get("telemetry")
+        return PipelineTelemetry.model_validate(tel) if tel else None
+    except Exception as e:  # pragma: no cover - best-effort recovery path
+        log.debug(f"Could not recover telemetry from {path}: {e}")
+        return None
+
+
+def write_app_finops_report(nexus_run_dir: Path, app_telemetry: PipelineTelemetry, budget_usd: Decimal) -> None:
+    """Persist the APPLICATION-wide FinOps breakdown (Nexus + every ticket + DevOps) to
+    ``reports/app_finops_report.json`` in the Nexus run dir. Best-effort: a reporting hiccup must never
+    mask the real batch outcome (mirrors the executor/Nexus per-run reporters)."""
+    try:
+        report_file = nexus_run_dir / "reports" / "app_finops_report.json"
+        report_file.parent.mkdir(parents=True, exist_ok=True)
+        report_file.write_text(
+            json.dumps(app_telemetry.finops_report(budget_usd), indent=2, default=str), encoding="utf-8"
+        )
+        log.debug(f"App-wide FinOps report written to {report_file}")
+    except Exception as e:  # pragma: no cover - best-effort
+        log.debug(f"Failed to write app_finops_report.json: {e}")
+
+
 async def run_batch(projects: Projects, project, cfg: RunConfig, nexus_run_dir: Path,
                     tickets: list[str]) -> None:
-    """E3: drive the Executor over ALL planned tickets in TPM order, one merged ticket at a time.
+    """E3 + E5: drive the Executor over ALL planned tickets in TPM order under ONE application budget.
 
     Each ticket clones ``main`` FRESH, so correctness hinges on E2 merging it before the next ticket's
     clone — ``--auto-execute`` implies ``--auto-merge``, so every ``run_executor`` here merges on success.
     Progress is checkpointed to ``reports/batch_state.json`` so a mid-batch halt resumes from the failed
     ticket without redoing merged ones (failure policy: stop on the first unrecoverable halt, exit 1).
+
+    E5 — a single money ceiling (``--budget`` or ``PIPELINE_APP_BUDGET_USD``) governs the whole build. The
+    Nexus planning spend and every finished ticket's telemetry are merged into ``batch.app_telemetry`` (so the
+    running total survives ``--resume``); before each ticket the REMAINING budget is threaded into
+    ``run_executor`` as that ticket's breaker ceiling. When the remaining budget falls below the floor the
+    batch stops cleanly (records a ``budget_marker``) before spending more. The ceiling is re-resolved every
+    call and never persisted, so re-passing a larger ``--budget`` on a ``--resume`` "adds money" and continues.
+    The application-wide FinOps report is written in a ``finally`` so it persists on ANY exit — clean finish,
+    a ticket/DevOps ``PipelineHalt``, or a budget stop — always reflecting the cumulative spend.
     """
     batch = _load_or_init_batch(nexus_run_dir, project, tickets)
     batch_path = _batch_state_path(nexus_run_dir)
-    log.info(f"🔁 Batch: {len(batch.completed)}/{len(tickets)} already merged; driving the rest in order.")
-    for ticket in tickets:
-        if ticket in batch.completed:
-            log.info(f"⏭️  Batch: '{ticket}' already merged — skipping.")
-            continue
-        run_dir = prepare_ticket_run(projects, project, cfg, ticket)
-        if run_dir is None:
-            batch.failed = ticket
-            batch.save_checkpoint(batch_path)
-            log.error(f"🛑 Batch: ticket '{ticket}' not found in the Nexus artifacts — stopping. "
-                      f"Resume with `--resume {project.slug}` after fixing the plan.")
-            sys.exit(1)
-        log.info(f"🤖 Batch: dispatching '{ticket}' ({len(batch.completed) + 1}/{len(tickets)}).")
-        try:
-            await run_executor(cfg, run_dir)
-        except PipelineHalt:
-            batch.failed = ticket
-            batch.save_checkpoint(batch_path)
-            log.error(f"🛑 Batch halted at '{ticket}'; {len(batch.completed)}/{len(tickets)} merged. "
-                      f"Incident written in {run_dir.name}. Resume with `--resume {project.slug}`.")
-            sys.exit(1)
-        batch.completed.append(ticket)
-        batch.failed = None
-        batch.save_checkpoint(batch_path)
-    log.info(f"🏁 Batch complete: all {len(tickets)} ticket(s) merged into {cfg.base_branch}.")
+    app_budget = cfg.budget_usd if cfg.budget_usd is not None else PIPELINE_APP_BUDGET_USD
 
-    # E4 — once every ticket has merged, optionally scaffold deploy config for the finished app. Reached
-    # only on a fully-merged batch: a mid-batch halt sys.exit(1)s above, so an incomplete app is never
-    # scaffolded. Covers both --idea --auto-execute and the bare --resume re-entry (both call run_batch).
-    if cfg.scaffold_deploy:
-        # Lazy import: scaffold.py imports the transaction/forge/incident/FinOps SSOTs from THIS module,
-        # so importing it at module top would form a deployment→nexus cycle. Deferring to call time (the
-        # same pattern main() uses for nexus_runner) lets nexus.runner finish loading first.
-        from src.deployment.provision.scaffold import run_devops_scaffold
-        await run_devops_scaffold(projects, project, cfg, nexus_run_dir)
+    # Fold the Nexus planning spend into the application total ONCE (guarded so a --resume never double-counts).
+    if not batch.nexus_merged:
+        nexus_tel = _telemetry_from_state_dump(nexus_run_dir / "reports" / "checkpoint.json")
+        if nexus_tel is not None:
+            batch.app_telemetry.merge(nexus_tel)
+        batch.nexus_merged = True
+        batch.save_checkpoint(batch_path)
+
+    log.info(f"🔁 Batch: {len(batch.completed)}/{len(tickets)} already merged; "
+             f"spent ${batch.app_telemetry.total_cost_usd:.4f} / ${app_budget:.2f} app budget.")
+    try:
+        for ticket in tickets:
+            if ticket in batch.completed:
+                log.info(f"⏭️  Batch: '{ticket}' already merged — skipping.")
+                continue
+
+            # E5 — gate the NEXT ticket on the remaining application budget BEFORE spending anything on it.
+            remaining = app_budget - batch.app_telemetry.total_cost_usd
+            if remaining <= PIPELINE_APP_BUDGET_FLOOR_USD:
+                batch.budget_marker = (
+                    f"App budget exhausted before '{ticket}': spent "
+                    f"${batch.app_telemetry.total_cost_usd:.4f} of ${app_budget:.2f}; "
+                    f"${remaining:.4f} remaining ≤ floor ${PIPELINE_APP_BUDGET_FLOOR_USD}."
+                )
+                batch.save_checkpoint(batch_path)
+                log.error(f"🛑 {batch.budget_marker} {len(batch.completed)}/{len(tickets)} merged. "
+                          f"Add budget and continue with "
+                          f"`--resume {project.slug} --budget <usd>`.")
+                sys.exit(1)
+            batch.budget_marker = None  # a continuing batch clears any stale exhaustion marker
+
+            run_dir = prepare_ticket_run(projects, project, cfg, ticket)
+            if run_dir is None:
+                batch.failed = ticket
+                batch.save_checkpoint(batch_path)
+                log.error(f"🛑 Batch: ticket '{ticket}' not found in the Nexus artifacts — stopping. "
+                          f"Resume with `--resume {project.slug}` after fixing the plan.")
+                sys.exit(1)
+            log.info(f"🤖 Batch: dispatching '{ticket}' ({len(batch.completed) + 1}/{len(tickets)}) "
+                     f"| ${remaining:.4f} of the app budget remaining.")
+            try:
+                ctx = await run_executor(cfg, run_dir, budget_usd_ceiling=remaining)
+            except PipelineHalt:
+                # Recover the halted ticket's spend (incident dump is freshest; checkpoint is the fallback)
+                # so the application total — and the app report below — still reflect the money it burned.
+                failed_tel = (_telemetry_from_state_dump(run_dir / "reports" / "incident_report.json")
+                              or _telemetry_from_state_dump(run_dir / "reports" / "checkpoint.json"))
+                if failed_tel is not None:
+                    batch.app_telemetry.merge(failed_tel)
+                batch.failed = ticket
+                batch.save_checkpoint(batch_path)
+                log.error(f"🛑 Batch halted at '{ticket}'; {len(batch.completed)}/{len(tickets)} merged. "
+                          f"Incident written in {run_dir.name}. Resume with `--resume {project.slug}`.")
+                sys.exit(1)
+
+            batch.app_telemetry.merge(ctx.telemetry)  # fold this ticket's spend into the running total
+            batch.completed.append(ticket)
+            batch.failed = None
+            batch.save_checkpoint(batch_path)
+        log.info(f"🏁 Batch complete: all {len(tickets)} ticket(s) merged into {cfg.base_branch}. "
+                 f"Spent ${batch.app_telemetry.total_cost_usd:.4f} / ${app_budget:.2f}.")
+
+        # E4 — once every ticket has merged, optionally scaffold deploy config for the finished app. Reached
+        # only on a fully-merged batch: a mid-batch halt sys.exit(1)s above, so an incomplete app is never
+        # scaffolded. Covers both --idea --auto-execute and the bare --resume re-entry (both call run_batch).
+        if cfg.scaffold_deploy:
+            # Lazy import: scaffold.py imports the transaction/forge/incident/FinOps SSOTs from THIS module,
+            # so importing it at module top would form a deployment→nexus cycle. Deferring to call time (the
+            # same pattern main() uses for nexus_runner) lets nexus.runner finish loading first.
+            from src.deployment.provision.scaffold import run_devops_scaffold
+            devops_remaining = app_budget - batch.app_telemetry.total_cost_usd
+            # run_devops_scaffold merges its ctx.telemetry into batch.app_telemetry in its OWN finally, so a
+            # budget halt mid-self-heal still records the partial DevOps spend here. A PipelineHalt propagates
+            # to the main.py guard; the outer finally below persists the app report either way.
+            await run_devops_scaffold(projects, project, cfg, nexus_run_dir,
+                                      budget_usd_ceiling=devops_remaining, app_telemetry=batch.app_telemetry)
+    finally:
+        # Always persist the application-wide spend + report, regardless of how the batch exits.
+        batch.save_checkpoint(batch_path)
+        write_app_finops_report(nexus_run_dir, batch.app_telemetry, app_budget)
+        _render_finops_summary(batch.app_telemetry, app_budget)
 
 
 def prepare_ticket_run(projects: Projects, project, cfg: RunConfig, ticket_id: str) -> Path | None:
@@ -958,20 +1051,29 @@ async def main():
             project = projects.get_or_create(cfg.ticket, repo=cfg.repo, base_branch=cfg.base_branch)
             run_dir = projects.allocate(project.slug, "exec", cfg.ticket)
 
-    await run_executor(cfg, run_dir, resume_checkpoint)
+    # Single-ticket paths (--run / legacy direct / --resume <project> <NNN>): the effective ceiling is the
+    # full app budget (or --budget if given). run_executor defaults None → PIPELINE_APP_BUDGET_USD.
+    await run_executor(cfg, run_dir, resume_checkpoint, budget_usd_ceiling=cfg.budget_usd)
 
 
-async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | None = None) -> bool:
+async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | None = None,
+                       budget_usd_ceiling: Decimal | None = None) -> GlobalPipelineContext:
     """Execute ONE ticket end-to-end in a prepared run dir: bootstrap (or resume) → TechLead → the FSM
-    self-heal cycle → atomic success commit. Returns ``True`` on full success; a halt writes an incident
+    self-heal cycle → atomic success commit. Returns the final ``GlobalPipelineContext`` on full success (so
+    the E3 batch can fold this ticket's telemetry into the application-wide total); a halt writes an incident
     report and raises ``PipelineHalt`` (via ``_abort_with_incident``) — caught by the E3 batch loop, or
     converted to exit 1 by the ``main.py`` guard on single-ticket paths. Shared by the direct
     ``--run``/resume paths and ``--idea --auto-execute`` (E1/E3).
+
+    ``budget_usd_ceiling`` is the EFFECTIVE money ceiling for this ticket (E5): on a batch it is the
+    remaining application budget threaded in by ``run_batch``; ``None`` (single-ticket paths) falls back to
+    the full ``PIPELINE_APP_BUDGET_USD``. The breaker gates on money only — tokens are reported, not capped.
     """
     # Re-anchor the audit trail to THIS run's logs/ dir before any other log line is emitted.
     # Append mode keeps a resumed run's timeline linear in the SAME file instead of splitting it.
     reconfigure_logging(run_dir / "logs")
     check_environment(require_forge=cfg.auto_merge)
+    budget_usd = budget_usd_ceiling if budget_usd_ceiling is not None else PIPELINE_APP_BUDGET_USD
 
     if resume_checkpoint is not None:
         log.info(f"▶️ RESUMING FSM EXECUTION FROM CHECKPOINT: {resume_checkpoint}")
@@ -1022,7 +1124,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
         log.info("Skipping TechLead node: contract already present in context.")
     else:
         await run_techlead_node(ctx)
-        enforce_financial_circuit_breaker(ctx)
+        enforce_financial_circuit_breaker(ctx, budget_usd)
         ctx.save_checkpoint(checkpoint_file)
         log.debug(f"Checkpoint saved after TechLead node: {checkpoint_file}")
 
@@ -1039,7 +1141,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
 
         # Financial Circuit Breaker: halt immediately if a prior cycle (or a resumed run) is
         # already over budget, before spending any more tokens this cycle.
-        enforce_financial_circuit_breaker(ctx)
+        enforce_financial_circuit_breaker(ctx, budget_usd)
 
         # Reset BOTH isolated feedback channels before a new cycle. The Developer reads only
         # `error_trace` (production-code fixes); QA reads only `qa_error_trace` (test fixes).
@@ -1077,7 +1179,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
                     "The generated test suite contradicts the contract signatures. Fix ONLY the test "
                     "files:\n" + "\n".join(lint_issues)
                 )
-                enforce_financial_circuit_breaker(ctx)
+                enforce_financial_circuit_breaker(ctx, budget_usd)
             ctx.save_checkpoint(checkpoint_file)
             log.debug(f"Checkpoint saved after QA node: {checkpoint_file}")
             regenerate_tests = False  # Reset the flag until the next rejection
@@ -1211,7 +1313,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
                 )
 
         # Developer is the dominant token drain — enforce the budget before spending on gates.
-        enforce_financial_circuit_breaker(ctx)
+        enforce_financial_circuit_breaker(ctx, budget_usd)
 
         # 3.5 QA test-compile gate: production code now exists (Developer ran, or it was pre-approved on
         #     a DAG-bypass test-only cycle), so the QA tests can be COMPILE-checked. A test-side compile
@@ -1244,7 +1346,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
                 + "\n".join(tc_lines)
             )
             await run_qa_agent_node(ctx, ctx.qa_error_trace)  # its format pass re-runs over the new tests
-            enforce_financial_circuit_breaker(ctx)
+            enforce_financial_circuit_breaker(ctx, budget_usd)
         ctx.qa_error_trace = ""  # consumed by the rebound loop; don't leak into the Reviewer's channels
 
         # 3.6 Lint/style gate (HARD): the engine's own quality bar so a STRICT CI stays green — `lint_cmd`
@@ -1293,7 +1395,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
             if lint_test_findings:
                 ctx.qa_error_trace = _cap_text(_LINT_FEEDBACK_PREAMBLE + "\n".join(lint_test_findings))
                 await run_qa_agent_node(ctx, ctx.qa_error_trace)  # its format pass re-runs over the new tests
-            enforce_financial_circuit_breaker(ctx)
+            enforce_financial_circuit_breaker(ctx, budget_usd)
         # Keep the Reviewer's snapshot consistent with the autofixed/rerouted working tree, then clear the
         # live channels so lint feedback never leaks into the Reviewer's own diagnostic routing.
         build_production_snapshot(ctx)
@@ -1332,7 +1434,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
         # 5. Comprehensive Audit Phase (Reviewer Agent) — failure log sliced marker-aware so the root
         #    ImportError/Traceback is preserved even when buried above a long stack.
         await run_reviewer_node(ctx, qa_success, _extract_failure_context(qa_lines), sec_success, sec_lines)
-        enforce_financial_circuit_breaker(ctx)
+        enforce_financial_circuit_breaker(ctx, budget_usd)
 
         # Print execution logs of utilities ONLY in case of an actual failure to CLI, but log everything to file
         if not qa_success:
@@ -1394,7 +1496,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
                     ctx, gate_output=_cap_text(gate_output),
                     prev_dev_trace=prev_dev_trace, prev_qa_trace=prev_qa_trace,
                 )
-                enforce_financial_circuit_breaker(ctx)
+                enforce_financial_circuit_breaker(ctx, budget_usd)
                 verdict = ctx.arbiter_verdict
                 amend_allowed = ctx.contract_amendments < MAX_CONTRACT_AMENDMENTS
                 if verdict.route == "contract" and amend_allowed:
@@ -1406,7 +1508,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
                     ctx.error_trace = ""                       # stale: referenced the pre-amendment contract
                     ctx.qa_error_trace = ""
                     ctx.review_report = None
-                    enforce_financial_circuit_breaker(ctx)
+                    enforce_financial_circuit_breaker(ctx, budget_usd)
                     ctx.current_attempt = attempt + 1
                     ctx.save_checkpoint(checkpoint_file)
                     log.warning(
@@ -1444,8 +1546,8 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
         ctx.save_checkpoint(checkpoint_file)
         log.debug(f"Checkpoint saved at end of cycle {attempt}: {checkpoint_file}")
         log.info(
-            f"   [FINOPS] {_finops_subtotals(ctx)} / ${PIPELINE_BUDGET_USD:.2f} budget "
-            f"| {ctx.telemetry.total_tokens}t / {PIPELINE_BUDGET_TOKENS}t (cache-excluded)"
+            f"   [FINOPS] {_finops_subtotals(ctx)} / ${budget_usd:.2f} budget "
+            f"| {ctx.telemetry.total_tokens}t (cache-excluded, reported only)"
         )
 
         if all_gates_passed:
@@ -1462,7 +1564,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
             finally:
                 write_finops_report(ctx)
                 log_finops_summary(ctx)
-            return True
+            return ctx
 
     # Escalation on Circuit Breaker open
     _abort_with_incident(ctx, "\n🚨 CIRCUIT BREAKER OPEN: Retries exhausted.")

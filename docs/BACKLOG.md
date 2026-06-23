@@ -52,7 +52,7 @@ E1 ✅ Nexus auto-dispatches Executor (one ticket)   — DONE (v0.17.0 / ADR 001
       └─► E2 ✅ Close the loop to main (auto-approved PR + merge)  — DONE (v0.18.0 / ADR 0018)
               └─► E3 ✅ Cyclical multi-ticket orchestration (all tasks, each building on the last)  — DONE (v0.19.0 / ADR 0019)
                       ├─► E4 ✅ DevOps deploy-scaffolding (--scaffold-deploy)  — DONE (v0.20.0 / ADR 0020)
-                      └─► E5  Application-wide FinOps budget (one ceiling, remaining-budget threaded per cycle)
+                      └─► E5 ✅ Application-wide FinOps budget (one money ceiling, remaining threaded per ticket)  — DONE (v0.22.0 / ADR 0022)
 ```
 
 E3 depends on E2 for a hard structural reason (see E3): each ticket clones `main` **fresh**, so TASK-02 only
@@ -227,7 +227,13 @@ Plus open sub-decisions: the new `devops` agent role (model/prompt/output-model/
 **Acceptance:** epic captured with a clear decision matrix and the touch-points enumerated; **no
 implementation** until the mechanism is chosen.
 
-## E5. [EPIC] Application-wide FinOps budget (one ceiling, remaining-budget threaded per cycle)
+## E5. [✅ DONE — v0.22.0 / ADR 0022] Application-wide FinOps budget (one ceiling, remaining-budget threaded per ticket)
+
+**Shipped:** a single money ceiling `PIPELINE_APP_BUDGET_USD` (or `--budget`) governs the whole build;
+`run_batch` threads the remaining budget into each ticket and accumulates spend in `BatchState.app_telemetry`
+(resume-safe + re-budgetable). Budget is **money-only** (the token ceiling was removed); reporting is now
+per-role + per-plane + per-time (`app_finops_report.json`). The decision record below is retained as the
+design rationale; see [ADR 0022](decisions/0022-application-wide-finops-budget.md).
 
 **Goal:** a single budget governs the **whole application build** (idea → all tickets → `main`), not each
 ticket in isolation. The operator sets one ceiling (e.g. `PIPELINE_APP_BUDGET_USD`); the engine spends it

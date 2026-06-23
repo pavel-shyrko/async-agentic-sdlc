@@ -15,9 +15,13 @@ Miss one and the role silently won't load, won't bill, or won't persist on `--re
 exception (agentic Claude CLI). See [agent-provider-model-map](agent-provider-model-map.md),
 [agent-contracts](agent-contracts.md), [repo-module-map](repo-module-map.md).
 
-1. **Model + label** — `src/shared/core/config.py`: add `XYZ_MODEL = GEMINI_3_5_FLASH` near the other
-   role models, AND an entry in `ROLE_MODELS`: `"xyz": (XYZ_MODEL, "Xyz Agent")`. The dict key is the
-   `role` slug passed to `run_structured_llm`; the label is the human name used in logs/telemetry.
+1. **Model + label + plane** — `src/shared/core/config.py`: add `XYZ_MODEL = GEMINI_3_5_FLASH` near the
+   other role models, AND an entry in `ROLE_MODELS`: `"xyz": (XYZ_MODEL, "Xyz Agent")`. The dict key is the
+   `role` slug passed to `run_structured_llm`; the label is the human name used in logs/telemetry. **ALSO add
+   that exact label to `AGENT_PLANE`** (`"Xyz Agent": "nexus"|"development"|"deployment"`) — E5 FinOps derives
+   the per-plane rollup from this map by display label, so a missing entry silently mis-buckets the role's
+   spend into the default `"development"` plane (the same "miss-one-and-it-mis-bills" trap as a missing
+   `log_token_usage`). See [finops-app-budget](finops-app-budget.md).
 2. **System prompt** — `prompts/system/<role>.md`. Single-section (loaded by `get_system_prompt` +
    `build_agent_context`, like reviewer/techlead) UNLESS it needs a user-template split (then
    `---`-delimited, like qa via `get_system_prompt_sections`). Must be language-neutral

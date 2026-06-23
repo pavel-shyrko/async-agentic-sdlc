@@ -1,6 +1,6 @@
 ---
 name: analyze-run
-description: Diagnose a pipeline run (executor or Nexus) from its persisted artifacts — classify root cause, cite evidence, and point the fix at the engine/prompts (never the clone). Use when the user asks to analyze/diagnose a run, explain a CIRCUIT BREAKER / "Retries exhausted" halt, a looping or stuck cycle, a Gemini RECITATION/SAFETY block, a PR/merge (forge) failure under `--auto-merge`, a lint-gate reroute loop or an E4 deploy-scaffolding (`--scaffold-deploy`) static-lint halt, a non-halt crash/hang (an `embedded null byte` traceback, a Jinja-in-system-message `ValueError`, or a stalled agent call that printed no incident), or "what happened" in a runs/<project>/<NNN>_... run. Accepts a run dir, a project slug, or pasted run log output.
+description: Diagnose a pipeline run (executor or Nexus) from its persisted artifacts — classify root cause, cite evidence, and point the fix at the engine/prompts (never the clone). Use when the user asks to analyze/diagnose a run, explain a CIRCUIT BREAKER / "Retries exhausted" halt, an application-budget exhaustion / `budget_marker` clean stop (`--budget` / `PIPELINE_APP_BUDGET_USD`, E5), a looping or stuck cycle, a Gemini RECITATION/SAFETY block, a PR/merge (forge) failure under `--auto-merge`, a lint-gate reroute loop or an E4 deploy-scaffolding (`--scaffold-deploy`) static-lint halt, a non-halt crash/hang (an `embedded null byte` traceback, a Jinja-in-system-message `ValueError`, or a stalled agent call that printed no incident), or "what happened" in a runs/<project>/<NNN>_... run. Accepts a run dir, a project slug, or pasted run log output.
 ---
 
 # Pipeline Run Analysis
@@ -17,11 +17,13 @@ flaw, then recommend a fix in `src/`/`prompts/` — NEVER edit the generated clo
   (`<NNN>_exec_<ticket>_…` for executor, `<NNN>_nexus_plan_…` for control plane); the highest `<NNN>` is
   newest. If given only pasted log output, work from it but prefer reading the artifacts when a path is
   derivable. Layout SSOT: [run-layout-and-cli](../../rules/run-layout-and-cli.md).
-- **Multi-ticket batch (`--auto-execute`, E3):** read the `nexus_plan` run's `reports/batch_state.json`
+- **Multi-ticket batch (`--auto-execute`, E3 + E5):** read the `nexus_plan` run's `reports/batch_state.json`
   first — `failed` names the ticket that stopped the batch (analyze *that* ticket's `<NNN>_exec_<failed>_…`
-  run), and `completed` confirms the merged ones. A batch with `failed: null` and a `🏁 Batch complete` line
-  is a clean success (the per-ticket cost is *each* run's GRAND TOTAL, not a batch total — there is no
-  app-wide budget yet, BACKLOG E5).
+  run); `completed` confirms the merged ones; `budget_marker` (if set) means the batch stopped **cleanly on
+  application-budget exhaustion** (see the budget-stop class below); `app_telemetry.total_cost_usd` is the
+  cumulative spend across Nexus + all tickets + DevOps. The application-wide cost lives in
+  `reports/app_finops_report.json` (per-role + per-plane + time), refreshed on every batch exit. A batch with
+  `failed: null`, `budget_marker: null` and a `🏁 Batch complete` line is a clean success.
 - **Deploy-scaffolding (`--scaffold-deploy`, E4):** the deploy phase is its own `<NNN>_devops_scaffold_…`
   run dir (cloned on `chore/devops-scaffold`), separate from the ticket runs. A persistent `run_devops_gate`
   failure writes an `incident_report.json` *there*; a forge merge failure of the scaffold PR is a
@@ -44,7 +46,8 @@ flaw, then recommend a fix in `src/`/`prompts/` — NEVER edit the generated clo
    escaped to `main()` **after** the gates passed: a loop-closure (`finalize_pr`/`gh` merge) failure, an
    `embedded null byte` argv crash, or (pre-`GEMINI_REQUEST_TIMEOUT`) a stalled call. Read the traceback's
    frame, not the absent incident.
-4. **FinOps** — `reports/finops_report.json` (per-agent token/USD + cumulative).
+4. **FinOps** — `reports/finops_report.json` (per-agent token/USD/time + per-plane + cumulative); for a batch
+   also the `nexus_plan` run's `reports/app_finops_report.json` (application-wide: Nexus + all tickets + DevOps).
 5. **Gate output** — for a test/build/SAST failure, read the raw runner output captured in the log /
    checkpoint (`_extract_failure_context`).
 
@@ -63,7 +66,18 @@ Map the evidence to one class (decisive — pick the dominant one and say so):
   TechLead amendment (ADR [0016](../../../docs/decisions/0016-arbiter-contract-self-healing.md)).
 - **Environment/runner misconfiguration** — a hard gate FAILED while the Reviewer approved BOTH sides
   (deadlock guard, `runner.py`): not agent-fixable (e.g. sandbox import-path/network).
-- **Financial circuit breaker** — cumulative USD/token budget breached (`enforce_financial_circuit_breaker`).
+- **Financial circuit breaker** — cumulative **USD** spend met/exceeded the effective ceiling
+  (`enforce_financial_circuit_breaker(ctx, budget_usd)`; money-only since E5/ADR 0022 — tokens are reported,
+  never a gate). On a batch the ceiling is the *remaining* application budget (`app_budget − spent`), so a
+  ticket near the edge gets fewer cycles. Writes `incident_report.json` like any FSM halt. Distinct from the
+  clean budget-stop below.
+- **Application-budget exhaustion (clean stop, E5 — NO incident)** — `run_batch` halted *before* dispatching
+  the next ticket because the remaining application budget fell to `PIPELINE_APP_BUDGET_FLOOR_USD`. **Tell:**
+  `batch_state.json` has `budget_marker` set + a `🛑 App budget exhausted` audit line + `app_finops_report.json`
+  present, but the would-be-next ticket has **no run dir / no `incident_report.json`** (nothing was spent on
+  it). This is the budget working as designed, not a failure — the fix is to add money:
+  `--resume <project> --budget <larger>` (the ceiling is never persisted, so it continues past the marker).
+  Possibly a starvation signal: one expensive early ticket drained the shared pool.
 - **Stuck retry loop** — same failure repeated across cycles until "Retries exhausted"; inspect WHY no
   channel/Arbiter route resolved it (often a mis-route, an empty diagnostic payload, or a contract flaw).
 - **Loop-closure (forge / `--auto-merge`) failure** — the cycle *succeeded* (all gates passed, atomic

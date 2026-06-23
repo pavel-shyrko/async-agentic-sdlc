@@ -26,9 +26,13 @@ instead of hanging the run forever — `with_api_retry` only catches exceptions,
 **Claude Code CLI, via `run_claude_cli`** (agentic, NOT structured): the **Developer** only. It edits
 files directly in the run's `repo/`, re-sending its prompt/transcript each turn (hence cache-heavy).
 
-**FinOps** (see [token-budget-excludes-cache](token-budget-excludes-cache.md)): Gemini cost is
-**estimated** from `MODEL_PRICING_MATRIX`; Claude cost is **authoritative** (reported by the CLI).
-Budget = fresh input + output only (cache read/write tracked separately, excluded); the breaker gates
-primarily on USD. Per-agent telemetry via `log_token_usage(telemetry, …)`; end-of-run
-`log_finops_summary` prints the GRAND TOTAL. Both planes record into a `PipelineTelemetry`. Related:
+**FinOps** (see [token-budget-excludes-cache](token-budget-excludes-cache.md) + [finops-app-budget](finops-app-budget.md)):
+Gemini cost is **estimated** from `MODEL_PRICING_MATRIX`; Claude cost is **authoritative** (reported by the
+CLI). The breaker is **money-only** (ADR 0022): it gates on `total_cost_usd` against the threaded application
+budget — tokens (fresh input + output; cache read/write tracked separately, excluded) are reported, never a
+ceiling. Per-agent telemetry via `log_token_usage(telemetry, …)`, which also attributes the **plane** (from
+`AGENT_PLANE`) and the per-call **wall-clock** (read from the `run_structured_llm` `LAST_LLM_ELAPSED_S`
+ContextVar — no change to its 2-tuple return); the Developer (Claude) records directly with `plane="development"`.
+`log_finops_summary` prints the GRAND TOTAL with per-agent + per-plane subtotals + total time. All planes
+record into a `PipelineTelemetry`; the batch merges them into `BatchState.app_telemetry`. Related:
 [repo-module-map](repo-module-map.md), [agent-contracts](agent-contracts.md).

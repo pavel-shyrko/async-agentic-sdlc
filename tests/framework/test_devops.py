@@ -225,5 +225,52 @@ class JinjaSystemMessageRelocationTests(unittest.TestCase):
         )
 
 
+class ScaffoldBudgetTests(unittest.IsolatedAsyncioTestCase):
+    """E5 — the E4 deploy phase enforces the threaded remaining budget and, even when an exhaustion mid
+    self-heal raises PipelineHalt, folds its partial spend into the application-wide accumulator (the
+    finally-merge) so the batch's app report stays accurate."""
+
+    async def test_budget_halt_midphase_still_merges_partial_spend(self) -> None:
+        from decimal import Decimal
+        from src.deployment.provision import scaffold
+        from src.nexus.runner import PipelineHalt
+        from src.shared.core.models import PipelineTelemetry
+
+        with TemporaryDirectory() as td:
+            repo = Path(td) / "repo"; (repo).mkdir(parents=True, exist_ok=True)
+            reports = Path(td) / "reports"; reports.mkdir(parents=True, exist_ok=True)
+            ws = WorkspacePaths(logs_dir=Path(td) / "logs", reports_dir=reports, repo_dir=repo)
+
+            project = mock.MagicMock(); project.slug = "p"; project.repo = "r"; project.base_branch = "main"
+            projects = mock.MagicMock(); projects.allocate.return_value = Path(td) / "001_devops"
+            cfg = scaffold.RunConfig(description=None, base_branch="main", resume=None, reset_attempts=False, repo="r")
+            app_tel = PipelineTelemetry()
+
+            async def _spend(ctx, **_kw):
+                # The DevOps generation "spends" $0.50 — over the $0.10 remaining ceiling below.
+                ctx.telemetry.record("DevOps Agent", 1000, 200, "0.50", provider="gemini", plane="deployment")
+
+            with (
+                mock.patch.object(scaffold, "reconfigure_logging"),
+                mock.patch.object(scaffold, "bootstrap_session", new=AsyncMock(return_value=ws)),
+                mock.patch.object(scaffold, "_repo_has_source", return_value=True),
+                mock.patch.object(scaffold, "generate_repo_map", return_value="map"),
+                mock.patch.object(scaffold, "_nexus_environment_ids", return_value=""),
+                mock.patch.object(scaffold, "run_devops_node", new=AsyncMock(side_effect=_spend)),
+                mock.patch.object(scaffold, "run_devops_gate", return_value=[]),
+            ):
+                with self.assertRaises(PipelineHalt):
+                    await scaffold.run_devops_scaffold(
+                        projects, project, cfg, Path(td),
+                        budget_usd_ceiling=Decimal("0.10"), app_telemetry=app_tel,
+                    )
+
+            # The partial DevOps spend was folded into the application total via the finally-merge…
+            self.assertEqual(app_tel.total_cost_usd, Decimal("0.50"))
+            self.assertEqual(app_tel.by_plane()["deployment"]["calls"], 1)
+            # …and the devops run still wrote its own incident report (auditable spend).
+            self.assertTrue((reports / "incident_report.json").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

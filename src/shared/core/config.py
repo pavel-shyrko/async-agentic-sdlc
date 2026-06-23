@@ -91,16 +91,22 @@ CLAUDE_CLI_BIN = os.environ.get("CLAUDE_CLI_BIN", "claude")
 # ==========================================
 # FINOPS — Financial Circuit Breaker budget
 # ==========================================
-# USD spend budget — the PRIMARY Financial Circuit Breaker signal. Cost is authoritative for Claude
-# (reported by the CLI) and estimated for Gemini; gating on money keeps the breaker honest even when
-# the agentic Claude CLI's cheap cache reads inflate the raw token count. Env-overridable; generous
-# default so normal runs never trip.
-PIPELINE_BUDGET_USD = Decimal(os.environ.get("PIPELINE_BUDGET_USD", "10.00"))
+# Application-wide USD spend budget (E5) — the SINGLE Financial Circuit Breaker ceiling governing a whole
+# build (idea → all tickets → optional deploy), not each ticket in isolation. The batch threads the
+# REMAINING budget (app_budget − spent) into each ticket; a per-invocation --budget overrides this. Money
+# is the sole gate: cost is authoritative for Claude (CLI-reported) and estimated for Gemini, which keeps
+# the breaker honest even when the agentic Claude CLI's cheap cache reads inflate the raw token count.
+# Env-overridable; generous default so normal runs never trip. NEVER persisted in BatchState — re-resolved
+# every invocation, so re-passing a larger --budget on a --resume "adds money" and continues a halted batch.
+PIPELINE_APP_BUDGET_USD = Decimal(os.environ.get("PIPELINE_APP_BUDGET_USD", "25.00"))
 
-# Cumulative token budget — SECONDARY ceiling. Counts only the real new footprint (fresh input +
-# output; cache read/write are EXCLUDED, see PipelineTelemetry). Env-overridable; persisted telemetry
-# is checked against this after each cost-accruing node, and a breach triggers a deterministic Hard
-# Halt. Generous default so normal runs never trip.
+# Below this remaining application budget the E3 batch stops cleanly BEFORE dispatching the next ticket,
+# rather than starting one that would almost certainly trip the breaker mid-run. Env-overridable.
+PIPELINE_APP_BUDGET_FLOOR_USD = Decimal(os.environ.get("PIPELINE_APP_BUDGET_FLOOR_USD", "0.01"))
+
+# Cumulative token total — REPORTED ONLY (no longer a budget/ceiling, E5). Counts the real new footprint
+# (fresh input + output; cache read/write are EXCLUDED, see PipelineTelemetry). Retained so the FinOps
+# report can surface the token footprint alongside the money spend; the breaker gates on USD alone.
 PIPELINE_BUDGET_TOKENS = int(os.environ.get("PIPELINE_BUDGET_TOKENS", "1000000"))
 
 # Role -> (model, human-readable agent name) for structured (instructor) LLM calls.
@@ -115,6 +121,25 @@ ROLE_MODELS = {
     "po":      (PO_MODEL,      "Product Owner Agent"),
     "sa":      (SA_MODEL,      "Solution Architect Agent"),
     "tpm":     (TPM_MODEL,      "Technical Project Manager Agent"),
+}
+
+# Agent display-label -> control plane (E5 FinOps per-plane rollup). Keyed by the EXACT labels passed to
+# log_token_usage / telemetry.record (the by_agent keys), so plane attribution needs no per-agent-call
+# change. The Developer (Claude CLI) records "Developer Agent" directly. Keep in sync with ROLE_MODELS
+# labels + the Developer when adding a role (see agent-role-registration rule).
+AGENT_PLANE = {
+    "Product Owner Agent": "nexus",
+    "Solution Architect Agent": "nexus",
+    "Technical Project Manager Agent": "nexus",
+    "Technical Lead Agent": "development",
+    "TechLead": "development",                  # techlead.py logs the short label
+    "QA Agent": "development",
+    "Reviewer Agent": "development",
+    "Technical Writer": "development",          # techwriter.py logs the short label
+    "Technical Writer Agent": "development",
+    "Arbiter Agent": "development",
+    "Developer Agent": "development",
+    "DevOps Agent": "deployment",
 }
 
 # ==========================================

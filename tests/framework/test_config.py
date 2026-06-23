@@ -14,7 +14,7 @@ from unittest import mock
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
 
 from src.shared.core import config
-from src.shared.core.config import estimate_gemini_cost_usd, MODEL_PRICING_MATRIX
+from src.shared.core.config import estimate_gemini_cost_usd, MODEL_PRICING_MATRIX, ROLE_MODELS, AGENT_PLANE
 
 
 def _usage(prompt: int, output: int, cached: int = 0, details=None) -> SimpleNamespace:
@@ -107,6 +107,26 @@ class GenaiClientTimeoutTests(unittest.TestCase):
                 mock.patch("src.shared.core.config.genai.Client") as Client:
             config._build_genai_client()
         self.assertEqual(Client.call_args.kwargs["http_options"].timeout, 42_000)
+
+
+class AppBudgetAndPlaneTests(unittest.TestCase):
+    """E5 — the application-wide money ceiling is an env-overridable constant, and AGENT_PLANE covers
+    every structured role label + the Developer so the per-plane FinOps rollup has no 'unknown' bucket."""
+
+    def test_app_budget_env_override(self) -> None:
+        with mock.patch.dict(os.environ, {"PIPELINE_APP_BUDGET_USD": "7.50"}):
+            import importlib
+            reloaded = importlib.reload(config)
+            self.assertEqual(reloaded.PIPELINE_APP_BUDGET_USD, Decimal("7.50"))
+        importlib.reload(config)  # restore the module default for sibling tests
+
+    def test_agent_plane_covers_every_role_label_and_developer(self) -> None:
+        # Every ROLE_MODELS display label must map to a plane (Gemini roles)…
+        for _role, (_model, label) in ROLE_MODELS.items():
+            self.assertIn(label, AGENT_PLANE, f"AGENT_PLANE missing label {label!r}")
+        # …plus the agentic Developer (Claude, records directly, not via ROLE_MODELS).
+        self.assertEqual(AGENT_PLANE["Developer Agent"], "development")
+        self.assertEqual(set(AGENT_PLANE.values()), {"nexus", "development", "deployment"})
 
 
 if __name__ == "__main__":

@@ -359,8 +359,9 @@ wsl -e bash -lc "cd /mnt/c/code/token-burners-factory && source venv/bin/activat
 | `DEVELOPER_CLI_TIMEOUT` | `900` | Hard wall-clock ceiling (s) per Developer CLI session; child is killed+reaped on expiry. |
 | `DEVELOPER_CLI_IDLE_TIMEOUT` | `120` | Inactivity ceiling (s); kills the child if it emits no output for this long. |
 | `GEMINI_REQUEST_TIMEOUT` | `300` | Per-request wall-clock ceiling (s) for every structured Gemini call; a stalled request raises (retried, then fails fast) instead of hanging the run. |
-| `PIPELINE_BUDGET_USD` | `10.00` | Primary Financial Circuit Breaker gate (authoritative for Claude, estimated for Gemini). |
-| `PIPELINE_BUDGET_TOKENS` | `1000000` | Secondary token ceiling (fresh in+out; cache excluded). |
+| `PIPELINE_APP_BUDGET_USD` | `25.00` | Application-wide money ceiling (E5) — the SOLE Financial Circuit Breaker gate (authoritative for Claude, estimated for Gemini). Governs a whole `--idea --auto-execute` build (threaded per-ticket as the remaining budget); overridable per-invocation by `--budget <usd>`. |
+| `PIPELINE_APP_BUDGET_FLOOR_USD` | `0.01` | The batch stops cleanly before dispatching a ticket once the remaining budget drops to this. |
+| `PIPELINE_BUDGET_TOKENS` | `1000000` | **Report-only** token figure (fresh in+out; cache excluded) — no longer a ceiling (the breaker is money-only, ADR 0022). |
 | `PIPELINE_MAX_RETRIES` | `3` | Functional retry budget for the FSM cycle. |
 | `ARBITER_TRIGGER_ATTEMPT` | `2` | First failing cycle on which the Arbiter may run. |
 | `MAX_CONTRACT_AMENDMENTS` | `1` | Autonomous contract rewrites allowed per run. |

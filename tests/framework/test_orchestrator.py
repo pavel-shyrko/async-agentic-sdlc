@@ -15,9 +15,21 @@ os.environ.setdefault("GEMINI_API_KEY", "test-key")
 from contextlib import ExitStack
 
 from src.nexus import runner as orchestrator
+from decimal import Decimal
 from src.shared.core.models import (
     TechLeadContract, GlobalPipelineContext, ReviewReport, WorkspacePaths, ArbiterVerdict,
+    PipelineTelemetry, BatchState,
 )
+
+
+def _ctx_with_cost(cost_usd: str = "0.10") -> mock.MagicMock:
+    """A stand-in run_executor return: an object exposing a ``.telemetry`` PipelineTelemetry carrying a
+    fixed spend, so run_batch can fold it into the application-wide total (E5)."""
+    tel = PipelineTelemetry()
+    tel.record("Developer Agent", 100, 20, cost_usd, provider="claude", plane="development", duration_seconds=1.0)
+    ctx = mock.MagicMock()
+    ctx.telemetry = tel
+    return ctx
 
 # Step-3.6's HARD lint gate calls run_format_pass + run_lint_gate INSIDE the FSM cycle. Default them
 # module-wide to a clean no-op pass so every existing cycle test neither hits Docker nor blows CPython's
@@ -1059,11 +1071,10 @@ class RunBatchTests(unittest.IsolatedAsyncioTestCase):
         return projects, project, cfg, nexus_dir
 
     async def test_drives_all_tickets_in_order_and_checkpoints(self) -> None:
-        from src.shared.core.models import BatchState
         with TemporaryDirectory() as td:
             projects, project, cfg, nexus_dir = self._fixtures(td)
             seen = []
-            run_executor = AsyncMock(return_value=True)
+            run_executor = AsyncMock(side_effect=lambda *_a, **_k: _ctx_with_cost("0.10"))
 
             def _prepare(_projects, _project, _cfg, ticket):
                 seen.append(ticket)
@@ -1081,15 +1092,20 @@ class RunBatchTests(unittest.IsolatedAsyncioTestCase):
             batch = BatchState.load_checkpoint(orchestrator._batch_state_path(nexus_dir))
             self.assertEqual(batch.completed, ["TASK-01", "TASK-02", "TASK-03"])
             self.assertIsNone(batch.failed)
+            # E5 — every ticket's spend folded into the application-wide total (3 × $0.10).
+            self.assertEqual(batch.app_telemetry.total_cost_usd, Decimal("0.30"))
+            # E5 — the app-wide FinOps report is persisted (always, via the finally).
+            self.assertTrue((nexus_dir / "reports" / "app_finops_report.json").exists())
 
     async def test_resume_skips_already_completed(self) -> None:
-        from src.shared.core.models import BatchState
         with TemporaryDirectory() as td:
             projects, project, cfg, nexus_dir = self._fixtures(td)
-            # Seed a prior batch: TASK-01 already merged.
-            BatchState(project_slug="p", nexus_run=nexus_dir.name,
-                       tickets=["TASK-01", "TASK-02", "TASK-03"], completed=["TASK-01"]
-                       ).save_checkpoint(orchestrator._batch_state_path(nexus_dir))
+            # Seed a prior batch: TASK-01 already merged, with a running spend recorded.
+            seeded = BatchState(project_slug="p", nexus_run=nexus_dir.name,
+                                tickets=["TASK-01", "TASK-02", "TASK-03"], completed=["TASK-01"],
+                                nexus_merged=True)
+            seeded.app_telemetry.record("Developer Agent", 100, 20, "0.10", provider="claude")
+            seeded.save_checkpoint(orchestrator._batch_state_path(nexus_dir))
             seen = []
 
             def _prepare(_projects, _project, _cfg, ticket):
@@ -1098,7 +1114,8 @@ class RunBatchTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 mock.patch.object(orchestrator, "prepare_ticket_run", side_effect=_prepare),
-                mock.patch.object(orchestrator, "run_executor", new=AsyncMock(return_value=True)),
+                mock.patch.object(orchestrator, "run_executor",
+                                  new=AsyncMock(side_effect=lambda *_a, **_k: _ctx_with_cost("0.10"))),
             ):
                 await orchestrator.run_batch(projects, project, cfg, nexus_dir,
                                              ["TASK-01", "TASK-02", "TASK-03"])
@@ -1106,16 +1123,17 @@ class RunBatchTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(seen, ["TASK-02", "TASK-03"])     # TASK-01 skipped (already merged)
             batch = BatchState.load_checkpoint(orchestrator._batch_state_path(nexus_dir))
             self.assertEqual(batch.completed, ["TASK-01", "TASK-02", "TASK-03"])
+            # E5 — the prior $0.10 reloaded and the two new tickets accumulated on top (no double-count).
+            self.assertEqual(batch.app_telemetry.total_cost_usd, Decimal("0.30"))
 
     async def test_halt_stops_batch_and_records_failed_ticket(self) -> None:
-        from src.shared.core.models import BatchState
         with TemporaryDirectory() as td:
             projects, project, cfg, nexus_dir = self._fixtures(td)
 
-            async def _executor(_cfg, run_dir):
+            async def _executor(_cfg, run_dir, **_k):
                 if run_dir.name.endswith("TASK-02"):
                     raise orchestrator.PipelineHalt("halt on TASK-02")
-                return True
+                return _ctx_with_cost("0.10")
 
             with (
                 mock.patch.object(orchestrator, "prepare_ticket_run",
@@ -1131,9 +1149,69 @@ class RunBatchTests(unittest.IsolatedAsyncioTestCase):
             batch = BatchState.load_checkpoint(orchestrator._batch_state_path(nexus_dir))
             self.assertEqual(batch.completed, ["TASK-01"])
             self.assertEqual(batch.failed, "TASK-02")
+            # E5 — the app-wide FinOps report is still persisted on a mid-batch halt (halt-safe finally).
+            self.assertTrue((nexus_dir / "reports" / "app_finops_report.json").exists())
+
+    async def test_budget_exhaustion_stops_batch_cleanly_before_spending(self) -> None:
+        # E5 — once the remaining application budget drops below the floor, the batch stops BEFORE
+        # dispatching the next ticket (records a budget_marker), rather than overspending.
+        with TemporaryDirectory() as td:
+            projects, project, cfg, nexus_dir = self._fixtures(td)
+            cfg.budget_usd = Decimal("0.20")                 # room for exactly 2 × $0.10 tickets, then $0 left
+            dispatched = []
+
+            def _prepare(_projects, _project, _cfg, ticket):
+                dispatched.append(ticket)
+                return Path(td) / f"exec_{ticket}"
+
+            with (
+                mock.patch.object(orchestrator, "prepare_ticket_run", side_effect=_prepare),
+                mock.patch.object(orchestrator, "run_executor",
+                                  new=AsyncMock(side_effect=lambda *_a, **_k: _ctx_with_cost("0.10"))),
+            ):
+                with self.assertRaises(SystemExit) as exit_ctx:
+                    await orchestrator.run_batch(projects, project, cfg, nexus_dir,
+                                                 ["TASK-01", "TASK-02", "TASK-03"])
+
+            self.assertEqual(exit_ctx.exception.code, 1)
+            self.assertEqual(dispatched, ["TASK-01", "TASK-02"])  # TASK-03 never dispatched (budget stop)
+            batch = BatchState.load_checkpoint(orchestrator._batch_state_path(nexus_dir))
+            self.assertEqual(batch.completed, ["TASK-01", "TASK-02"])
+            self.assertIsNotNone(batch.budget_marker)            # clean exhaustion stop recorded
+            self.assertEqual(batch.app_telemetry.total_cost_usd, Decimal("0.20"))
+
+    async def test_rebudget_on_resume_continues_past_a_budget_stop(self) -> None:
+        # E5 — re-passing a larger --budget on a resume continues a batch that stopped on exhaustion (the
+        # ceiling is never persisted; only the spend is).
+        with TemporaryDirectory() as td:
+            projects, project, cfg, nexus_dir = self._fixtures(td)
+            seeded = BatchState(project_slug="p", nexus_run=nexus_dir.name,
+                                tickets=["TASK-01", "TASK-02", "TASK-03"],
+                                completed=["TASK-01", "TASK-02"], nexus_merged=True,
+                                budget_marker="App budget exhausted before 'TASK-03'.")
+            seeded.app_telemetry.record("Developer Agent", 100, 20, "0.20", provider="claude")
+            seeded.save_checkpoint(orchestrator._batch_state_path(nexus_dir))
+            cfg.budget_usd = Decimal("1.00")                 # add money: remaining = 1.00 − 0.20 > floor
+            dispatched = []
+
+            with (
+                mock.patch.object(orchestrator, "prepare_ticket_run",
+                                  side_effect=lambda _p, _pr, _c, t: dispatched.append(t) or Path(td) / f"exec_{t}"),
+                mock.patch.object(orchestrator, "run_executor",
+                                  new=AsyncMock(side_effect=lambda *_a, **_k: _ctx_with_cost("0.10"))),
+            ):
+                await orchestrator.run_batch(projects, project, cfg, nexus_dir,
+                                             ["TASK-01", "TASK-02", "TASK-03"])
+
+            self.assertEqual(dispatched, ["TASK-03"])            # only the not-yet-merged ticket re-runs
+            batch = BatchState.load_checkpoint(orchestrator._batch_state_path(nexus_dir))
+            self.assertEqual(batch.completed, ["TASK-01", "TASK-02", "TASK-03"])
+            self.assertIsNone(batch.budget_marker)               # cleared on the continuing run
+            self.assertEqual(batch.app_telemetry.total_cost_usd, Decimal("0.30"))
 
     async def test_scaffold_deploy_runs_after_a_complete_batch(self) -> None:
-        # E4: a fully-merged batch with --scaffold-deploy runs the post-batch DevOps terminal phase once.
+        # E4: a fully-merged batch with --scaffold-deploy runs the post-batch DevOps terminal phase once,
+        # threaded with the remaining budget + the app-telemetry accumulator (E5).
         with TemporaryDirectory() as td:
             projects, project, cfg, nexus_dir = self._fixtures(td)
             cfg.scaffold_deploy = True
@@ -1141,11 +1219,16 @@ class RunBatchTests(unittest.IsolatedAsyncioTestCase):
             with (
                 mock.patch.object(orchestrator, "prepare_ticket_run",
                                   side_effect=lambda _p, _pr, _c, t: Path(td) / f"exec_{t}"),
-                mock.patch.object(orchestrator, "run_executor", new=AsyncMock(return_value=True)),
+                mock.patch.object(orchestrator, "run_executor",
+                                  new=AsyncMock(side_effect=lambda *_a, **_k: _ctx_with_cost("0.10"))),
                 mock.patch("src.deployment.provision.scaffold.run_devops_scaffold", new=scaffold),
             ):
                 await orchestrator.run_batch(projects, project, cfg, nexus_dir, ["TASK-01", "TASK-02"])
-            scaffold.assert_awaited_once_with(projects, project, cfg, nexus_dir)
+            scaffold.assert_awaited_once()
+            args, kwargs = scaffold.await_args
+            self.assertEqual(args, (projects, project, cfg, nexus_dir))
+            self.assertIn("budget_usd_ceiling", kwargs)          # remaining budget threaded into E4
+            self.assertIn("app_telemetry", kwargs)               # app accumulator passed by reference for the finally-merge
 
     async def test_scaffold_deploy_skipped_when_flag_off(self) -> None:
         with TemporaryDirectory() as td:
@@ -1155,7 +1238,8 @@ class RunBatchTests(unittest.IsolatedAsyncioTestCase):
             with (
                 mock.patch.object(orchestrator, "prepare_ticket_run",
                                   side_effect=lambda _p, _pr, _c, t: Path(td) / f"exec_{t}"),
-                mock.patch.object(orchestrator, "run_executor", new=AsyncMock(return_value=True)),
+                mock.patch.object(orchestrator, "run_executor",
+                                  new=AsyncMock(side_effect=lambda *_a, **_k: _ctx_with_cost("0.10"))),
                 mock.patch("src.deployment.provision.scaffold.run_devops_scaffold", new=scaffold),
             ):
                 await orchestrator.run_batch(projects, project, cfg, nexus_dir, ["TASK-01"])
@@ -2102,7 +2186,8 @@ class DocumentationGuardrailLoopTests(unittest.IsolatedAsyncioTestCase):
 
 
 class FinancialCircuitBreakerTests(unittest.TestCase):
-    """The token-budget breaker hard-halts via the incident machinery when spend is exceeded."""
+    """The money-only breaker (E5) hard-halts via the incident machinery when USD spend meets/exceeds the
+    threaded ceiling. Tokens are reported, never a gate."""
 
     def _ctx(self, base: Path) -> GlobalPipelineContext:
         paths = WorkspacePaths(
@@ -2111,15 +2196,14 @@ class FinancialCircuitBreakerTests(unittest.TestCase):
         return GlobalPipelineContext(pr_description="finops run", workspace_paths=paths)
 
     def test_trips_and_writes_incident_when_over_budget(self) -> None:
-        # Arrange — 1100 cumulative tokens against a 1000 budget.
+        # Arrange — $0.50 spend against a $0.40 effective ceiling.
         with TemporaryDirectory() as td:
             base = Path(td)
             ctx = self._ctx(base)
             ctx.telemetry.record("Developer Agent", 900, 200, 0.5)
             # Act / Assert — breaker fires a hard-halt (PipelineHalt, caught at the entrypoint → exit 1).
-            with mock.patch.object(orchestrator, "PIPELINE_BUDGET_TOKENS", 1000):
-                with self.assertRaises(orchestrator.PipelineHalt):
-                    orchestrator.enforce_financial_circuit_breaker(ctx)
+            with self.assertRaises(orchestrator.PipelineHalt):
+                orchestrator.enforce_financial_circuit_breaker(ctx, Decimal("0.40"))
             # Incident report carries the telemetry breakdown for audit.
             report = (base / "reports" / "incident_report.json").read_text(encoding="utf-8")
             self.assertIn("Developer Agent", report)
@@ -2130,10 +2214,18 @@ class FinancialCircuitBreakerTests(unittest.TestCase):
         with TemporaryDirectory() as td:
             base = Path(td)
             ctx = self._ctx(base)
-            ctx.telemetry.record("TechLead", 10, 5)
-            # Act — well under budget: must not raise, must not write an incident.
-            with mock.patch.object(orchestrator, "PIPELINE_BUDGET_TOKENS", 1000):
-                orchestrator.enforce_financial_circuit_breaker(ctx)
+            ctx.telemetry.record("TechLead", 10, 5, 0.001)
+            # Act — well under the money ceiling: must not raise, must not write an incident.
+            orchestrator.enforce_financial_circuit_breaker(ctx, Decimal("1.00"))
+            self.assertFalse((base / "reports" / "incident_report.json").exists())
+
+    def test_tokens_alone_never_trip_the_money_breaker(self) -> None:
+        # Arrange — huge token footprint but trivial cost: money-only breaker must NOT fire (E5).
+        with TemporaryDirectory() as td:
+            base = Path(td)
+            ctx = self._ctx(base)
+            ctx.telemetry.record("Developer Agent", 5_000_000, 1_000_000, 0.01)
+            orchestrator.enforce_financial_circuit_breaker(ctx, Decimal("1.00"))
             self.assertFalse((base / "reports" / "incident_report.json").exists())
 
 
@@ -2430,13 +2522,14 @@ class FinOpsReportTests(unittest.TestCase):
         with TemporaryDirectory() as td:
             base = Path(td)
             ctx = self._ctx(base)
-            with mock.patch.object(orchestrator, "PIPELINE_BUDGET_TOKENS", 10_000):
-                orchestrator.write_finops_report(ctx)
+            orchestrator.write_finops_report(ctx)
             report = json.loads((base / "reports" / "finops_report.json").read_text(encoding="utf-8"))
-        self.assertEqual(report["total_tokens"], 1320)
-        self.assertEqual(report["budget_tokens"], 10_000)
+        self.assertEqual(report["total_tokens"], 1320)       # tokens still reported (money-only budget, E5)
+        self.assertNotIn("budget_tokens", report)            # token budget removed
         self.assertIn("gemini", report["by_provider"])
         self.assertIn("claude", report["by_provider"])
+        self.assertIn("by_plane", report)                    # E5 per-plane rollup present
+        self.assertIn("total_duration_seconds", report)
 
 
 class MissingContractFilesTests(unittest.TestCase):
