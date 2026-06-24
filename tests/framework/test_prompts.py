@@ -73,11 +73,42 @@ class GetSystemPromptTests(unittest.TestCase):
         self.assertIn("go build ./...", result)                 # real go env command injected
         self.assertIn("python -m pytest", result)               # real python env command injected
 
+    def test_tpm_test_project_scaffold_is_build_glue_not_a_test_case(self) -> None:
+        # The test-PROJECT scaffold (dir + build manifest) is Developer-owned build glue allocated to the
+        # scaffolding ticket; only the test-CASE source files stay QA-owned and out of every ticket. This
+        # is the fix for the dropped test project (QA's tests landed orphaned, never compiled/run).
+        result = get_system_prompt("tpm")
+        self.assertIn("TEST-PROJECT SCAFFOLD IS BUILD GLUE", result)
+        self.assertIn("test-CASE source file", result)
+        self.assertIn("KEEP the test-project manifest", result)
+
+    def test_tpm_scaffold_ticket_ships_buildable_testable_skeleton(self) -> None:
+        # TASK-01 must leave the repo buildable+testable (entry point for an executable + the test project),
+        # never a config-only shell that strands the build into a reroute / zero-coverage merge.
+        result = get_system_prompt("tpm")
+        self.assertIn("BUILDABLE, TESTABLE SKELETON", result)
+        self.assertIn("ENTRY POINT", result)
+
+    def test_tpm_forbids_over_decomposition(self) -> None:
+        # Atomicity must not become one-file-per-ticket for a trivial app (4 thin tickets = 4 build/merge
+        # cycles). The prompt explicitly balances atomicity against over-splitting.
+        result = get_system_prompt("tpm")
+        self.assertIn("OVER-DECOMPOSITION", result)
+
     def test_sa_prompt_honors_user_mandated_stack(self) -> None:
         # An explicitly user-mandated language/platform must not be overridden by the architect.
         result = get_system_prompt("sa")
         self.assertIn("HONOR THE USER'S MANDATED STACK", result)
         self.assertIn("ORIGINAL USER REQUEST", result)
+
+    def test_sa_topology_includes_test_scaffold_excludes_test_cases(self) -> None:
+        # The File Topology must declare the test-PROJECT scaffold (build glue/architecture) but keep
+        # individual test-CASE source files out (QA's exclusive domain). Reconciles the upgrade with the
+        # QA-domain boundary; language-neutral.
+        result = get_system_prompt("sa")
+        self.assertIn("test-project scaffold", result)
+        self.assertIn("test-CASE source files", result)
+        self.assertIn("QA agent's exclusive domain", result)
 
     def test_techlead_prompt_scopes_contract_to_current_task(self) -> None:
         # The contract scope is the CURRENT TASK ticket, not the whole Blueprint (the SOLE router must
@@ -142,6 +173,38 @@ class GetSystemPromptTests(unittest.TestCase):
         # A repair that fixes a gate by breaking a stated NFR is invalid — name the contract conflict.
         result = get_system_prompt("reviewer")
         self.assertIn("CONSTRAINT-RESPECTING REPAIR", result)
+
+    def test_techlead_prompt_pins_behavioral_oracle(self) -> None:
+        # The TechLead authors acceptance_examples — the behavioral oracle the suite and audit share.
+        result = get_system_prompt("techlead")
+        self.assertIn("acceptance_examples", result)
+        self.assertIn("BEHAVIORAL ORACLE", result)
+
+    def test_qa_prompt_pins_authoritative_examples_then_expand(self) -> None:
+        # Hybrid: assert the contract's pinned examples verbatim, THEN expand with BVA (creative freedom).
+        result = get_system_prompt("qa")
+        self.assertIn("AUTHORITATIVE EXAMPLES FIRST", result)
+        self.assertIn("ACCEPTANCE EXAMPLES", result)
+        self.assertIn("Boundary Value Analysis", result)  # the expansion mandate survives
+
+    def test_reviewer_prompt_adjudicates_against_the_oracle(self) -> None:
+        # A test contradicting an acceptance example is a PRODUCTION bug; an altered example is a TEST bug.
+        result = get_system_prompt("reviewer")
+        self.assertIn("ACCEPTANCE-EXAMPLE ORACLE", result)
+
+    def test_reviewer_prompt_requires_grounded_evidence(self) -> None:
+        # BACKLOG #11: a production rejection must cite verbatim evidence, and a test-only failure defaults
+        # the production verdict to approved — closing the phantom-defect reroute.
+        result = get_system_prompt("reviewer")
+        self.assertIn("GROUNDED EVIDENCE", result)
+        self.assertIn("dev_evidence_citation", result)
+        self.assertIn("TEST-ONLY FAILURE", result)
+
+    def test_arbiter_prompt_routes_are_authoritative(self) -> None:
+        # BACKLOG #25: the developer/qa route now authoritatively selects the feedback channel and
+        # overrides a Reviewer misroute, so it must match the root_cause_class exactly.
+        result = get_system_prompt("arbiter")
+        self.assertIn("AUTHORITATIVE", result)
 
     def test_loads_template_with_placeholders(self) -> None:
         raw = get_system_prompt("developer")
@@ -244,6 +307,42 @@ class QASkillFidelityTests(unittest.TestCase):
         self.assertIn("Namespace & Placement Fidelity", raw)
 
 
+class DotnetLayoutMandateTests(unittest.TestCase):
+    """The dotnet skills must mandate the canonical src/+tests/ layout (root holds ONLY the .sln) — the
+    single fix for the MSB1011 / cross-globbed *Tests.cs / CS0579 reroute cascade a root-level .csproj
+    triggers. The QA skill must NOT colocate the test source with the production type."""
+
+    def setUp(self) -> None:
+        get_skill.cache_clear()
+
+    def test_core_mandates_subdir_layout_root_holds_only_sln(self) -> None:
+        raw = get_skill("dotnet_core")
+        self.assertIn("root holds ONLY the .sln", raw)
+        self.assertIn("NEVER place a `.csproj` at the repository root", raw)
+        self.assertIn("src/<Project>/<Project>.csproj", raw)
+        self.assertIn("tests/<Project>.Tests/", raw)
+
+    def test_core_names_the_three_root_csproj_footguns(self) -> None:
+        raw = get_skill("dotnet_core")
+        for marker in ("MSB1011", "CS0579", "InternalsVisibleTo"):
+            self.assertIn(marker, raw, marker)
+
+    def test_qa_does_not_colocate_test_with_production(self) -> None:
+        raw = get_skill("dotnet_qa")
+        # The exact phrasing that put `Models/CliOptionsTests.cs` into the production tree (run 003).
+        self.assertNotIn("colocated with the type under test", raw)
+        self.assertIn("INSIDE the test project directory", raw)
+        self.assertIn("InternalsVisibleTo", raw)
+
+    def test_core_scaffold_ticket_contracts_entry_point_and_test_project(self) -> None:
+        # The scaffold/init ticket must ship a buildable+testable skeleton in ONE contract — the Exe entry
+        # point AND the test project — never a config-only shell (the CS5001-reroute + orphaned-tests bug).
+        raw = get_skill("dotnet_core")
+        self.assertIn("buildable+testable skeleton ships in ONE ticket", raw)
+        self.assertIn("do not create C# source code files", raw)   # the anti-pattern it forbids
+        self.assertIn("Test project skeleton", raw)
+
+
 class GenerateRepoMapTests(unittest.TestCase):
     """Recursive tree walker prunes noise and gracefully handles a missing root."""
 
@@ -275,6 +374,24 @@ class GenerateRepoMapTests(unittest.TestCase):
             self.assertNotIn(".git", tree)
             self.assertNotIn("__pycache__", tree)
             self.assertNotIn(".pyc", tree)
+
+    def test_prunes_build_and_dependency_dirs_registry_driven(self) -> None:
+        # The prune set is registry-derived (repo_map_ignore_dirs union) — a fresh clone's build/dependency
+        # output (node_modules/bin/obj/dist) must NOT bloat the topology map for any stack, not just Python.
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "src").mkdir()
+            (root / "src" / "app.ts").write_text("export const x = 1\n", encoding="utf-8")
+            for noise in ("node_modules", "bin", "obj", "dist"):
+                (root / noise).mkdir()
+                (root / noise / "junk.txt").write_text("junk", encoding="utf-8")
+
+            tree = generate_repo_map(root)
+
+            self.assertIn("src/", tree)
+            self.assertIn("app.ts", tree)
+            for noise in ("node_modules", "bin", "obj", "dist"):
+                self.assertNotIn(f"{noise}/", tree)
 
     def test_directories_sort_before_files(self) -> None:
         with TemporaryDirectory() as td:
@@ -337,6 +454,19 @@ class BuildAgentContextADRTests(unittest.IsolatedAsyncioTestCase):
     async def test_skips_injection_when_workspace_unbound(self) -> None:
         out = await build_agent_context("techwriter", GlobalPipelineContext(pr_description="t"))
         self.assertNotIn("LIVING ARCHITECTURE DOCUMENT", out)
+
+
+class ArbiterTriageSkillTests(unittest.IsolatedAsyncioTestCase):
+    """The arbiter node now receives a global `arbiter_triage` skill via build_agent_context('arbiter',…)
+    — arbiter.py already calls it — giving the failure triager the build-glue / contract-gap routing
+    guardrails WITHOUT touching the off-limits arbiter system prompt. Hermetic: no skill is `domain` for
+    arbiter, so no LLM relevance fallback fires; no workspace, so the ADR block is skipped."""
+
+    async def test_arbiter_node_receives_triage_skill(self) -> None:
+        out = await build_agent_context("arbiter", GlobalPipelineContext(pr_description="t"))
+        self.assertIn("ARBITER TRIAGE GUARDRAILS", out)
+        self.assertIn("Build glue is legitimate", out)         # entrypoint/glue is not a scope violation
+        self.assertIn("CONTRACT gap", out)                     # missing required-to-build file → contract route
 
 
 class PerLanguageCoreRoutingTests(unittest.IsolatedAsyncioTestCase):

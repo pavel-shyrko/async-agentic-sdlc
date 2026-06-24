@@ -10,10 +10,10 @@ from unittest.mock import AsyncMock, call
 
 from src.development.gates import (
     run_qa_unit_tests, run_security_scan, run_build_gate, run_format_pass, run_test_compile_gate,
-    run_lint_gate, classify_lint_findings, _has_eslint_config,
+    run_lint_gate, classify_lint_findings, ran_zero_tests,
     build_failure_is_test_only, build_failure_is_environmental, _has_test_files, _FILE_REF_RE,
 )
-from src.shared.core.environments import SUPPORTED_ENVIRONMENTS, SAST_IMAGE, SAST_CMD
+from src.shared.core.environments import SUPPORTED_ENVIRONMENTS, SAST_IMAGE, SAST_CMD, all_source_extensions
 
 _ENV = "python-3.12-core"
 _REPO = "/abs/repo/root"
@@ -81,6 +81,63 @@ class RunQaUnitTestsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(ok)
         self.assertEqual(log_lines, ["out line", "err line"])
+
+
+class ZeroTestsGuardTests(unittest.IsolatedAsyncioTestCase):
+    """Orphan-test backstop: when test files ARE present but the runner executed ZERO tests (the suite is
+    not wired into a build/execute target — e.g. a .NET test project missing from the solution), the gate
+    FAILS instead of merging a zero-coverage green that exited 0. See `ran_zero_tests`. Asymmetric-safe:
+    it fires ONLY on an explicit 'ran zero' marker, so a real run can never trip it."""
+
+    _DOTNET = "dotnet-10-sdk"
+
+    def test_ran_zero_tests_dotnet_no_test_available(self) -> None:
+        self.assertTrue(ran_zero_tests(self._DOTNET, ["Build succeeded.", "No test is available in JsonToCsv.dll."]))
+
+    def test_ran_zero_tests_suppressed_when_a_sibling_target_ran(self) -> None:
+        # Multi-target run: one assembly had no tests, another ran — the 'ran' marker suppresses the fail.
+        self.assertFalse(ran_zero_tests(self._DOTNET, ["No test is available in Empty.dll.", "Passed!  - Failed: 0, Passed: 5"]))
+
+    def test_ran_zero_tests_false_on_real_run(self) -> None:
+        self.assertFalse(ran_zero_tests(self._DOTNET, ["Passed!  - Failed: 0, Passed: 3, Skipped: 0, Total: 3"]))
+        self.assertFalse(ran_zero_tests(_ENV, ["===== 5 passed in 0.10s ====="]))
+
+    def test_ran_zero_tests_python_no_tests_ran(self) -> None:
+        self.assertTrue(ran_zero_tests(_ENV, ["collected 0 items", "no tests ran in 0.01s"]))
+
+    def test_go_is_exempt_from_the_guard(self) -> None:
+        # Go has no entry in the signal map → the check never fires (its `[no test files]` is per-package,
+        # and colocated Go tests cannot be orphaned the way a separate .NET test project can).
+        self.assertFalse(ran_zero_tests("go-1.23-cli", ["?   pkg   [no test files]"]))
+
+    @mock.patch("src.development.gates._has_test_files", return_value=True)
+    @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
+    async def test_orphan_tests_fail_the_gate(self, mock_sandbox: AsyncMock, _has: mock.Mock) -> None:
+        # Restore OK, then `dotnet test` discovers nothing (orphaned test source) and exits 0 → gate FAILS.
+        mock_sandbox.side_effect = [(0, "restored", ""), (0, "No test is available in JsonToCsv.dll.", "")]
+        ok, log_lines = await run_qa_unit_tests(environment_id=self._DOTNET, repo_root=_REPO)
+        self.assertFalse(ok)
+        self.assertTrue(any("executed ZERO tests" in ln for ln in log_lines))
+
+    @mock.patch("src.development.gates._has_test_files", return_value=True)
+    @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
+    async def test_real_run_still_passes(self, mock_sandbox: AsyncMock, _has: mock.Mock) -> None:
+        mock_sandbox.side_effect = [(0, "restored", ""), (0, "Passed!  - Failed: 0, Passed: 1, Total: 1", "")]
+        ok, log_lines = await run_qa_unit_tests(environment_id=self._DOTNET, repo_root=_REPO)
+        self.assertTrue(ok)
+
+
+class FileRefRegexDerivationTests(unittest.TestCase):
+    """The compile-error/lint file-ref regex is built from all_source_extensions() — not a hardcoded
+    extension list — so a new registry language is parsed with no edit to gates.py. Pin that linkage."""
+
+    def test_regex_matches_every_registered_source_extension(self) -> None:
+        for ext in all_source_extensions():
+            self.assertIsNotNone(_FILE_REF_RE.match(f"  src/pkg/file{ext}:12:5: error"), ext)
+
+    def test_regex_rejects_a_non_source_extension(self) -> None:
+        # A doc/config path must NOT be misread as a compiled source ref.
+        self.assertIsNone(_FILE_REF_RE.match("README.md:3:1: note"))
 
 
 class RunFormatPassTests(unittest.IsolatedAsyncioTestCase):
@@ -295,9 +352,17 @@ class EnvironmentalBuildFailureTests(unittest.TestCase):
         self.assertTrue(build_failure_is_environmental("node-20-web", ["npm error code EAI_AGAIN", "getaddrinfo EAI_AGAIN registry.npmjs.org"]))
         self.assertTrue(build_failure_is_environmental("go-1.23-cli", ["dial tcp: lookup proxy.golang.org: Temporary failure in name resolution"]))
 
-    def test_restore_failed_banner_is_environmental(self) -> None:
-        # The gates' own restore-phase failure banner must be recognised.
-        self.assertTrue(build_failure_is_environmental(self._DOTNET, ["🚨 Dependency restore failed:", "some output"]))
+    def test_restore_banner_without_network_signature_is_not_environmental(self) -> None:
+        # Regression guard: the gates prepend "🚨 Dependency restore failed:" to EVERY restore failure.
+        # A restore that failed for a NON-network reason (here MSB1003 — no project/solution at the
+        # restore CWD) must NOT be misread as a network halt just because that banner is present; it must
+        # fall through to the normal compile-gate reroute so the Developer can fix the real defect.
+        lines = [
+            "🚨 Dependency restore failed:",
+            "MSBUILD : error MSB1003: Specify a project or solution file. The current working "
+            "directory does not contain a project or solution file.",
+        ]
+        self.assertFalse(build_failure_is_environmental(self._DOTNET, lines))
 
     def test_real_compiler_error_is_not_environmental(self) -> None:
         # A genuine code defect must fall through to the normal compile-gate reroute.
@@ -305,9 +370,53 @@ class EnvironmentalBuildFailureTests(unittest.TestCase):
         self.assertFalse(build_failure_is_environmental("go-1.23-cli", ["internal/converter/processor.go:10:2: undefined: Foo"]))
 
 
+class DotnetFormatWorkspaceTargetingTests(unittest.TestCase):
+    """Regression guard: `dotnet format` hard-crashes in ParseWorkspaceOptions (exit 1) when the CWD is
+    ambiguous ("Both a MSBuild project file and solution file found in '.'") or empty ("no project or
+    solution file found") — unlike build/restore/test, which prefer the .sln. So the dotnet lint/format
+    commands MUST resolve a SINGLE explicit workspace (the root .sln, else a lone .csproj) and SKIP
+    cleanly when none resolves, never invoke a bare `dotnet format`/`dotnet format .` that auto-discovers
+    the CWD. A bare command silently reds the lint gate forever and loops the FSM to the breaker."""
+    _SPEC = SUPPORTED_ENVIRONMENTS["dotnet-10-sdk"]
+
+    def test_lint_and_format_resolve_and_target_the_solution(self) -> None:
+        for key in ("lint_cmd", "format_cmd"):
+            cmd = self._SPEC[key]
+            self.assertIn("dotnet format", cmd, key)
+            # Resolves a workspace target rather than relying on CWD auto-discovery (the crash trigger):
+            # prefer the solution, fall back to a lone .csproj, into a quoted "$ws".
+            # MUST match BOTH the newer .slnx (the .NET 10 `dotnet new sln` default) and the classic .sln —
+            # globbing only *.sln would miss a .slnx and silently no-op the lint gate.
+            self.assertIn("*.slnx", cmd, key)
+            self.assertIn("*.sln", cmd, key)
+            self.assertIn("*.csproj", cmd, key)
+            self.assertIn('"$ws"', cmd, key)
+            # Never targets a bare '.' (the ambiguous-/empty-CWD crash trigger we are guarding against).
+            self.assertNotIn("dotnet format .", cmd, key)
+            self.assertNotIn("${ws:-.}", cmd, key)
+
+    def test_commands_skip_cleanly_when_no_workspace_resolves(self) -> None:
+        # When neither a .sln nor a .csproj exists at the root, both commands exit 0 (a clean no-op)
+        # rather than crashing dotnet format on an empty CWD — the non-fatal format-pass crash fix.
+        for key in ("lint_cmd", "format_cmd"):
+            cmd = self._SPEC[key]
+            self.assertIn('if [ -z "$ws" ]', cmd, key)
+            self.assertIn("exit 0", cmd, key)
+
+    def test_commands_are_single_line(self) -> None:
+        # The docker adapter rejects multi-line commands; the resolver must stay a one-liner.
+        for key in ("lint_cmd", "format_cmd"):
+            self.assertNotIn("\n", self._SPEC[key], key)
+
+    def test_lint_is_verify_only_and_format_is_autofix(self) -> None:
+        self.assertIn("--verify-no-changes", self._SPEC["lint_cmd"])
+        self.assertNotIn("--verify-no-changes", self._SPEC["format_cmd"])
+
+
 class RunLintGateTests(unittest.IsolatedAsyncioTestCase):
     """The HARD lint gate restores deps (network ON) then runs the registry `lint_cmd` (network OFF);
-    no-op pass when the env has no `lint_cmd`, and (node) when the clone carries no eslint config."""
+    no-op pass when the env has no `lint_cmd`; a stack whose linter needs project config (node/eslint)
+    self-guards INSIDE its own `lint_cmd` (exit 0 when the config is absent), so gates.py has no node branch."""
 
     @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
     async def test_restore_then_lint_with_network_phasing(self, mock_sandbox: AsyncMock) -> None:
@@ -341,43 +450,25 @@ class RunLintGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok)
         mock_sandbox.assert_not_awaited()
 
-    @mock.patch("src.development.gates._has_eslint_config", return_value=False)
     @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
-    async def test_node_noop_when_no_eslint_config(self, mock_sandbox: AsyncMock, _cfg: mock.Mock) -> None:
-        # A node project with no eslint config must NOT hard-fail — the gate is a no-op pass.
+    async def test_node_lint_runs_through_sandbox_no_host_branch(self, mock_sandbox: AsyncMock) -> None:
+        # The node "no eslint config" skip moved INTO the lint_cmd (registry self-guard) — gates.py no
+        # longer special-cases "node" host-side, so the gate always restores then runs the command, which
+        # itself exits 0 when no config is present.
+        mock_sandbox.side_effect = [(0, "restored", ""), (0, "no eslint config at repo root — lint gate no-op pass", "")]
+        node_lint = SUPPORTED_ENVIRONMENTS["node-20-web"]["lint_cmd"]
         ok, log_lines = await run_lint_gate(environment_id="node-20-web", repo_root=_REPO)
         self.assertTrue(ok)
-        mock_sandbox.assert_not_awaited()
+        self.assertEqual(mock_sandbox.await_args_list[-1], call("node-20-web", node_lint, _REPO, network="none"))
 
-
-class HasEslintConfigTests(unittest.TestCase):
-    """Host-side eslint-config detection gates the node lint run (Risk 3)."""
-
-    def test_flat_config_detected(self) -> None:
-        import tempfile, os as _os
-        with tempfile.TemporaryDirectory() as d:
-            open(_os.path.join(d, "eslint.config.js"), "w").close()
-            self.assertTrue(_has_eslint_config(d))
-
-    def test_legacy_rc_detected(self) -> None:
-        import tempfile, os as _os
-        with tempfile.TemporaryDirectory() as d:
-            open(_os.path.join(d, ".eslintrc.json"), "w").close()
-            self.assertTrue(_has_eslint_config(d))
-
-    def test_package_json_key_detected(self) -> None:
-        import tempfile, os as _os
-        with tempfile.TemporaryDirectory() as d:
-            with open(_os.path.join(d, "package.json"), "w") as fh:
-                fh.write('{"name": "x", "eslintConfig": {"root": true}}')
-            self.assertTrue(_has_eslint_config(d))
-
-    def test_absent_when_no_config(self) -> None:
-        import tempfile, os as _os
-        with tempfile.TemporaryDirectory() as d:
-            with open(_os.path.join(d, "package.json"), "w") as fh:
-                fh.write('{"name": "x"}')
-            self.assertFalse(_has_eslint_config(d))
+    def test_node_lint_cmd_self_guards_for_missing_eslint_config(self) -> None:
+        # The eslint-config precondition lives in the REGISTRY command, not gates.py — the engine carries
+        # no language. Verify the guard tokens + the safe exit-0 fallback are in the command itself.
+        node_lint = SUPPORTED_ENVIRONMENTS["node-20-web"]["lint_cmd"]
+        self.assertIn("eslint.config.js", node_lint)
+        self.assertIn("eslintConfig", node_lint)
+        self.assertIn("npx --no-install eslint .", node_lint)
+        self.assertIn("no eslint config", node_lint)
 
 
 class ClassifyLintFindingsTests(unittest.TestCase):

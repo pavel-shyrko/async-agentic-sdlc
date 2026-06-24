@@ -110,8 +110,8 @@ class RunDevopsNodeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("deploy.yml is not valid YAML", captured["user"])
 
     async def test_ci_commands_injected_into_prompt(self) -> None:
-        # The canonical env commands (the SSOT the CI must run verbatim) reach the user prompt with the
-        # "MUST run EXACTLY these" framing — so the generated CI mirrors the engine's own gates.
+        # The canonical env commands (the SSOT the CI must run verbatim) reach the user prompt under a
+        # neutral section label — the instruction text lives in devops.md (system prompt), not user content.
         with TemporaryDirectory() as td:
             repo = Path(td)
             ctx = _ctx(repo)
@@ -134,7 +134,7 @@ class RunDevopsNodeTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertIn("ruff check --no-cache", captured["user"])
-            self.assertIn("MUST run EXACTLY these", captured["user"])
+            self.assertIn("=== CANONICAL PROJECT COMMANDS ===", captured["user"])
 
 
 class RunDevopsGateTests(unittest.TestCase):

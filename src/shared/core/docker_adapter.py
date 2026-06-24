@@ -10,9 +10,14 @@ from src.shared.core.environments import SUPPORTED_ENVIRONMENTS
 from src.shared.utils.subprocess_helpers import stream_subprocess_output
 
 # Resource caps for every sandbox container (least-privilege; aligns with the QA-sandbox hardening).
+# CPUs are env-overridable (config-constant-convention): more cores speed CPU-bound gates — notably the
+# semgrep SAST scan (the dominant infra time sink), which parallelises rule-matching across cores, and
+# `dotnet build`/`test`. A `--cpus` value above the host's core count is accepted (quota capped by
+# hardware), so a higher default is safe. This is a resource CAP only — it does not weaken the
+# `--cap-drop ALL` / non-root / `--network none` isolation the qa-sandbox-hardening rule mandates.
 _SANDBOX_MEMORY = "2g"
 _SANDBOX_PIDS = "512"
-_SANDBOX_CPUS = "2"
+_SANDBOX_CPUS = os.environ.get("SANDBOX_CPUS", "4")
 
 
 def _validate_command(command: str) -> None:

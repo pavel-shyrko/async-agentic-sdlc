@@ -3,7 +3,7 @@ import re
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from src.shared.core.environments import SUPPORTED_ENVIRONMENTS
 
@@ -79,6 +79,16 @@ class TopologyNode(BaseModel):
         description="Language-neutral dependency links as 'path/to/file.ext:symbol'.",
     )
 
+
+class BehaviorExample(BaseModel):
+    """One authoritative golden case — the behavioral ORACLE for a function. Language-neutral DATA: the
+    fields describe a case in prose/literals, never code, so the suite (QA) and the audit (Reviewer) share
+    ONE source of truth for the expected behavior instead of independently guessing it."""
+    input: str = Field(description="Language-neutral description of the input case.")
+    expected: str = Field(default="", description="Expected output/return value for this input.")
+    raises: str = Field(default="", description="OR the expected error TYPE/condition (never a message).")
+
+
 class TechLeadContract(BaseModel):
     files_to_modify: list[str] = Field(description="List of target source file paths.")
     topology_contract: list[TopologyNode] = Field(
@@ -101,6 +111,12 @@ class TechLeadContract(BaseModel):
         default_factory=list,
         description="Mandatory libraries and frameworks the implementation MUST use.")
     function_signatures: str = Field(description="Function names, arguments, types, and exceptions.")
+    acceptance_examples: list[BehaviorExample] = Field(
+        default_factory=list,
+        description="Authoritative golden cases (input → expected | raises) — the behavioral ORACLE the "
+        "QA suite asserts verbatim and the Reviewer adjudicates against. Pin the cases where the answer is "
+        "non-obvious (empty/degenerate inputs, library-defined output, boundaries). Empty for non-code/infra "
+        "tasks.")
     strict_type_validation_rules: str = Field(description="Type validation rules for the implementation.")
     techlead_reasoning: str = Field(description="Justification for the chosen design.")
     domain_tags: list[str] = Field(description="Up to 5 lowercase tags for the target tech stack/language AND business domain — e.g. 'python', 'dotnet', 'typescript', 'math', 'database'. The language tag acts as the dynamic skill router and MUST be declared first.", default_factory=list)
@@ -136,6 +152,13 @@ class AgentUsage(BaseModel):
     duration_seconds: float = 0.0  # cumulative wall-clock spent in this agent's LLM/CLI calls
     calls: int = 0
 
+class PhaseUsage(BaseModel):
+    """Wall-clock for a non-LLM infra phase (a docker gate, git clone, PR/merge) — see
+    ``PipelineTelemetry.record_phase``. Infra phases spend NO tokens/money, so this carries time only;
+    it makes the previously-invisible gate/SAST/git time auditable next to the per-agent LLM time."""
+    duration_seconds: float = 0.0  # cumulative wall-clock spent in this infra phase
+    calls: int = 0                 # how many times the phase ran (e.g. a gate re-run per cycle)
+
 class PipelineTelemetry(BaseModel):
     """Cumulative, checkpoint-persisted token/cost/time telemetry across all agent calls.
 
@@ -152,8 +175,17 @@ class PipelineTelemetry(BaseModel):
     total_cache_read_tokens: int = 0
     total_cache_write_tokens: int = 0
     total_cost_usd: Decimal = Decimal("0")
-    total_duration_seconds: float = 0.0  # cumulative wall-clock across all recorded agent calls
+    total_duration_seconds: float = 0.0  # cumulative wall-clock across all recorded agent (LLM/CLI) calls
+    total_infra_seconds: float = 0.0     # cumulative wall-clock across all non-LLM infra phases (gates/SAST/git)
     by_agent: dict[str, AgentUsage] = Field(default_factory=dict)
+    by_phase: dict[str, PhaseUsage] = Field(default_factory=dict)  # infra phase → wall-clock (record_phase)
+
+    @property
+    def total_wall_seconds(self) -> float:
+        """Real end-to-end wall-clock ≈ LLM/CLI time + measured infra (gate/SAST/git) time. The historical
+        ``total_duration_seconds`` counted LLM time ONLY, hiding ~40%+ of the build (the gates/SAST/git that
+        run between agent calls); this is the honest figure surfaced in the FinOps TOTAL."""
+        return self.total_duration_seconds + self.total_infra_seconds
 
     def record(self, agent: str, input_tokens: int, output_tokens: int,
                cost_usd: Decimal | float = Decimal("0"), provider: str = "gemini",
@@ -179,6 +211,16 @@ class PipelineTelemetry(BaseModel):
         self.total_cache_write_tokens += cache_write_tokens
         self.total_cost_usd += cost
         self.total_duration_seconds += duration_seconds
+
+    def record_phase(self, phase: str, duration_seconds: float) -> None:
+        """Accumulate wall-clock for a non-LLM infra phase (a docker gate, the SAST scan, git clone, a
+        PR/merge). Token/money-free — it only makes the gate/SAST/git time visible alongside the per-agent
+        LLM time. Callers (the FSM in ``runner.py``) time the full call (incl. container startup) and pass
+        the elapsed; a step that runs N times (e.g. a gate re-run per cycle) coalesces into one slot."""
+        slot = self.by_phase.setdefault(phase, PhaseUsage())
+        slot.duration_seconds += duration_seconds
+        slot.calls += 1
+        self.total_infra_seconds += duration_seconds
 
     def by_provider(self) -> dict[str, dict]:
         """Aggregate tokens + cost per provider (e.g. ``{"gemini": {...}, "claude": {...}}``)."""
@@ -223,11 +265,16 @@ class PipelineTelemetry(BaseModel):
             slot.cost_usd += ou.cost_usd
             slot.duration_seconds += ou.duration_seconds
             slot.calls += ou.calls
+        for phase, op in other.by_phase.items():
+            pslot = self.by_phase.setdefault(phase, PhaseUsage())
+            pslot.duration_seconds += op.duration_seconds
+            pslot.calls += op.calls
         self.total_tokens += other.total_tokens
         self.total_cache_read_tokens += other.total_cache_read_tokens
         self.total_cache_write_tokens += other.total_cache_write_tokens
         self.total_cost_usd += other.total_cost_usd
         self.total_duration_seconds += other.total_duration_seconds
+        self.total_infra_seconds += other.total_infra_seconds
 
     def finops_report(self, budget_usd: Decimal | float = Decimal("0")) -> dict:
         """Serializable FinOps summary: money spend vs the budget, plus per-plane/-provider/-agent breakdown.
@@ -246,9 +293,12 @@ class PipelineTelemetry(BaseModel):
             "total_cache_read_tokens": self.total_cache_read_tokens,
             "total_cache_write_tokens": self.total_cache_write_tokens,
             "total_duration_seconds": round(self.total_duration_seconds, 3),
+            "total_infra_seconds": round(self.total_infra_seconds, 3),
+            "total_wall_seconds": round(self.total_wall_seconds, 3),
             "by_plane": self.by_plane(),
             "by_provider": self.by_provider(),
             "by_agent": {name: usage.model_dump() for name, usage in self.by_agent.items()},
+            "by_phase": {phase: usage.model_dump() for phase, usage in self.by_phase.items()},
         }
 
 class SkillRelevance(BaseModel):
@@ -293,10 +343,40 @@ class ReviewReport(BaseModel):
     test_integrity_approved: bool = Field(description="Boolean flag indicating test integrity approval status.")
     qa_diagnostic_payload: str = Field(default="", description="Instructions ONLY for the QA Agent to fix incorrect, hallucinated, or broken tests.")
     dev_diagnostic_payload: str = Field(default="", description="Instructions ONLY for the Developer to fix production code bugs.")
+    dev_evidence_citation: str = Field(
+        default="",
+        description="VERBATIM evidence for a production rejection: a line quoted from the gate/runner output "
+                    "OR a `FILE: <path>` + code excerpt from the production snapshot. Required (non-empty) "
+                    "when code_quality_approved is false; empty otherwise.",
+    )
     zombie_tests_to_delete: list[str] = Field(
         default_factory=list,
         description="List of specific obsolete or zombie test filenames that must be physically deleted from disk.",
     )
+
+    @model_validator(mode="after")
+    def _require_routing_coherence(self) -> "ReviewReport":
+        """Code-enforce the feedback-routing invariant the prompt alone could not guarantee (BACKLOG
+        #11/#17/#18): the channel(s) driving the next cycle must be fed only on a genuinely-rejected side,
+        and a production rejection must point at real evidence. instructor re-prompts the Reviewer on any
+        ValueError below, forcing a coherent report instead of a silent retry-budget burn."""
+        # #17 — a rejection must carry actionable guidance (forward direction).
+        if not self.code_quality_approved and not self.dev_diagnostic_payload.strip():
+            raise ValueError("code_quality_approved=false requires a non-empty dev_diagnostic_payload.")
+        if not self.test_integrity_approved and not self.qa_diagnostic_payload.strip():
+            raise ValueError("test_integrity_approved=false requires a non-empty qa_diagnostic_payload.")
+        # #18 — converse: an approved side must NOT carry a payload (else the router feeds a channel for a
+        # defect-free side and the Developer + QA fight). Biconditional: payload non-empty <=> rejection.
+        if self.code_quality_approved and self.dev_diagnostic_payload.strip():
+            raise ValueError("code_quality_approved=true forbids a non-empty dev_diagnostic_payload.")
+        if self.test_integrity_approved and self.qa_diagnostic_payload.strip():
+            raise ValueError("test_integrity_approved=true forbids a non-empty qa_diagnostic_payload.")
+        # #11 — a production rejection must cite verbatim evidence (a gate line or a code excerpt), so the
+        # Reviewer cannot reroute the Developer onto a phantom structural defect.
+        if not self.code_quality_approved and not self.dev_evidence_citation.strip():
+            raise ValueError("code_quality_approved=false requires a non-empty dev_evidence_citation.")
+        return self
+
 
 class ArbiterVerdict(BaseModel):
     """Root-cause triage of a STUCK cycle. Adds a third routing target — the contract — beyond the
@@ -409,6 +489,7 @@ class BatchState(BaseModel):
     app_telemetry: PipelineTelemetry = Field(default_factory=PipelineTelemetry)
     nexus_merged: bool = False         # guards against folding the Nexus planning telemetry in twice on resume
     budget_marker: str | None = None   # set on a clean budget-exhaustion stop; cleared when a resume continues
+    released_tag: str | None = None    # E6: the v* tag pushed after the batch completed (--release); idempotent resume guard
 
     def save_checkpoint(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

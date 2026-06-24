@@ -167,6 +167,17 @@ class ParseArgsProjectVerbsTests(unittest.TestCase):
         # Off by default.
         self.assertFalse(self._parse("--idea", "an app", "--repo", "r", "--auto-execute").scaffold_deploy)
 
+    def test_release_flag_threads_into_idea_and_resume(self) -> None:
+        # E6: --release is carried on the batch paths (--idea --auto-execute and a bare --resume), and is
+        # independent of --scaffold-deploy (decoupled).
+        idea = self._parse("--idea", "an app", "--repo", "r", "--auto-execute", "--release")
+        self.assertTrue(idea.release)
+        self.assertFalse(idea.scaffold_deploy)             # decoupled — --release alone does not imply E4
+        resume = self._parse("--resume", "my-proj", "--release")
+        self.assertTrue(resume.release)
+        # Off by default.
+        self.assertFalse(self._parse("--idea", "an app", "--repo", "r", "--auto-execute").release)
+
     def test_run_project_requires_ticket(self) -> None:
         with self.assertRaises(SystemExit) as ctx:
             self._parse("--run", "my-proj")            # missing -f
@@ -425,6 +436,7 @@ class MainCheckpointWritePointsTests(unittest.IsolatedAsyncioTestCase):
                         code_quality_approved=False,
                         test_integrity_approved=True,
                         dev_diagnostic_payload="fix implementation",
+                        dev_evidence_citation="AssertionError in test run output",
                     )
                     return
                 ctx.review_report = ReviewReport(
@@ -590,6 +602,7 @@ class ResumeFsmRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 code_quality_approved=False,
                 test_integrity_approved=True,
                 dev_diagnostic_payload="fix prod",
+                dev_evidence_citation="ValueError raised in runner output",
             )
 
             async def _approve(*_args, **_kwargs) -> None:
@@ -836,6 +849,7 @@ class ArbiterRoutingTests(unittest.IsolatedAsyncioTestCase):
             code_quality_analysis="x", test_integrity_analysis="ok", log_verification_analysis="x",
             code_quality_approved=code_ok, test_integrity_approved=True,
             dev_diagnostic_payload="" if code_ok else "fix prod", qa_diagnostic_payload="",
+            dev_evidence_citation="" if code_ok else "AssertionError in runner output",
         )
 
     def _patches(self, ctx, reviewer_effect, arbiter_effect, techlead):
@@ -956,6 +970,125 @@ class ArbiterRoutingTests(unittest.IsolatedAsyncioTestCase):
                     await orchestrator.main()
             techlead.assert_not_awaited()                        # cap reached → no 2nd amendment
             self.assertEqual(ctx.contract_amendments, 1)
+
+    async def test_qa_route_overrides_reviewer_misroute_and_regenerates(self) -> None:
+        # BACKLOG #25: the Reviewer blames PRODUCTION (dev channel, with a citation), but at cycle 2 the
+        # Arbiter rules it a TEST bug and routes `qa`. The override must move the fix into the QA channel,
+        # clear the Developer channel, and force test regeneration so QA actually re-runs on cycle 3.
+        with TemporaryDirectory() as td:
+            ctx = self._ctx(Path(td))
+            n = {"c": 0}
+            qa_feedback: list[str] = []
+
+            async def reviewer(c, *_a, **_k):
+                n["c"] += 1
+                if n["c"] >= 3:
+                    c.review_report = self._reject(code_ok=True)     # cycle 3 approves → success
+                else:
+                    c.review_report = ReviewReport(                  # the misroute: blames production
+                        code_quality_analysis="x", test_integrity_analysis="ok",
+                        log_verification_analysis="x", code_quality_approved=False,
+                        test_integrity_approved=True, dev_diagnostic_payload="the test mock is inert",
+                        qa_diagnostic_payload="", dev_evidence_citation="AssertionError: ran 0 tests",
+                    )
+
+            async def arbiter(c, *_a, **_k):
+                c.arbiter_verdict = ArbiterVerdict(
+                    root_cause_class="test_bug", route="qa", reasoning="ARBITER: the mock is inert")
+
+            async def qa_node(c, feedback="", *_a, **_k):
+                qa_feedback.append(feedback)
+
+            with ExitStack() as stack:
+                for p in self._patches(ctx, reviewer, arbiter, AsyncMock()):
+                    stack.enter_context(p)
+                stack.enter_context(mock.patch.object(orchestrator, "run_qa_agent_node",
+                                                      new=AsyncMock(side_effect=qa_node)))
+                stack.enter_context(mock.patch.object(orchestrator, "run_test_compile_gate",
+                                                      new=AsyncMock(return_value=(True, []))))
+                await orchestrator.main()
+
+            # QA re-ran on cycle 3 carrying BOTH the Arbiter's reasoning AND the fix text the Reviewer had
+            # misrouted to the Developer channel — proving the override re-routed the content and the
+            # regeneration flag flipped to QA.
+            self.assertTrue(
+                any("ARBITER: the mock is inert" in f and "the test mock is inert" in f for f in qa_feedback),
+                f"QA never received the overridden channel content; saw: {qa_feedback!r}",
+            )
+
+
+class ReconcileFeedbackRoutingTests(unittest.TestCase):
+    """The routing-coherence reconciler (BACKLOG #18/#25) is the single SSOT that assigns the two isolated
+    feedback channels: it feeds a channel only for a genuinely-rejected side (#18) and lets an Arbiter
+    developer/qa verdict override a Reviewer misroute (#25)."""
+
+    @staticmethod
+    def _report(code_ok: bool, test_ok: bool, dev: str = "", qa: str = "", cite: str = "") -> ReviewReport:
+        return ReviewReport(
+            code_quality_analysis="a", test_integrity_analysis="b", log_verification_analysis="c",
+            code_quality_approved=code_ok, test_integrity_approved=test_ok,
+            dev_diagnostic_payload=dev, qa_diagnostic_payload=qa, dev_evidence_citation=cite,
+        )
+
+    @staticmethod
+    def _verdict(route: str) -> ArbiterVerdict:
+        return ArbiterVerdict(
+            root_cause_class="test_bug" if route == "qa" else "production_bug",
+            route=route, reasoning=f"arbiter says {route}")
+
+    def test_passthrough_without_arbiter(self) -> None:
+        rep = self._report(False, True, dev="fix prod", cite="ValueError (x.py:1)")
+        dev, qa = orchestrator.reconcile_feedback_routing(rep, None)
+        self.assertEqual(dev, "fix prod")
+        self.assertEqual(qa, "")
+
+    def test_both_rejected_passthrough(self) -> None:
+        rep = self._report(False, False, dev="fix prod", qa="fix tests", cite="AssertionError (x.py:1)")
+        dev, qa = orchestrator.reconcile_feedback_routing(rep, None)
+        self.assertEqual(dev, "fix prod")
+        self.assertEqual(qa, "fix tests")
+
+    def test_coherence_floor_drops_payload_on_approved_side(self) -> None:
+        # Defensive (#18): a payload that slips onto an approved side (validator-bypassing model_construct)
+        # must NOT drive the next cycle.
+        rep = ReviewReport.model_construct(
+            code_quality_analysis="a", test_integrity_analysis="b", log_verification_analysis="c",
+            code_quality_approved=True, test_integrity_approved=False,
+            dev_diagnostic_payload="stray", qa_diagnostic_payload="fix tests",
+            dev_evidence_citation="", zombie_tests_to_delete=[],
+        )
+        dev, qa = orchestrator.reconcile_feedback_routing(rep, None)
+        self.assertEqual(dev, "")                       # approved side floored out
+        self.assertEqual(qa, "fix tests")
+
+    def test_arbiter_agreement_passes_through(self) -> None:
+        rep = self._report(False, True, dev="fix prod", cite="ValueError (x.py:1)")
+        dev, qa = orchestrator.reconcile_feedback_routing(rep, self._verdict("developer"))
+        self.assertEqual(dev, "fix prod")               # the Reviewer payload kept, not the Arbiter reasoning
+        self.assertEqual(qa, "")
+
+    def test_arbiter_overrides_reviewer_misroute_to_qa(self) -> None:
+        rep = self._report(False, True, dev="actually a test mock issue", cite="AssertionError (x.py:1)")
+        dev, qa = orchestrator.reconcile_feedback_routing(rep, self._verdict("qa"))
+        self.assertEqual(dev, "")
+        self.assertIn("arbiter says qa", qa)
+        self.assertIn("actually a test mock issue", qa)  # the fix text moved into the QA channel
+
+    def test_arbiter_overrides_reviewer_misroute_to_developer(self) -> None:
+        rep = self._report(True, False, qa="actually a production bug")
+        dev, qa = orchestrator.reconcile_feedback_routing(rep, self._verdict("developer"))
+        self.assertEqual(qa, "")
+        self.assertIn("arbiter says developer", dev)
+        self.assertIn("actually a production bug", dev)
+
+    def test_contract_route_verdict_is_ignored_by_reconciler(self) -> None:
+        # contract/halt never reach the reconciler with authority; a stray one is ignored (passthrough).
+        rep = self._report(False, True, dev="fix prod", cite="ValueError (x.py:1)")
+        verdict = ArbiterVerdict(root_cause_class="contract_conflict", route="contract",
+                                 reasoning="spec", contract_amendment_directive="x")
+        dev, qa = orchestrator.reconcile_feedback_routing(rep, verdict)
+        self.assertEqual(dev, "fix prod")
+        self.assertEqual(qa, "")
 
 
 class IdeaAutoExecuteDispatchTests(unittest.IsolatedAsyncioTestCase):
@@ -1244,6 +1377,41 @@ class RunBatchTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await orchestrator.run_batch(projects, project, cfg, nexus_dir, ["TASK-01"])
             scaffold.assert_not_awaited()
+
+    async def test_release_runs_after_a_complete_batch(self) -> None:
+        # E6: a fully-merged batch with --release pushes the release tag once, as the FINAL step, and is
+        # handed the BatchState so it can record/short-circuit on batch.released_tag.
+        with TemporaryDirectory() as td:
+            projects, project, cfg, nexus_dir = self._fixtures(td)
+            cfg.release = True
+            release = AsyncMock()
+            with (
+                mock.patch.object(orchestrator, "prepare_ticket_run",
+                                  side_effect=lambda _p, _pr, _c, t: Path(td) / f"exec_{t}"),
+                mock.patch.object(orchestrator, "run_executor",
+                                  new=AsyncMock(side_effect=lambda *_a, **_k: _ctx_with_cost("0.10"))),
+                mock.patch.object(orchestrator, "finalize_release", new=release),
+            ):
+                await orchestrator.run_batch(projects, project, cfg, nexus_dir, ["TASK-01", "TASK-02"])
+            release.assert_awaited_once()
+            args = release.await_args.args
+            self.assertEqual(args[:4], (projects, project, cfg, nexus_dir))
+            self.assertIsInstance(args[4], BatchState)           # the batch checkpoint, for the idempotent guard
+
+    async def test_release_skipped_when_flag_off(self) -> None:
+        with TemporaryDirectory() as td:
+            projects, project, cfg, nexus_dir = self._fixtures(td)
+            cfg.release = False
+            release = AsyncMock()
+            with (
+                mock.patch.object(orchestrator, "prepare_ticket_run",
+                                  side_effect=lambda _p, _pr, _c, t: Path(td) / f"exec_{t}"),
+                mock.patch.object(orchestrator, "run_executor",
+                                  new=AsyncMock(side_effect=lambda *_a, **_k: _ctx_with_cost("0.10"))),
+                mock.patch.object(orchestrator, "finalize_release", new=release),
+            ):
+                await orchestrator.run_batch(projects, project, cfg, nexus_dir, ["TASK-01"])
+            release.assert_not_awaited()
 
 
 class BatchResumeRoutingTests(unittest.IsolatedAsyncioTestCase):
@@ -1634,6 +1802,97 @@ class FinalizePrTests(unittest.IsolatedAsyncioTestCase):
                 await orchestrator.finalize_pr(ctx, self._cfg())
             ap.assert_not_awaited()    # open_pr returned None (already merged) → idempotent skip
             mp.assert_not_awaited()
+
+
+class ComputeNextTagTests(unittest.TestCase):
+    """E6 version policy: repo-derived next v* tag bumped per RELEASE_VERSION_BUMP; greenfield → v0.1.0."""
+
+    def test_greenfield_is_v010(self) -> None:
+        self.assertEqual(orchestrator.compute_next_tag([], "minor"), "v0.1.0")
+        # Non-conforming tags (no patch / pre-release / non-semver) don't count → still greenfield.
+        self.assertEqual(orchestrator.compute_next_tag(["latest", "v1.2", "v1.0.0-rc1"], "minor"), "v0.1.0")
+
+    def test_minor_is_default_and_fallback(self) -> None:
+        self.assertEqual(orchestrator.compute_next_tag(["v1.2.3"], "minor"), "v1.3.0")
+        self.assertEqual(orchestrator.compute_next_tag(["v1.2.3"], "nonsense"), "v1.3.0")  # unknown → minor
+
+    def test_major_and_patch_bumps(self) -> None:
+        self.assertEqual(orchestrator.compute_next_tag(["v1.2.3"], "major"), "v2.0.0")
+        self.assertEqual(orchestrator.compute_next_tag(["v1.2.3"], "patch"), "v1.2.4")
+
+    def test_picks_numerically_highest_across_unsorted_input(self) -> None:
+        # max is (1,10,0), NOT the lexically-largest "v1.9.0"; minor bump → v1.11.0.
+        self.assertEqual(
+            orchestrator.compute_next_tag(["v0.9.0", "v1.10.0", "v1.2.0", "v1.9.0"], "minor"), "v1.11.0")
+
+
+class FinalizeReleaseTests(unittest.IsolatedAsyncioTestCase):
+    """E6 finalize_release: clone → resolve next tag → push it; idempotent on a prior released_tag."""
+
+    def _fixtures(self, td):
+        project = mock.MagicMock()
+        project.slug = "p"; project.repo = "some-repo"; project.base_branch = "main"
+        projects = mock.MagicMock()
+        projects.allocate.return_value = Path(td) / "003_release_tag"
+        cfg = orchestrator.RunConfig(
+            description=None, base_branch="main", resume=None, reset_attempts=False,
+            idea="an idea", repo="some-repo", auto_execute=True, auto_merge=True, push=True, release=True,
+        )
+        nexus_dir = Path(td) / "001_nexus_plan"
+        batch = BatchState(project_slug="p", nexus_run=nexus_dir.name,
+                           tickets=["TASK-01"], completed=["TASK-01"])
+        return projects, project, cfg, nexus_dir, batch
+
+    def _ws(self, td) -> WorkspacePaths:
+        return WorkspacePaths(logs_dir=Path(td) / "logs", reports_dir=Path(td) / "reports",
+                              repo_dir=Path(td) / "repo")
+
+    async def test_resolves_bumps_and_pushes_then_records_marker(self) -> None:
+        with TemporaryDirectory() as td:
+            projects, project, cfg, nexus_dir, batch = self._fixtures(td)
+            push = AsyncMock(return_value=True)
+            with (
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "bootstrap_session",
+                                  new=AsyncMock(return_value=self._ws(td))),
+                mock.patch("src.shared.utils.forge.list_remote_tags",
+                           new=AsyncMock(return_value=["v1.2.0"])),
+                mock.patch("src.shared.utils.forge.push_tag", new=push),
+            ):
+                await orchestrator.finalize_release(projects, project, cfg, nexus_dir, batch)
+            push.assert_awaited_once()
+            self.assertEqual(push.await_args.args[1], "v1.3.0")          # minor bump of the repo's latest
+            self.assertEqual(push.await_args.kwargs.get("ref"), "main")  # tags the base-branch tip
+            self.assertEqual(batch.released_tag, "v1.3.0")               # marker set for an idempotent --resume
+
+    async def test_idempotent_skip_when_already_released(self) -> None:
+        with TemporaryDirectory() as td:
+            projects, project, cfg, nexus_dir, batch = self._fixtures(td)
+            batch.released_tag = "v9.9.9"
+            push = AsyncMock(return_value=True)
+            with (
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "bootstrap_session", new=AsyncMock()) as boot,
+                mock.patch("src.shared.utils.forge.push_tag", new=push),
+            ):
+                await orchestrator.finalize_release(projects, project, cfg, nexus_dir, batch)
+            boot.assert_not_awaited()                  # never clones
+            push.assert_not_awaited()                  # never pushes a second tag
+            projects.allocate.assert_not_called()
+            self.assertEqual(batch.released_tag, "v9.9.9")
+
+    async def test_failed_push_leaves_no_marker(self) -> None:
+        with TemporaryDirectory() as td:
+            projects, project, cfg, nexus_dir, batch = self._fixtures(td)
+            with (
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "bootstrap_session",
+                                  new=AsyncMock(return_value=self._ws(td))),
+                mock.patch("src.shared.utils.forge.list_remote_tags", new=AsyncMock(return_value=[])),
+                mock.patch("src.shared.utils.forge.push_tag", new=AsyncMock(return_value=False)),
+            ):
+                await orchestrator.finalize_release(projects, project, cfg, nexus_dir, batch)
+            self.assertIsNone(batch.released_tag)      # no marker → a later --resume retries the push
 
 
 class AutoMergeLoopClosureTests(unittest.IsolatedAsyncioTestCase):
@@ -2239,13 +2498,13 @@ class TestCollectionTriageHelperTests(unittest.TestCase):
 
     def test_extract_failure_context_returns_whole_when_short(self) -> None:
         lines = ["a", "b", "c"]
-        self.assertEqual(orchestrator._extract_failure_context(lines, max_lines=50), "a\nb\nc")
+        self.assertEqual(orchestrator._extract_failure_context(lines, "python-3.12-core", max_lines=50), "a\nb\nc")
 
     def test_extract_failure_context_preserves_buried_import_error(self) -> None:
         # Root ImportError sits near the TOP, buried above a long tail of _FailedTest noise.
         lines = ["ImportError: cannot import name 'JSONConverter'"]
         lines += [f"noise {i}" for i in range(200)]
-        out = orchestrator._extract_failure_context(lines, max_lines=50)
+        out = orchestrator._extract_failure_context(lines, "python-3.12-core", max_lines=50)
         # Marker-aware slice MUST keep the root error origin (a plain tail would have dropped it)…
         self.assertIn("ImportError: cannot import name 'JSONConverter'", out)
         # …and still keep the final summary tail.
@@ -2254,7 +2513,7 @@ class TestCollectionTriageHelperTests(unittest.TestCase):
 
     def test_extract_failure_context_falls_back_to_tail_without_marker(self) -> None:
         lines = [f"line {i}" for i in range(200)]
-        out = orchestrator._extract_failure_context(lines, max_lines=50)
+        out = orchestrator._extract_failure_context(lines, "python-3.12-core", max_lines=50)
         self.assertTrue(out.endswith("line 199"))
         self.assertNotIn("…[snip]…", out)
 
@@ -2300,6 +2559,7 @@ class TestCollectionTriageRoutingTests(unittest.IsolatedAsyncioTestCase):
                     code_quality_approved=not first,      # reject on the import-failure cycle only
                     test_integrity_approved=True,         # tests are fine — never a QA regen
                     dev_diagnostic_payload="" if not first else "Fix the broken import in cli.py.",
+                    dev_evidence_citation="" if not first else "ImportError: cannot import name 'x' (cli.py)",
                 )
 
             with (
@@ -2497,6 +2757,75 @@ class LintGateLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(abort_msgs), 1)
             self.assertIn("Retries exhausted", abort_msgs[0])
             self.assertNotIn("MISCONFIGURATION", abort_msgs[0])
+
+
+class RawRunnerOutputToQaChannelTests(unittest.IsolatedAsyncioTestCase):
+    """Fix B: when the test suite ACTUALLY fails at runtime, the QA channel carries the authoritative runner
+    output (verbatim expected-vs-actual) appended to the Reviewer's transcription — so QA is never rerouted
+    blind even when the Reviewer's payload is thin. Pairs with the payload-on-rejection validator (#17)."""
+
+    @staticmethod
+    def _ctx(base: Path) -> GlobalPipelineContext:
+        paths = WorkspacePaths(logs_dir=base / "logs", reports_dir=base / "reports", repo_dir=base)
+        ctx = GlobalPipelineContext(
+            pr_description="resume", workspace_paths=paths, test_code_snapshot="existing tests",
+        )
+        ctx.contract = TechLeadContract(
+            files_to_modify=["src/core/converter.py"], instruction="noop", function_signatures="noop",
+            strict_type_validation_rules="noop", techlead_reasoning="noop",
+            environment_id="python-3.12-core",
+            topology_contract=[{"file_path": "src/core/converter.py", "exports": [], "depends_on": []}],
+        )
+        return ctx
+
+    async def test_failing_tests_append_raw_runner_output_to_qa_channel(self) -> None:
+        with TemporaryDirectory() as td:
+            ctx = self._ctx(Path(td))
+            raw_fail = "FAILED test_write_csv[empty] - AssertionError: assert '' == '\\r\\n'"
+
+            async def _reject_tests(*_a, **_k) -> None:
+                ctx.review_report = ReviewReport(
+                    code_quality_analysis="ok", test_integrity_analysis="empty-input expectation wrong",
+                    log_verification_analysis="qa failed",
+                    code_quality_approved=True, test_integrity_approved=False,
+                    qa_diagnostic_payload="reconsider the empty-input case",
+                )
+
+            captured: list[str] = []
+
+            def _capture_abort(_ctx, _message, *a, **k):
+                captured.append(_ctx.qa_error_trace)   # the B-augmented channel at routing time
+                raise SystemExit(1)
+
+            with ExitStack() as stack:
+                stack.enter_context(mock.patch.object(orchestrator, "check_environment"))
+                stack.enter_context(mock.patch.object(orchestrator, "reconfigure_logging"))
+                stack.enter_context(mock.patch.object(orchestrator, "build_production_snapshot"))
+                stack.enter_context(mock.patch.object(orchestrator, "run_format_pass", new=AsyncMock(return_value=None)))
+                stack.enter_context(mock.patch.object(orchestrator, "run_lint_gate", new=AsyncMock(return_value=(True, []))))
+                stack.enter_context(mock.patch.object(orchestrator, "run_build_gate", new=AsyncMock(return_value=(True, []))))
+                stack.enter_context(mock.patch.object(orchestrator, "run_test_compile_gate", new=AsyncMock(return_value=(True, []))))
+                stack.enter_context(mock.patch.object(orchestrator, "_missing_contract_files", return_value=[]))
+                stack.enter_context(mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
+                    description=None, base_branch="main", resume=Path("cp.json"), reset_attempts=False)))
+                stack.enter_context(mock.patch.object(GlobalPipelineContext, "load_checkpoint", return_value=ctx))
+                stack.enter_context(mock.patch.object(orchestrator, "run_techlead_node", new_callable=AsyncMock))
+                stack.enter_context(mock.patch.object(orchestrator, "enforce_documentation_guardrail", new=AsyncMock(return_value=None)))
+                stack.enter_context(mock.patch.object(orchestrator, "run_developer_node", new_callable=AsyncMock))
+                stack.enter_context(mock.patch.object(orchestrator, "run_qa_agent_node", new_callable=AsyncMock))
+                stack.enter_context(mock.patch.object(orchestrator, "run_reviewer_node", new=AsyncMock(side_effect=_reject_tests)))
+                stack.enter_context(mock.patch.object(orchestrator, "run_qa_unit_tests", new=AsyncMock(return_value=(False, [raw_fail]))))
+                stack.enter_context(mock.patch.object(orchestrator, "run_security_scan", new=AsyncMock(return_value=(True, []))))
+                stack.enter_context(mock.patch.object(orchestrator, "MAX_FUNCTIONAL_RETRIES", 1))
+                stack.enter_context(mock.patch.object(orchestrator, "ARBITER_TRIGGER_ATTEMPT", 99))  # keep the Arbiter out
+                stack.enter_context(mock.patch.object(orchestrator, "_abort_with_incident", side_effect=_capture_abort))
+                with self.assertRaises(SystemExit):
+                    await orchestrator.main()
+
+            self.assertEqual(len(captured), 1)
+            self.assertIn("RAW TEST RUNNER OUTPUT", captured[0])
+            self.assertIn("assert '' == '\\r\\n'", captured[0])              # the verbatim runner evidence
+            self.assertIn("reconsider the empty-input case", captured[0])    # Reviewer transcription preserved
 
 
 class FinOpsReportTests(unittest.TestCase):

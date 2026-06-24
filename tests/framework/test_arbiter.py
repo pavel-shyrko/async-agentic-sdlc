@@ -44,6 +44,7 @@ class RunArbiterNodeTests(unittest.IsolatedAsyncioTestCase):
             code_quality_analysis="conflict", test_integrity_analysis="ok",
             log_verification_analysis="loop", code_quality_approved=False, test_integrity_approved=True,
             dev_diagnostic_payload="fix", qa_diagnostic_payload="",
+            dev_evidence_citation="TypeError: unsupported operand (engine.py:7)",
         )
         return ctx
 

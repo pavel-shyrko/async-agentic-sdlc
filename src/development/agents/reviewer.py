@@ -49,4 +49,15 @@ async def run_reviewer_node(ctx: GlobalPipelineContext, qa_success: bool, qa_log
     log.info(f"   ├── [GATE][SAST-SECURITY] {'PASSED' if sec_success else 'FAILED'}")
     log.info(f"   └── [AUDIT] Code Approved: {ctx.review_report.code_quality_approved} | Tests Approved: {ctx.review_report.test_integrity_approved}\n")
 
+    # Soft grounding check (BACKLOG #11, observability only — not a gate): a production rejection whose
+    # citation appears nowhere in the gate output or the code snapshot is a likely hallucinated defect.
+    if not ctx.review_report.code_quality_approved:
+        citation = ctx.review_report.dev_evidence_citation.strip()
+        evidence_corpus = "\n".join((qa_report, sec_report, production_code))
+        if citation and citation not in evidence_corpus:
+            log.warning(
+                "⚠️ Reviewer rejected production with a citation absent from the gate output / code "
+                "snapshot — possible hallucinated defect (BACKLOG #11)."
+            )
+
     log.debug(f"Reviewer Node Output: {ctx.review_report.model_dump_json(indent=2)}")

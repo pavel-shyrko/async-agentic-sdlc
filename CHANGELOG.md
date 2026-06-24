@@ -7,6 +7,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each release maps to a completed SDLC iteration; the corresponding Architecture
 Decision Record (ADR) is linked from the version heading.
 
+## [Unreleased] — Convergence hardening: behavioral oracle, raw-runner feedback, repo-aware test topology, routing-coherence reconciler
+
+Root-causes behind QA loops / weak tests / wasted reroutes (surfaced by the `json-to-csv` python & .NET runs),
+fixed in the engine/prompts — never the generated clone.
+
+### Added
+- **Routing-coherence reconciler & evidence citation (#11/#18/#25).** A single engine SSOT
+  (`reconcile_feedback_routing`, `src/nexus/runner.py`) now assigns the two isolated feedback channels: it
+  feeds a channel ONLY for a genuinely-rejected side (#18) and lets an Arbiter `developer`/`qa` verdict
+  **override** a Reviewer misroute (#25, previously advisory — it cost a Gemini call and changed nothing).
+  Paired with a new `ReviewReport.dev_evidence_citation` field the Reviewer MUST fill (verbatim gate line or
+  code excerpt) to reject production code, closing the phantom-defect reroute (#11). See ADR 0024.
+- **Behavioral oracle in the contract (A).** `TechLeadContract.acceptance_examples: list[BehaviorExample]`
+  (`{input, expected, raises}`) — the TechLead now pins the few decisive golden cases where the answer is
+  non-obvious (empty/degenerate inputs, library-defined output, boundaries). QA asserts these **verbatim**
+  (the expected value is fixed ONCE, not independently guessed by tests and code) and the Reviewer
+  adjudicates against them: a test contradicting an example is a **production** bug → Developer; an altered
+  example is a **test** bug → QA; a wrong example routes to a contract amendment. QA keeps full freedom to
+  expand with its own BVA/equivalence cases on top (hybrid: oracle floor + creative coverage). Language-neutral
+  DATA, so no stack assumptions. Prompts updated: `techlead.md`, `qa.md`, `reviewer.md`; injected in `qa.py`.
+- **Repo-aware test-project resolution (C).** `resolve_test_project_dir` now resolves a `layout=="project"`
+  (.NET) test project from the **existing clone** when a follow-on ticket doesn't re-list the manifest in its
+  contract — the root cause of orphaned tests (→ `ran_zero_tests` halt) on TASK-02+ of a multi-ticket .NET
+  batch. The manifest pattern is registry-driven (`test_manifest_suffix`; `None`/no-op for python/go/node) so
+  the engine stays language-agnostic. Multiple matches disambiguate **by name** (the test project whose stem
+  matches THIS ticket's production project) rather than a blind alphabetical pick, with a deterministic
+  shallowest-then-lexical tie-break.
+
+### Changed
+- **QA is never rerouted blind (B).** When the test suite actually fails at runtime, the QA channel now carries
+  the authoritative runner output (verbatim expected-vs-actual, the highest-fidelity diagnostic) **appended**
+  to the Reviewer's transcription — instead of relying on the LLM's re-derivation alone, which looped the run
+  when that payload came back thin (`src/nexus/runner.py`).
+
+### Fixed
+- **#11 — Reviewer hallucinates production defects (P1).** A production rejection
+  (`code_quality_approved=false`) now REQUIRES a non-empty `dev_evidence_citation` (a verbatim gate-output
+  line or `FILE:`+code excerpt), code-enforced by the `ReviewReport` validator; `reviewer.md` additionally
+  defaults the production verdict to approved when every failing reference points into a test file. A soft
+  engine log flags a citation absent from the gate output / snapshot. Stops a phantom structural defect (e.g.
+  "rename the go.mod module") from burning a Developer reroute.
+- **#18 — feedback-channel isolation was prompt-only (P2).** The `ReviewReport` validator is now a full
+  **biconditional** (`payload non-empty ⟺ approval false`): an approved side may no longer carry a payload, so
+  the router can never feed a defect-free channel and make the Developer + QA fight. Code-enforced, replacing
+  the LLM-trust invariant.
+- **#25 — Arbiter `developer`/`qa` routes were advisory (P2).** Those routes now authoritatively select the
+  next cycle's feedback channel (and force the matching regeneration), overriding a Reviewer misroute instead
+  of falling through to it. The Arbiter's (correct) diagnosis finally changes control flow on the channels too,
+  not only on `contract`/`halt`.
+- **#17 — rejection without guidance (P1).** New `ReviewReport` model validator: rejecting a side
+  (`code_quality_approved`/`test_integrity_approved` = false) while leaving its diagnostic payload empty now
+  fails fast (instructor re-prompts the Reviewer) instead of silently burning the whole retry budget to
+  "Retries exhausted". The code-enforced half of the long-standing prompt-only invariant; pairs with B.
+
+## [v0.23.0] - 2026-06-24 — Autonomous Release-Tagging (`--release`): close the loop to a published artifact
+
+ADR: [0023-autonomous-release-tagging](./docs/decisions/0023-autonomous-release-tagging.md)
+(depends on [0020](./docs/decisions/0020-deploy-scaffolding-and-lint-gate.md),
+[0019](./docs/decisions/0019-cyclical-multi-ticket-orchestration.md); extends
+[0018](./docs/decisions/0018-auto-merge-pr-loop-closure.md)) ·
+Archive: [iteration_22](./docs/releases/iteration_22/iteration_22_README.md)
+
+### Added
+- **Autonomous release-tagging (E6).** New opt-in **`--release`** flag: after a `--idea --auto-execute` batch
+  merges every ticket (and after the optional `--scaffold-deploy`), `run_batch` pushes a `v*` git tag as the
+  build's final step, tripping the tag-gated deploy/release workflow the E4 DevOps plane already generated.
+  Turns "idea in → merged app on `main`" into "idea in → **released artifact out**, zero human touches." The
+  engine pushes only a *tag*; the user's Actions performs the publish (the engine never holds cloud creds).
+- **Repo-derived version policy.** `compute_next_tag` reads the target repo's existing `v*` tags
+  (`forge.list_remote_tags` → `git ls-remote`), takes the latest semver, and bumps it by
+  **`RELEASE_VERSION_BUMP`** (env, default `minor`); a tagless/greenfield repo → `v0.1.0`. Deterministic +
+  repo-derived (the version number is never persisted) → independent builds never collide and `--resume`
+  re-derives the identical value.
+- **Forge tag seam.** `src/shared/utils/forge.py` gains `list_remote_tags` + `push_tag` (an **annotated**
+  tag, then `git push origin <tag>`) beside `open_pr`/`merge_pr`, via a new boundary-safe `_run_git` runner
+  (every argv `sanitize_for_argv`'d, a `GH_NETWORK_TIMEOUT` ceiling, `GIT_TERMINAL_PROMPT=0`).
+- **Idempotent release marker.** `BatchState.released_tag` (persisted in `run_batch`'s `finally`, sibling of
+  `nexus_merged`/`budget_marker`) short-circuits a complete-batch `--resume`; `push_tag` also treats an
+  already-present remote tag as success — so re-runs / `--resume` neither duplicate nor collide a tag. A new
+  `NNN_release_tag_…` run-dir label is allocated for the release clone.
+
+### Changed
+- `run_batch` runs a new `finalize_release` terminal step after the (optional) deploy-scaffold, gated on
+  `--release` **only** — decoupled from `--scaffold-deploy` (a release is "the build finished", not "we
+  regenerated CI"). The phase makes no agent call (no budget threading) and reuses the batch's existing git
+  push credentials. `--release` is off by default and inert (with a warning) on a non-batch invocation.
+
 ## [v0.22.0] - 2026-06-23 — Application-wide FinOps Budget (money-only) + per-role/plane/time reporting
 
 ADR: [0022-application-wide-finops-budget](./docs/decisions/0022-application-wide-finops-budget.md)

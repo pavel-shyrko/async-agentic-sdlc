@@ -15,6 +15,7 @@ from src.shared.core.models import (
     ArchitectureUpdate,
     TechLeadContract,
     TopologyNode,
+    BehaviorExample,
     GlobalPipelineContext,
     QATestSuite,
     ReviewReport,
@@ -272,6 +273,45 @@ class ContractModelTests(unittest.TestCase):
         self.assertTrue(report.code_quality_approved)
         self.assertFalse(report.test_integrity_approved)
 
+    def test_acceptance_examples_default_to_empty(self) -> None:
+        # Back-compat: legacy contracts/checkpoints without the oracle field stay valid (empty list).
+        payload = {
+            "files_to_modify": ["src/core/calc.py"],
+            "topology_contract": [
+                {"file_path": "src/core/calc.py", "exports": ["is_prime"], "depends_on": []}
+            ],
+            "instruction": "Implement prime sieve.",
+            "function_signatures": "def is_prime(n: int) -> bool",
+            "strict_type_validation_rules": "bool must raise TypeError",
+            "techlead_reasoning": "Guard against bool subtype of int.",
+            "environment_id": "python-3.12-core",
+        }
+        self.assertEqual(TechLeadContract(**payload).acceptance_examples, [])
+
+    def test_acceptance_examples_round_trip(self) -> None:
+        # The behavioral oracle parses as structured BehaviorExample objects (input → expected | raises).
+        payload = {
+            "files_to_modify": ["src/core/calc.py"],
+            "topology_contract": [
+                {"file_path": "src/core/calc.py", "exports": ["is_prime"], "depends_on": []}
+            ],
+            "instruction": "Implement prime sieve.",
+            "function_signatures": "def is_prime(n: int) -> bool",
+            "acceptance_examples": [
+                {"input": "is_prime(2)", "expected": "True"},
+                {"input": "is_prime(-1.0)", "raises": "TypeError"},
+            ],
+            "strict_type_validation_rules": "bool must raise TypeError",
+            "techlead_reasoning": "Guard against bool subtype of int.",
+            "environment_id": "python-3.12-core",
+        }
+        contract = TechLeadContract(**payload)
+        self.assertEqual(len(contract.acceptance_examples), 2)
+        self.assertIsInstance(contract.acceptance_examples[0], BehaviorExample)
+        self.assertEqual(contract.acceptance_examples[0].expected, "True")
+        self.assertEqual(contract.acceptance_examples[1].raises, "TypeError")
+        self.assertEqual(contract.acceptance_examples[1].expected, "")  # output OR error, defaults empty
+
     def test_global_context_applies_defaults(self) -> None:
         # Arrange / Act
         ctx = GlobalPipelineContext(pr_description="add prime util")
@@ -285,6 +325,85 @@ class ContractModelTests(unittest.TestCase):
         self.assertIsNone(ctx.workspace_paths)
         self.assertIsInstance(ctx.telemetry, PipelineTelemetry)
         self.assertEqual(ctx.telemetry.total_tokens, 0)
+
+
+class ReviewReportPayloadValidatorTests(unittest.TestCase):
+    """The routing-coherence validator (`_require_routing_coherence`) code-enforces the feedback-channel
+    invariant the prompt alone could not: BACKLOG #17 (a rejection MUST carry an actionable payload), #18
+    (the converse — an approved side must NOT carry a payload, so the router never feeds a defect-free
+    channel), and #11 (a production rejection must cite verbatim evidence). instructor re-prompts the
+    Reviewer on the resulting ValueError instead of the loop silently burning the retry budget."""
+
+    _base = dict(code_quality_analysis="a", test_integrity_analysis="b", log_verification_analysis="c")
+    _cite = "AssertionError: expected 0 got 1 (writer.py:42)"
+
+    def test_rejecting_code_without_dev_payload_raises(self) -> None:
+        with self.assertRaises(ValidationError):
+            ReviewReport(**self._base, code_quality_approved=False, test_integrity_approved=True,
+                         dev_diagnostic_payload="", qa_diagnostic_payload="")
+
+    def test_rejecting_tests_without_qa_payload_raises(self) -> None:
+        with self.assertRaises(ValidationError):
+            ReviewReport(**self._base, code_quality_approved=True, test_integrity_approved=False,
+                         dev_diagnostic_payload="", qa_diagnostic_payload="")
+
+    def test_whitespace_only_payload_is_treated_as_empty(self) -> None:
+        with self.assertRaises(ValidationError):
+            ReviewReport(**self._base, code_quality_approved=True, test_integrity_approved=False,
+                         qa_diagnostic_payload="   \n ")
+
+    def test_rejection_with_payload_passes(self) -> None:
+        ok = ReviewReport(**self._base, code_quality_approved=False, test_integrity_approved=False,
+                          dev_diagnostic_payload="fix prod", qa_diagnostic_payload="fix tests",
+                          dev_evidence_citation="AssertionError: expected 0 got 1 (writer.py:42)")
+        self.assertFalse(ok.code_quality_approved)
+        self.assertFalse(ok.test_integrity_approved)
+
+    def test_full_approval_needs_no_payloads(self) -> None:
+        ok = ReviewReport(**self._base, code_quality_approved=True, test_integrity_approved=True)
+        self.assertTrue(ok.code_quality_approved)
+        self.assertEqual(ok.qa_diagnostic_payload, "")
+
+    # --- #18 converse: an approved side must NOT carry a payload ---
+    def test_approved_code_with_dev_payload_raises(self) -> None:
+        with self.assertRaises(ValidationError):
+            ReviewReport(**self._base, code_quality_approved=True, test_integrity_approved=True,
+                         dev_diagnostic_payload="sneaky note on approved code")
+
+    def test_approved_tests_with_qa_payload_raises(self) -> None:
+        with self.assertRaises(ValidationError):
+            ReviewReport(**self._base, code_quality_approved=True, test_integrity_approved=True,
+                         qa_diagnostic_payload="sneaky note on approved tests")
+
+    # --- #11: a production rejection must cite verbatim evidence ---
+    def test_rejecting_code_without_evidence_citation_raises(self) -> None:
+        with self.assertRaises(ValidationError):
+            ReviewReport(**self._base, code_quality_approved=False, test_integrity_approved=True,
+                         dev_diagnostic_payload="fix prod", dev_evidence_citation="")
+
+    def test_rejecting_code_with_evidence_citation_passes(self) -> None:
+        ok = ReviewReport(**self._base, code_quality_approved=False, test_integrity_approved=True,
+                          dev_diagnostic_payload="fix prod", dev_evidence_citation=self._cite)
+        self.assertFalse(ok.code_quality_approved)
+        self.assertEqual(ok.dev_evidence_citation, self._cite)
+
+    def test_rejecting_tests_only_needs_no_evidence_citation(self) -> None:
+        # A test-only rejection leaves production approved, so no production evidence is required.
+        ok = ReviewReport(**self._base, code_quality_approved=True, test_integrity_approved=False,
+                          qa_diagnostic_payload="rewrite the suite")
+        self.assertFalse(ok.test_integrity_approved)
+        self.assertEqual(ok.dev_evidence_citation, "")
+
+
+class BehaviorExampleModelTests(unittest.TestCase):
+    """The behavioral oracle is language-neutral DATA (no code), with expected OR raises, both optional."""
+
+    def test_round_trips_and_defaults(self) -> None:
+        ex = BehaviorExample(input="write_csv([])")
+        self.assertEqual(ex.expected, "")
+        self.assertEqual(ex.raises, "")
+        ex2 = BehaviorExample(input="write_csv([])", expected="\\r\\n")
+        self.assertEqual(ex2.expected, "\\r\\n")
 
 
 class PipelineTelemetryTests(unittest.TestCase):
@@ -376,6 +495,44 @@ class PipelineTelemetryTests(unittest.TestCase):
         self.assertIsInstance(restored.telemetry, PipelineTelemetry)
         self.assertEqual(restored.telemetry.total_tokens, 0)
 
+    def test_record_phase_accumulates_infra_and_real_wall(self) -> None:
+        # Infra phases (docker gates / SAST / git) carry wall-clock ONLY — no tokens/cost — and feed the
+        # real end-to-end TOTAL the FinOps summary now reports (it previously counted LLM time only).
+        tel = PipelineTelemetry()
+        tel.record("Developer Agent", 100, 20, Decimal("0.05"), provider="claude", duration_seconds=10.0)
+        tel.record_phase("build", 1.5)
+        tel.record_phase("qa+sast", 130.0)
+        tel.record_phase("build", 0.5)  # a gate re-run coalesces into the same slot
+        # LLM time is unchanged; infra is tracked separately and bumps the wall-clock total.
+        self.assertAlmostEqual(tel.total_duration_seconds, 10.0)
+        self.assertAlmostEqual(tel.total_infra_seconds, 132.0)   # 1.5 + 130.0 + 0.5
+        self.assertAlmostEqual(tel.total_wall_seconds, 142.0)    # LLM + infra = real wall-clock
+        self.assertEqual(tel.by_phase["build"].calls, 2)
+        self.assertAlmostEqual(tel.by_phase["build"].duration_seconds, 2.0)
+        self.assertEqual(tel.by_phase["qa+sast"].calls, 1)
+        # Infra phases spend NO money/tokens — the breaker stays money-only, unaffected.
+        self.assertEqual(tel.total_cost_usd, Decimal("0.05"))
+        self.assertEqual(tel.total_tokens, 120)
+
+    def test_finops_report_carries_infra_and_wall_and_by_phase(self) -> None:
+        tel = PipelineTelemetry()
+        tel.record("QA Agent", 50, 10, Decimal("0.01"), provider="gemini", duration_seconds=2.0)
+        tel.record_phase("lint", 3.0)
+        report = tel.finops_report(budget_usd=Decimal("1.00"))
+        self.assertAlmostEqual(report["total_duration_seconds"], 2.0)
+        self.assertAlmostEqual(report["total_infra_seconds"], 3.0)
+        self.assertAlmostEqual(report["total_wall_seconds"], 5.0)
+        self.assertEqual(report["by_phase"]["lint"]["calls"], 1)
+        self.assertAlmostEqual(report["by_phase"]["lint"]["duration_seconds"], 3.0)
+
+    def test_by_phase_survives_checkpoint_round_trip(self) -> None:
+        ctx = GlobalPipelineContext(pr_description="x")
+        ctx.telemetry.record_phase("qa+sast", 42.0)
+        restored = GlobalPipelineContext.model_validate_json(ctx.model_dump_json())
+        self.assertAlmostEqual(restored.telemetry.total_infra_seconds, 42.0)
+        self.assertEqual(restored.telemetry.by_phase["qa+sast"].calls, 1)
+        self.assertAlmostEqual(restored.telemetry.total_wall_seconds, 42.0)
+
 
 class NeedsTestRegenerationTests(unittest.TestCase):
     """Initial recovery decision: regenerate tests on rejection or when no snapshot exists."""
@@ -391,6 +548,8 @@ class NeedsTestRegenerationTests(unittest.TestCase):
             code_quality_approved=True,
             test_integrity_approved=test_integrity_approved,
             dev_diagnostic_payload="",
+            # A rejection must carry guidance (the payload-on-rejection validator); empty when approved.
+            qa_diagnostic_payload="" if test_integrity_approved else "regenerate the suite",
         )
 
     def test_rejected_tests_force_regeneration_even_with_snapshot(self) -> None:
@@ -507,6 +666,7 @@ class BatchStateCheckpointTests(unittest.TestCase):
         self.assertEqual(batch.app_telemetry.total_cost_usd, Decimal("0"))
         self.assertFalse(batch.nexus_merged)
         self.assertIsNone(batch.budget_marker)
+        self.assertIsNone(batch.released_tag)            # E6 — no release cut yet
 
     def test_app_telemetry_and_markers_survive_round_trip(self) -> None:
         # E5 — the running application spend + resume markers must persist for --resume re-budgeting.
@@ -514,7 +674,8 @@ class BatchStateCheckpointTests(unittest.TestCase):
             path = Path(td) / "reports" / "batch_state.json"
             batch = BatchState(project_slug="p", nexus_run="001_nexus_plan",
                                tickets=["TASK-01", "TASK-02"], completed=["TASK-01"],
-                               nexus_merged=True, budget_marker="App budget exhausted before 'TASK-02'.")
+                               nexus_merged=True, budget_marker="App budget exhausted before 'TASK-02'.",
+                               released_tag="v1.3.0")
             batch.app_telemetry.record("Developer Agent", 1000, 200, "0.42",
                                        provider="claude", plane="development", duration_seconds=5.0)
             batch.save_checkpoint(path)
@@ -522,6 +683,7 @@ class BatchStateCheckpointTests(unittest.TestCase):
             loaded = BatchState.load_checkpoint(path)
             self.assertTrue(loaded.nexus_merged)
             self.assertEqual(loaded.budget_marker, "App budget exhausted before 'TASK-02'.")
+            self.assertEqual(loaded.released_tag, "v1.3.0")   # E6 — release marker survives --resume
             self.assertEqual(loaded.app_telemetry.total_cost_usd, Decimal("0.42"))
             self.assertAlmostEqual(loaded.app_telemetry.total_duration_seconds, 5.0)
             self.assertEqual(loaded.app_telemetry.by_plane()["development"]["calls"], 1)
@@ -547,6 +709,20 @@ class PipelineTelemetryMergeTests(unittest.TestCase):
         self.assertEqual(app.by_agent["Developer Agent"].calls, 2)
         self.assertEqual(app.by_agent["Developer Agent"].cost_usd, Decimal("0.30"))
         self.assertIn("QA Agent", app.by_agent)
+
+    def test_merge_folds_infra_phases_and_wall(self) -> None:
+        app = PipelineTelemetry()
+        app.record_phase("build", 1.0)
+        app.record_phase("qa+sast", 100.0)
+        ticket = PipelineTelemetry()
+        ticket.record_phase("build", 2.0)        # same phase coalesces across runs
+        ticket.record_phase("git:clone", 5.0)    # a new phase is added
+        app.merge(ticket)
+        self.assertAlmostEqual(app.total_infra_seconds, 108.0)
+        self.assertEqual(app.by_phase["build"].calls, 2)
+        self.assertAlmostEqual(app.by_phase["build"].duration_seconds, 3.0)
+        self.assertIn("git:clone", app.by_phase)
+        self.assertAlmostEqual(app.total_wall_seconds, 108.0)  # no LLM time recorded here → wall == infra
 
 
 class DevOpsManifestsModelTests(unittest.TestCase):

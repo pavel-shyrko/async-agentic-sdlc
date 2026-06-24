@@ -36,7 +36,9 @@ which caused deadlocks and missed defects in the FSM ([pipeline-fsm-loops](pipel
   "MANDATORY REPOSITORY PREPARATION RULE"/"there is NO standalone `TASK-00`"). Run the suite via
   [run-tests-via-wsl](run-tests-via-wsl.md) after any prompt edit.
 
-**Prompt-only invariants (NOT code-enforced — fragile):** feedback-channel isolation, "rejection must
-carry a non-empty diagnostic payload", and `domain_tags[0]` ⇄ `environment_id` agreement are guaranteed
-only by prompt text; a single LLM misfire breaks them silently. Hardening (Pydantic validators) is
-tracked in docs/BACKLOG.md #17–#24.
+**Prompt-only invariants (NOT code-enforced — fragile):** `domain_tags[0]` ⇄ `environment_id` agreement is
+guaranteed only by prompt text; a single LLM misfire breaks it silently (hardening tracked in
+docs/BACKLOG.md #19–#24). Feedback-channel isolation and "rejection must carry a non-empty diagnostic
+payload" are now **code-enforced** — the `ReviewReport` biconditional validator (`_require_routing_coherence`)
+plus the `reconcile_feedback_routing` SSOT (ADR 0024 / BACKLOG #11/#17/#18/#25), so they no longer rely on
+prompt text alone.

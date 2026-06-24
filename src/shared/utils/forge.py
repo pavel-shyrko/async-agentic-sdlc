@@ -19,7 +19,8 @@ import asyncio
 from src.shared.core.observability import log
 from src.shared.utils.subprocess_helpers import sanitize_for_argv
 
-# Network ceiling for `gh` calls — same default as GIT_NETWORK_TIMEOUT, independently tunable.
+# Network ceiling for forge network ops — the `gh` PR calls AND the E6 release tag push (`git ls-remote` /
+# `git push`). Same default as GIT_NETWORK_TIMEOUT, independently tunable.
 GH_NETWORK_TIMEOUT = int(os.environ.get("GH_NETWORK_TIMEOUT", "300"))
 # Default squash-merge strategy: `admin` merges immediately (works on repos without required checks);
 # `auto` queues the merge to land once required checks pass (the protected-repo path).
@@ -153,3 +154,79 @@ async def merge_pr(repo_dir, pr_ref: str) -> None:
 
     log.error(f"🚨 gh pr merge failed: {err}")
     sys.exit(1)
+
+
+async def _run_git(args: list[str], repo_dir, *,
+                   timeout: float | None = GH_NETWORK_TIMEOUT) -> tuple[int, str, str]:
+    """Run a fixed-argument ``git`` subprocess (shell=False) and return ``(rc, stdout, stderr)``.
+
+    The git sibling of ``_run_gh`` for the E6 release tag ops (``forge`` is in ``shared`` and so cannot
+    import ``runner._run_checked``). Same boundary discipline: a copied env with ``GIT_TERMINAL_PROMPT=0``
+    (a private repo without creds fails fast instead of hanging on a dead tty), every arg through
+    ``sanitize_for_argv``, and a wall-clock ceiling that converts a network stall into a fatal abort.
+    Like ``_run_gh`` it NEVER ``sys.exit``s on a non-zero exit — the caller decides per command.
+    """
+    env = os.environ.copy()              # copy, never a bare dict — preserves PATH/SystemRoot
+    env["GIT_TERMINAL_PROMPT"] = "0"     # no interactive credential prompt -> fail fast, never hang
+    safe_args = [sanitize_for_argv(a) for a in args]
+    proc = await asyncio.create_subprocess_exec(
+        "git", *safe_args, cwd=str(repo_dir),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()                # reap immediately after kill — no <defunct> zombie
+        log.error(f"🚨 git {' '.join(args[:2])} timed out after {timeout}s — aborting.")
+        sys.exit(1)
+    return proc.returncode, stdout.decode(errors="replace").strip(), stderr.decode(errors="replace").strip()
+
+
+async def list_remote_tags(repo_dir) -> list[str]:
+    """Return the tag names on ``origin`` (e.g. ``["v1.2.0", "v1.3.0"]``); ``[]`` on a tagless repo.
+
+    Reads the remote directly via ``git ls-remote --tags origin`` so it works on a shallow clone that
+    fetched no tags. Each line is ``<sha>\\trefs/tags/<name>``; the peeled ``<name>^{}`` rows
+    (annotated-tag targets) are collapsed to their base name and deduped. A non-zero exit (no origin /
+    network error) logs and yields ``[]`` — version resolution then treats it as greenfield.
+    """
+    rc, out, err = await _run_git(["ls-remote", "--tags", "origin"], repo_dir)
+    if rc != 0:
+        log.warning(f"⚠️  git ls-remote --tags failed (exit {rc}) — treating repo as tagless: {err}")
+        return []
+    tags: list[str] = []
+    for line in out.splitlines():
+        _sha, _sep, ref = line.partition("\t")
+        if not ref.startswith("refs/tags/"):
+            continue
+        name = ref[len("refs/tags/"):].removesuffix("^{}")  # collapse the peeled annotated-tag row
+        if name and name not in tags:
+            tags.append(name)
+    return tags
+
+
+async def push_tag(repo_dir, tag_name: str, ref: str, message: str) -> bool:
+    """Create an annotated tag ``tag_name`` at ``ref`` and push it to ``origin``; return success.
+
+    Best-effort (E6): a release runs only after the whole build already merged to the base branch, so a
+    tag hiccup must NOT crash a successful build — unlike ``merge_pr`` (the loop-closing step) this never
+    ``sys.exit``s on a push failure; it logs and returns ``False``. Idempotent: if the tag already exists
+    on the remote (a re-run/``--resume`` that raced ahead of the persisted marker), the push is rejected
+    with an "already exists" message — treated as success so a re-run never errors on a tag that landed.
+    """
+    # Annotated tag (-a -m): carries a tagger/date/message and shows in the releases UI. -f so a stale
+    # LOCAL tag from a reused clone is overwritten (the REMOTE is still protected by the non-force push).
+    rc, _out, err = await _run_git(["tag", "-f", "-a", tag_name, ref, "-m", message], repo_dir)
+    if rc != 0:
+        log.error(f"🚨 git tag {tag_name} failed (exit {rc}): {err}")
+        return False
+    rc, _out, err = await _run_git(["push", "origin", tag_name], repo_dir)
+    if rc == 0:
+        log.info(f"🏷️  Pushed release tag {tag_name} → origin.")
+        return True
+    if "already exists" in err.lower() or "[rejected]" in err.lower():
+        log.info(f"🔁 Release tag {tag_name} already on origin — nothing to push (idempotent).")
+        return True
+    log.error(f"🚨 git push origin {tag_name} failed (exit {rc}): {err}")
+    return False

@@ -151,6 +151,32 @@ class LogTokenUsageTests(unittest.TestCase):
         self.assertEqual(telemetry.by_agent["Reviewer Agent"].duration_seconds, 0.0)
 
 
+class FinopsSummaryWallClockTests(unittest.TestCase):
+    """The GRAND TOTAL must surface infra (gate/SAST/git) wall-clock + a REAL end-to-end TOTAL — not the
+    LLM-only figure it printed before. Degrades to LLM-only when no infra phase was recorded."""
+
+    def test_summary_prints_infra_phases_and_real_wall_total(self) -> None:
+        from src.shared.core.observability import log_finops_summary
+        tel = PipelineTelemetry()
+        tel.record("QA Agent", 50, 10, 0.01, provider="gemini", plane="development", duration_seconds=2.0)
+        tel.record_phase("qa+sast", 130.0)
+        with self.assertLogs("SDLC", level="INFO") as cm:
+            log_finops_summary(tel, 1.0)
+        out = "\n".join(cm.output)
+        self.assertIn("qa+sast", out)          # the per-phase infra line
+        self.assertIn("infra", out)            # Σ infra time + the TOTAL's infra term
+        self.assertIn("132.0s wall", out)      # 2.0 LLM + 130.0 infra = real wall-clock
+
+    def test_summary_degrades_to_llm_only_without_phases(self) -> None:
+        from src.shared.core.observability import log_finops_summary
+        tel = PipelineTelemetry()
+        tel.record("QA Agent", 50, 10, 0.01, provider="gemini", plane="development", duration_seconds=2.0)
+        with self.assertLogs("SDLC", level="INFO") as cm:
+            log_finops_summary(tel, 1.0)
+        out = "\n".join(cm.output)
+        self.assertIn("2.0s wall", out)        # wall == LLM time when no infra phases were recorded
+
+
 class DescribeFinishReasonTests(unittest.TestCase):
     """The finish_reason diagnostic must name a content-filter block (the RECITATION crash cause)
     and return None for a normal completion — never raising on odd shapes."""

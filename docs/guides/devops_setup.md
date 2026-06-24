@@ -133,7 +133,7 @@ Add under *Secrets ➔ New organization secret*, with **Repository access: All r
 
 | Secret | Value |
 |---|---|
-| `GCP_WIF_PROVIDER` | the provider string from 1.7, e.g. `projects/60009279996/locations/global/workloadIdentityPools/factory-pool/providers/factory-provider` |
+| `GCP_WIF_PROVIDER` | the provider string from 1.7, e.g. `projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/factory-pool/providers/factory-provider` |
 | `GCP_SERVICE_ACCOUNT` | `sa-github-devops@cyberthon-2026-token-burners.iam.gserviceaccount.com` |
 
 ### 2.2 Organization variables

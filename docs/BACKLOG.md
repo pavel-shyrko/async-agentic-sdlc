@@ -2,7 +2,7 @@
 
 Two parts:
 
-- **Part I — Capability Roadmap (Epics `E1`–`E6`)**: the forward-looking work to close the autonomy loop
+- **Part I — Capability Roadmap (Epics `E1`–`E7`)**: the forward-looking work to close the autonomy loop
   (idea → working, merged code in `main` → deployable). Larger than a single fix; each has its own
   Goal / Current state / Design / Dependencies / Risks / Acceptance.
 - **Part II — Defects & Refinements (`#4`–`#28`)**: granular fixes surfaced across pipeline runs, grouped by
@@ -40,6 +40,10 @@ Two parts:
 > Updated 2026-06-24: logged **E6** (autonomous release-tagging behind `--release`, nexus-owned decision +
 > `forge.py` tag-push) — the first open capability epic since E1–E5 shipped; surfaced from the
 > `json-to-csv-python` deploy run where the tag-gated `release` job was skipped on merge-to-`main`.
+>
+> Updated 2026-06-24: logged **E7** (distribute the factory itself as an installable CLI + factory
+> self-release CI pipeline) — any user can `pip install git+<url>` and get a `tbf` binary; every `v*` tag
+> on this repo triggers a GitHub Actions workflow that publishes a new GitHub Release.
 
 ---
 
@@ -58,13 +62,16 @@ E1 ✅ Nexus auto-dispatches Executor (one ticket)   — DONE (v0.17.0 / ADR 001
       └─► E2 ✅ Close the loop to main (auto-approved PR + merge)  — DONE (v0.18.0 / ADR 0018)
               └─► E3 ✅ Cyclical multi-ticket orchestration (all tasks, each building on the last)  — DONE (v0.19.0 / ADR 0019)
                       ├─► E4 ✅ DevOps deploy-scaffolding (--scaffold-deploy)  — DONE (v0.20.0 / ADR 0020)
-                      │       └─► E6 ⬜ Autonomous release-tagging (--release; nexus tags main → triggers the E4 workflow)  — PLANNED
+                      │       └─► E6 ✅ Autonomous release-tagging (--release; nexus tags main → triggers the E4 workflow)  — DONE (v0.23.0 / ADR 0023)
                       └─► E5 ✅ Application-wide FinOps budget (one money ceiling, remaining threaded per ticket)  — DONE (v0.22.0 / ADR 0022)
+
+E7 ⬜ Distribute the factory as an installable CLI + factory self-release CI pipeline   — OPEN
 ```
 
 E3 depends on E2 for a hard structural reason (see E3): each ticket clones `main` **fresh**, so TASK-02 only
 sees TASK-01 if TASK-01 has already been merged to `main`. E4 and E5 both build on E3's batch loop and are
-independent of each other.
+independent of each other. E6 builds on E4 (a tag-triggered workflow must already exist on `main` for the
+pushed tag to do anything) + E3's batch-completion point, and is independent of E5.
 
 ---
 
@@ -290,7 +297,7 @@ runs against the remaining unused budget; the batch halts cleanly with an incide
 exhausted, and `--resume` continues with the correct remaining total. A batch can no longer overspend `N×`
 the intended ceiling.
 
-## E6. [⬜ PLANNED] Autonomous release-tagging (`--release`) — close the loop to a published artifact
+## E6. [✅ DONE — v0.23.0 / ADR 0023] Autonomous release-tagging (`--release`) — close the loop to a published artifact
 
 **Goal:** make the final step of the autonomy loop — cutting the release — agent-driven too. Behind an
 opt-in `--release` flag, after a batch has merged every ticket (and optionally scaffolded deploy), the
@@ -339,6 +346,190 @@ the release workflow running automatically (no manual tag); the version is the r
 `v0.1.0` greenfield); `--release` is off by default; re-runs/`--resume` neither duplicate nor collide a tag.
 Likely warrants an ADR (new FSM terminal action).
 
+## E7. [⬜ OPEN] Distribute the factory as an installable CLI + factory self-release CI pipeline
+
+**Goal:** two complementary deliverables that make the factory a first-class distributable tool:
+
+1. **`pyproject.toml` + `tbf` entry-point** — any user runs `pip install git+<url>` and gets a `tbf`
+   command available on their PATH, exactly like any other Python CLI tool. No manual `python main.py`
+   invocations, no repo clone required to *use* (as opposed to develop) the factory.
+
+2. **Factory self-release workflow** — every `v*` tag pushed to *this* repo triggers a GitHub Actions
+   workflow (`.github/workflows/release-factory.yml`) that builds a wheel + sdist and publishes a GitHub
+   Release with those artifacts attached. Combined with E6's `--release` flag (which tags *generated*
+   apps), operators can now also release the factory itself with a single tag push.
+
+> **Scope note:** E6's `--release` pushes tags on the *generated application's* repo. E7 is about
+> releasing the *factory engine* itself. They are independent and compose: a factory release (E7) ships a
+> new `tbf` version; running `tbf --release` on a project (E6) cuts a release of the app the factory built.
+
+**Current state:**
+- Entry-point is `python main.py` (a raw script, not an installed package). Any user wanting to run the
+  factory must clone this repo and call the file directly — not portable.
+- No `pyproject.toml` exists. `requirements.txt` lists deps but there is no package metadata, no
+  `[project.scripts]`, no `pip install`-able wheel.
+- No CI release workflow for the factory itself. Releases are manual (`CHANGELOG.md` updated by hand;
+  no artifact attached to GitHub Releases).
+- The factory already USES `--release` for generated apps (E6); the factory's own versioning is
+  entirely manual today.
+
+**Design:**
+
+### Part A — `pyproject.toml` + entry-point
+
+Add `pyproject.toml` at the repo root (alongside `requirements.txt`):
+
+```toml
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "token-burners-factory"
+version = "0.1.0"                        # bump manually or derive via setuptools-scm
+description = "Agentic SDLC pipeline — idea → working app on main"
+requires-python = ">=3.12"
+dependencies = [
+    "instructor>=1.15.1",
+    "google-genai>=2.6.0",
+    "pydantic>=2.5",
+    "jsonref",
+    "PyYAML>=6.0",
+    "bandit>=1.9.4",
+]
+
+[project.scripts]
+tbf = "src.nexus.runner:_cli_main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*", "prompts*"]
+```
+
+Add a thin `_cli_main()` shim in `src/nexus/runner.py` (the same pattern already in `main.py`):
+
+```python
+def _cli_main():
+    import asyncio, sys
+    try:
+        asyncio.run(main())
+    except PipelineHalt:
+        sys.exit(1)
+```
+
+The `prompts/` directory must be included in the package (it is loaded at runtime via relative paths).
+Verify `src/shared/core/prompts.py` resolves `prompts/` relative to the installed package root, not
+`__file__` (use `importlib.resources` or `Path(__file__).parent` anchored correctly).
+
+### Part B — Factory self-release GitHub Actions workflow
+
+Add `.github/workflows/release-factory.yml`:
+
+```yaml
+name: Release factory
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # needed to create GitHub Release + upload assets
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0       # full history so setuptools-scm can derive version
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build wheel + sdist
+        run: python -m build
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true   # auto-fills body from commits since last tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+This workflow requires **no extra secrets** — `GITHUB_TOKEN` is provided automatically by Actions.
+`generate_release_notes: true` auto-generates the changelog body from commits since the previous tag.
+
+### Part C — User onboarding checklist (README update)
+
+The README and/or a `docs/guides/install.md` must document the full prerequisites for a new user:
+
+```
+Prerequisites (one-time setup):
+  1. Python 3.12+
+  2. pip install git+https://github.com/<org>/token-burners-factory.git
+     → installs the `tbf` CLI
+  3. npm install -g @anthropic-ai/claude-code   # Developer agent
+  4. Install gh CLI  (https://cli.github.com)
+  5. Install Docker Desktop (or docker-ce on Linux)
+  6. git clone https://github.com/<org>/token-burners-factory.git tbf-src
+     cd tbf-src && bash scripts/build_sandbox_images.sh   # ~5 min, once per machine
+
+Environment variables (export or .env):
+  GEMINI_API_KEY=...              # required always
+  GITHUB_TOKEN=...                # required for --auto-merge / --auto-execute
+  GITHUB_REVIEWER_TOKEN=...       # optional: enables real PR approval; without it,
+                                  # --admin merge is used (no second approver required)
+
+Usage:
+  tbf --idea "a REST API in Go" --repo https://github.com/<org>/<new-repo> \
+      --auto-execute --auto-merge --scaffold-deploy --release --budget 5
+```
+
+**Note on two API keys:** the factory uses *two* LLM providers. Gemini (`GEMINI_API_KEY`) powers all
+structured agents (SA, PO, TPM, TechLead, QA, Reviewer, Arbiter, DevOps, TechWriter). Claude
+(`claude` CLI, authenticated separately via `claude auth login`) powers the Developer agent. Both must
+be configured for a full `--auto-execute` run.
+
+**Note on Docker images:** the sandbox images must be built locally on every machine where the factory
+runs. They are not pushed to a registry — they embed the build/test toolchains for each supported
+language (Python, Go, Node, .NET) plus the offline Semgrep SAST rules. `scripts/build_sandbox_images.sh`
+must be re-run after any `docker/*.Dockerfile` change. (~5 min on first run, < 1 min on rebuilds with
+layer cache.)
+
+**Dependencies:** none — E7 is independent of all prior epics. It packages what already exists.
+
+**Risks / open questions:**
+- **`prompts/` path resolution:** the prompts directory is loaded at runtime; confirm the path anchor
+  (`Path(__file__).parent.parent...`) resolves correctly from an installed wheel (site-packages) vs a dev
+  clone. May need `importlib.resources` or a `MANIFEST.in` / `package_data` include.
+- **`bandit` as a runtime dep:** `bandit` is an installed CLI tool used by `check_environment()` as a
+  subprocess; listing it in `[project.dependencies]` installs it via pip but does not guarantee it lands
+  on PATH in all environments. Add a startup check that gives a clear message if `bandit` is not found.
+- **Version source:** `version = "0.1.0"` is hardcoded; consider `setuptools-scm` to derive version from
+  git tags automatically (then the `pyproject.toml` version always matches the pushed `v*` tag with no
+  manual edit). Adds a build dependency but removes version drift risk.
+- **PyPI vs GitHub Releases only:** GitHub Releases with wheel/sdist attached is sufficient for `pip
+  install git+...` and direct download. A future step could add `twine upload` to publish to PyPI for
+  `pip install token-burners-factory` (no git required). Not in scope for E7.
+
+**Acceptance:**
+- `pip install git+https://github.com/<org>/token-burners-factory.git` succeeds on a clean Python 3.12
+  environment and places `tbf` on PATH.
+- `tbf --help` prints the same output as `python main.py --help`.
+- `tbf --idea "..." --repo ...` runs an end-to-end pipeline identically to the current `python main.py`
+  invocation.
+- A `git push origin v0.X.Y` on this repo triggers `.github/workflows/release-factory.yml`, which builds
+  `dist/*.whl` + `dist/*.tar.gz` and attaches them to a new GitHub Release automatically.
+- The README (or `docs/guides/install.md`) contains the complete user prerequisite checklist including
+  both API keys, Docker, `scripts/build_sandbox_images.sh`, and usage examples.
+
 ---
 
 # Part II — Defects & Refinements
@@ -352,66 +543,6 @@ execution and SAST both stay `--network none` (SAST runs fully offline — its r
 the image), so only restore keeps a network window.
 **Fix direction:** route restore through an egress-restricted proxy (allowlist package registries),
 or vendor dependencies offline, so no phase has unrestricted network.
-
-### Reviewer accuracy & feedback-channel routing
-
-## 11. [P1] Reviewer hallucinates production defects not present in the gate output
-**Symptom:** cycle 1 `code_quality_approved=false` + `dev_diagnostic_payload` "rename go.mod module
-from `main`, fix circular imports" — none of which exist (`go.mod` is `github.com/godeltech/jsonconv`,
-imports are correct). Burned a Developer reroute on a phantom; the real fault was entirely in the test
-file.
-**Fix direction:** constrain the Reviewer prompt so `code_quality_approved=false` / `dev_diagnostic_payload`
-must cite a verbatim line from the actual gate output (build/test/SAST), not inferred structure; when
-the only failing file refs are test files, the production verdict must default to approved. (Partially
-mitigated: `reviewer.md` now routes test-only import/linkage failures to the QA channel and forbids
-flagging legacy code — but verbatim-citation is still not enforced.)
-
-## 17. [P1] Reviewer can reject without guidance — silent retry-budget burn
-**Symptom:** the Reviewer sets `code_quality_approved=false` (or `test_integrity_approved=false`) while
-leaving the matching payload `""`. Routing at [runner.py:1089-1092](../src/nexus/runner.py#L1089-L1092)
-copies the empty trace; the agent re-runs next cycle with zero guidance, reproduces the same output, and
-the loop burns all `max_retries` cycles until aborting "Retries exhausted."
-**Cause:** no model/code invariant ties an approval to a non-empty payload. The deadlock guard
-([runner.py:1070](../src/nexus/runner.py#L1070)) only catches `gate_failed ∧ approved_both`, never
-`not approved ∧ empty payload`. Payload defaults are `""` ([models.py:244-245](../src/shared/core/models.py)).
-**Fix direction:** add a `ReviewReport` model validator — `not code_quality_approved ⇒ dev_diagnostic_payload != ""`
-and the QA analog — so a guidance-less rejection fails fast with a debuggable validation error instead of
-silently wasting the budget.
-
-## 18. [P2] Feedback-channel isolation is enforced only by prompt, not by code
-**Symptom:** `reviewer.md` mandates "never duplicate an instruction across both channels," but
-[runner.py:1091-1092](../src/nexus/runner.py#L1091-L1092) copies BOTH `dev_diagnostic_payload` and
-`qa_diagnostic_payload` unconditionally. If the Reviewer LLM populates both (or the wrong one), the
-Developer and QA both act next cycle and can fight (dev edits production while QA expects a test fix).
-**Cause:** the transport is isolated (`error_trace` vs `qa_error_trace`, reset each cycle at
-[runner.py:816-817](../src/nexus/runner.py#L816-L817)), but *which* channel the Reviewer fills is an
-LLM-trust invariant with no code guard.
-**Fix direction:** validate routing coherence — e.g. a payload may be non-empty only when its own
-approval is false (pairs naturally with #17), and log/incident when both are populated in one report.
-
-## 25. [P2] Arbiter `developer`/`qa` routes are advisory — they don't change control flow
-**Context:** the Arbiter (ADR [0016](decisions/0016-arbiter-contract-self-healing.md), added to the FSM at
-[runner.py](../src/nexus/runner.py) in the `if not all_gates_passed:` block) returns
-`ArbiterVerdict.route ∈ {developer, qa, contract, halt}`. Only `contract` (re-derive the TechLead spec)
-and `halt` (abort) actually alter control flow. For `developer`/`qa` the code **falls through to the
-existing isolated-channel routing** — i.e. the next cycle is driven by the Reviewer's
-`dev_diagnostic_payload`/`qa_diagnostic_payload`, NOT by the Arbiter's verdict.
-**Symptom (observed):** in the TASK-03 run `005_exec_TASK-03_…`, the Arbiter fired once on cycle 2,
-correctly diagnosed a **test defect** (`route=qa`, `root_cause_class=test_bug` — a test mocked `json.load`
-while the production code streamed via `ijson`, so the mock was inert and the test ran an empty file), then
-fell through. The recovery on cycle 3 was driven entirely by the Reviewer's channels + `regenerate_tests`;
-the Arbiter's (correct) verdict cost one Gemini call (~$0.013) but changed nothing. So today the Arbiter
-only "earns its cost" on `contract`/`halt`.
-**Why it matters:** the most valuable thing a `developer`/`qa` verdict could do is **override a Reviewer
-misroute**. Channel-isolation is the classic deadlock (see #18): the Reviewer can fill the wrong channel
-(test fix written into `dev_diagnostic_payload`, or vice versa), and since the Developer can't touch tests
-and QA can't touch production code, the run loops to the breaker. The Arbiter already has the diagnosis
-needed to fix this.
-**Fix direction:** make `developer`/`qa` routes authoritative. When the Arbiter's `route` disagrees with
-which Reviewer payload is populated, re-route: move the fix text into the channel the Arbiter chose
-(`ctx.error_trace` for `developer`, `ctx.qa_error_trace` for `qa`) and clear the other, instead of copying
-both payloads verbatim. Pairs naturally with #17/#18 (payload-coherence validation). Keep the fall-through
-only when the Arbiter agrees with the Reviewer's routing.
 
 ### Contract / topology integrity (Nexus → Executor)
 
@@ -564,3 +695,30 @@ high effort.
 (Architect/TechLead/Reviewer/Arbiter) run high-effort; the level is recorded per agent; an A/B comparison
 across two re-runs is capturable for the cost report. (Surfaced from the Cyberthone 2026 dimension-7 prep;
 see [docs/hackathon/agentic-sdlc-specification-v1.md](hackathon/agentic-sdlc-specification-v1.md) §7.)
+
+### Performance / wall-clock
+
+## 29. [P2] SAST/semgrep is the dominant infra time sink (~130s/cycle) — narrow ruleset + exclude build output
+**Why:** the SAST scan (`SAST_CMD = "semgrep scan --error --metrics off --config /opt/semgrep-rules /workspace"`,
+[environments.py](../src/shared/core/environments.py)) runs once per FSM cycle and measured ~130s/run on a
+tiny .NET CLI (audit log, run 003) — the single largest *infra* (non-LLM) sink, compounded by cycle count.
+It was invisible until the wall-clock telemetry surfaced it (the FinOps TOTAL had counted LLM time only; the
+`by_phase` accumulator in [models.py](../src/shared/core/models.py) `PipelineTelemetry` now times it as the
+`qa+sast` phase).
+**Current state:** the scan walks the whole `/workspace` (post-build, so `obj/`/`bin/` with generated
+`AssemblyInfo.cs` + DLLs are present) and loads the FULL vendored ruleset (`/opt/semgrep-rules`) regardless
+of the ticket's language. For a 2-file project, rule-load + scanning build artifacts dominates the wall.
+**Fix direction (behind a measurement spike — security-sensitive, keep coverage):**
+1. Exclude build output / VCS dirs (`--exclude obj --exclude bin --exclude .git`, or a vendored
+   `.semgrepignore`) so semgrep never walks generated/compiled files.
+2. Scope the ruleset to the ticket's language (select the `/opt/semgrep-rules/<lang>` subset keyed off the
+   env's `language_id`) instead of loading every rule for every stack.
+3. Raise scan parallelism if still CPU-bound after (1)/(2) — `--jobs` tied to the sandbox CPU cap
+   (`SANDBOX_CPUS`, env-overridable since the wall-clock work; default 4).
+**Guardrails:** preserve the offline `--network none` + vendored-rules posture (`--config auto` is forbidden
+behind the corporate TLS proxy — see [deploy-scaffolding-and-ci-parity](../.claude/rules/deploy-scaffolding-and-ci-parity.md)
+and [qa-sandbox-hardening](../.claude/rules/qa-sandbox-hardening.md)), `--error` (findings -> non-zero gate),
+and zero-finding coverage parity — prove with a before/after on a repo with a planted finding. Quantify the
+win via the `by_phase` telemetry (`qa+sast`). Distinct from #28 (model routing).
+**Acceptance:** the `qa+sast` infra phase drops materially with no loss of true-positive coverage; the scan
+still runs fully offline and fails on a planted finding.

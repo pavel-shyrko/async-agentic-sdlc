@@ -33,6 +33,8 @@ Relevant contract function signatures (test only what belongs to `{module_ref}`)
 {function_signatures}
 
 ## Test Generation Strategy (MANDATORY)
+**AUTHORITATIVE EXAMPLES FIRST:** When an `=== ACCEPTANCE EXAMPLES (authoritative expected behavior) ===` block is present, those cases are the ORACLE. Emit one assertion per example using its `expected`/`raises` VERBATIM — never alter, soften, or re-guess a pinned expected value (it is the contract's ground truth; a test that contradicts it will be routed as a production bug, not yours to "fix" by changing the assertion). THEN expand beyond them — the examples are a floor, not the whole suite.
+
 Do NOT settle for one assertion per behavior. Aggressively expand the input matrix using Boundary Value Analysis (BVA) and equivalence partitioning — even when the contract specification is terse, infer plausible valid and invalid inputs directly from the function signatures and types. A thin suite is a failing suite.
 
 - Drive every behavior from an explicit data table (a list of input/expected tuples) iterated in a loop. Isolate each iteration so every case is reported and isolated independently (use the test framework's per-case subtest mechanism). Prefer one parametrized loop over many near-duplicate test methods.

@@ -33,7 +33,7 @@ Full docs live under **[docs/](./docs/README.md)** (start there). Highlights:
 
 * **[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)** — C4 diagrams (System Context, Containers, Executor FSM) + end-to-end sequence, in Mermaid.
 * **[docs/guides/](./docs/guides/setup.md)** — environment setup (WSL2, Docker, venv, Gemini key).
-* **[docs/decisions/](./docs/decisions/README.md)** — the ADR log (0000–0021), indexed by theme.
+* **[docs/decisions/](./docs/decisions/README.md)** — the ADR log (0000–0024), indexed by theme.
 * **[CHANGELOG.md](./CHANGELOG.md)** · **[PRACTICUM.md](./PRACTICUM.md)** · **[docs/BACKLOG.md](./docs/BACKLOG.md)** — release history, distilled lessons, open work.
 
 ---
@@ -51,7 +51,7 @@ As determined during the initial research phase, this project intentionally reje
 5. **Git-Anchored Sessions**: Each executor run shallow-clones the target repository into an isolated session directory (`runs/<project>/<NNN>_exec_<ticket>_<ts>_<uid>/repo/`), checks out a `feat/ticket-<ticket>` branch, and treats the single clone's `.git` as the transactional Unit-of-Work. Snapshots use the index diff (`git add -A` → `git diff --cached <base_branch> --name-only`), giving a strict causal delta — including untracked files — while protecting context windows from binary pollution and retry bleed. On full success the orchestrator makes one atomic `feat(<ticket>): …` commit (opt-in `--push`); with `--auto-merge` it then opens, approves, and squash-merges a PR from `feat/ticket-<id>` into `base_branch` — closing the loop to `main` through a provider-agnostic `gh`-backed forge seam ([ADR 0018](./docs/decisions/0018-auto-merge-pr-loop-closure.md)). `--auto-execute` repeats this for **every** planned ticket in TPM order (`run_batch`, each ticket building on the previously-merged `main`), with a resumable `batch_state.json` checkpoint and a catchable `PipelineHalt` so a mid-batch failure stops cleanly and `--resume` continues ([ADR 0019](./docs/decisions/0019-cyclical-multi-ticket-orchestration.md)). With `--scaffold-deploy`, once the whole batch has merged a **DevOps** agent generates and merges the app's CI/CD config (an archetype-aware Dockerfile + GitHub Actions deploy workflow, Cloud Run via Workload Identity Federation) through the same forge flow — making the finished app deployable ([ADR 0020](./docs/decisions/0020-deploy-scaffolding-and-lint-gate.md)).
 6. **Brownfield & Multi-File Support**: The pipeline operates on any external repository via `--repo` and `--ticket`, with `--base-branch` as the diff anchor. Source layout is no longer pinned by CLI flags — the SA/blueprint topology decides source paths (the Developer writes by the contract's full repo-relative paths) and the QA language profile owns test placement. A generated repository topology map is injected into the TechLead and QA contexts so new files land inside existing packages rather than redundant root-level directories, and the TechLead's first `domain_tags` entry declares the target language, dynamically routing stack-specific skill files to the execution agents. QA test generation fans out concurrently via `asyncio.gather` — one isolated test file per production module — bypassing LLM output token ceilings, and returns each complete test file (whole-file assembly, preserving still-valid cases) rather than blind-overwriting the suite.
 7. **Fast-Fail Documentation Guardrail**: A deterministic, zero-LLM-cost middleware runs right after the Developer phase: every newly-created file outside the architecture contract must open with a comment-block justification (language-agnostic lexical check over the first 15 lines). A miss triggers a "free reroute" back to the Developer — bypassing the expensive Reviewer/QA nodes without spending the functional circuit-breaker retry budget. After 2 failed reroutes the engine performs a deterministic Hard Halt, dumping the full FSM state to that run's `reports/incident_report.json` (under `runs/<project>/<NNN>_<plane>_<label>_<ts>_<uid>/`) and exiting safely.
-8. **Autonomous Contract Self-Healing (Arbiter)**: When a cycle is genuinely stuck (a prior fix already failed, `attempt ≥ ARBITER_TRIGGER_ATTEMPT`), an **Arbiter** agent triages the root cause and adds a third routing target beyond the Developer/QA feedback channels — the **contract** itself. For a contract-level defect no downstream agent can fix (a contradictory algorithm, overlapping error conditions with no precedence, or a fix that would violate a stated NFR), it re-derives (amends) the TechLead contract instead of looping to the breaker; otherwise it routes back to Developer/QA or halts. Amendment is bounded conservatively: `environment_id` is pinned (the platform never thrashes), `MAX_CONTRACT_AMENDMENTS` (default 1) caps rewrites, and each amendment grants a bounded retry-budget bonus (`ARBITER_AMENDMENT_RETRY_BONUS`) over the env-tunable `PIPELINE_MAX_RETRIES` ceiling (the Financial Circuit Breaker remains the absolute bound). See [ADR 0016](./docs/decisions/0016-arbiter-contract-self-healing.md). Separately, Gemini content-filter blocks (`RECITATION` et al.) are treated as deterministic — fail-fast instead of burning the backoff budget, with one paraphrase-guarded retry for `RECITATION` — and the engine injects canonical baseline files (`LICENSE`/`.gitignore`) into `TASK-01` so the model never reproduces training-data boilerplate that trips the filter.
+8. **Autonomous Contract Self-Healing (Arbiter)**: When a cycle is genuinely stuck (a prior fix already failed, `attempt ≥ ARBITER_TRIGGER_ATTEMPT`), an **Arbiter** agent triages the root cause and adds a third routing target beyond the Developer/QA feedback channels — the **contract** itself. For a contract-level defect no downstream agent can fix (a contradictory algorithm, overlapping error conditions with no precedence, or a fix that would violate a stated NFR), it re-derives (amends) the TechLead contract instead of looping to the breaker; otherwise it routes back to Developer/QA or halts. Amendment is bounded conservatively: `environment_id` is pinned (the platform never thrashes), `MAX_CONTRACT_AMENDMENTS` (default 1) caps rewrites, and each amendment grants a bounded retry-budget bonus (`ARBITER_AMENDMENT_RETRY_BONUS`) over the env-tunable `PIPELINE_MAX_RETRIES` ceiling (the Financial Circuit Breaker remains the absolute bound). See [ADR 0016](./docs/decisions/0016-arbiter-contract-self-healing.md). Feedback routing is itself code-enforced ([ADR 0024](./docs/decisions/0024-routing-coherence-reconciler.md)): the Reviewer's two diagnostic channels are coherence-validated (`reconcile_feedback_routing` + a `ReviewReport` biconditional validator — a payload only on a rejected side, and a production rejection only with verbatim `dev_evidence_citation`), and the Arbiter's `developer`/`qa` verdict is authoritative, overriding a Reviewer misroute instead of merely advising. Separately, Gemini content-filter blocks (`RECITATION` et al.) are treated as deterministic — fail-fast instead of burning the backoff budget, with one paraphrase-guarded retry for `RECITATION` — and the engine injects canonical baseline files (`LICENSE`/`.gitignore`) into `TASK-01` so the model never reproduces training-data boilerplate that trips the filter.
 
 ---
 
@@ -63,7 +63,7 @@ This repository is strictly organized to provide 100% traceability for evaluatio
 token-burners-factory/
 ├── src/                        # Source code, split into 3 physical planes (control / worker / infra) + shared
 │   ├── nexus/                  # Control Plane — orchestration + FSM + planning
-│   │   ├── runner.py           # main() dispatcher + run_executor FSM + run_batch (E3); resume routing, --auto-execute/--scaffold-deploy bridges
+│   │   ├── runner.py           # main() dispatcher + run_executor FSM + run_batch (E3); resume routing, --auto-execute/--scaffold-deploy/--release bridges
 │   │   ├── nexus_runner.py     # run_nexus (idea→epic→blueprint→tickets); state.py = NexusState checkpoint
 │   │   └── agents/             # Planning agents: po.py / sa.py / tpm.py
 │   ├── development/            # Worker Plane — code generation + quality gates
@@ -102,9 +102,9 @@ token-burners-factory/
 │   ├── README.md               # Docs index / front door (navigation table)
 │   ├── ARCHITECTURE.md         # C4 diagrams: context / container / executor-FSM (Mermaid)
 │   ├── guides/                 # setup.md · docker-on-windows.md (environment bring-up)
-│   ├── decisions/              # Architecture Decision Records (MADR) 0000–0021 + index README
+│   ├── decisions/              # Architecture Decision Records (MADR) 0000–0024 + index README
 │   ├── releases/               # Per-iteration release write-ups (iteration_NN/)
-│   └── BACKLOG.md              # Capability roadmap (E1–E5) + open defects & refinements
+│   └── BACKLOG.md              # Capability roadmap (E1–E7) + open defects & refinements
 ├── main.py                     # Root CLI entrypoint: runs src/nexus/runner.py:main()
 ├── CLAUDE.md                   # Claude Code project governance: CLI economy, dev commands, guardrails
 ├── CHANGELOG.md                # Release history (Keep a Changelog), linked to ADRs
@@ -185,6 +185,13 @@ python3 main.py --idea "CLI that converts JSON to CSV with a selectable delimite
 # workflow, GCP Cloud Run via WIF) through a chore/devops-scaffold PR. One-time org setup: docs/guides/devops_setup.md.
 python3 main.py --idea "CLI that converts JSON to CSV with a selectable delimiter" \
     --repo https://github.com/acme/widgets.git --auto-execute --scaffold-deploy
+
+# Add --release to ALSO cut the release (E6): after the batch merges (and optional --scaffold-deploy), the
+# engine pushes a v* tag — the repo's latest tag bumped (RELEASE_VERSION_BUMP, default minor; v0.1.0
+# greenfield) — which trips the tag-gated deploy/release workflow. Idea in → released artifact out, no
+# manual tag. The engine pushes only the tag; the user's Actions runs the publish. Off by default.
+python3 main.py --idea "CLI that converts JSON to CSV with a selectable delimiter" \
+    --repo https://github.com/acme/widgets.git --auto-execute --scaffold-deploy --release
 
 # A mid-batch halt stops cleanly (per-ticket incident + a batch_state.json checkpoint); resume the batch
 # from the failed ticket — already-merged tickets are skipped — with a bare project slug:

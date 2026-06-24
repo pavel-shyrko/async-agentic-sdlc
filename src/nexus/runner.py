@@ -2,6 +2,7 @@ import os
 import re
 import sys
 import json
+import time
 import uuid
 import argparse
 import asyncio
@@ -16,11 +17,11 @@ from src.shared.core.observability import log, reconfigure_logging
 from src.shared.core.observability import log_finops_summary as _render_finops_summary
 from src.shared.core.config import (
     check_environment, PIPELINE_APP_BUDGET_USD, PIPELINE_APP_BUDGET_FLOOR_USD,
-    EFFECTIVE_BUDGET_USD, effective_budget_usd,
+    EFFECTIVE_BUDGET_USD, effective_budget_usd, RELEASE_VERSION_BUMP,
 )
 from src.shared.core.models import GlobalPipelineContext, WorkspacePaths, RUNS_BASE, BatchState, PipelineTelemetry
 from src.shared.core.runs import Projects
-from src.shared.core.environments import is_test_file, get_qa_profile
+from src.shared.core.environments import is_test_file, get_qa_profile, failure_origin_markers, all_comment_prefixes
 from src.shared.core.prompts import generate_repo_map
 from src.shared.utils.git_helpers import get_git_root, get_pipeline_snapshot_files
 from src.shared.utils.redaction import redact
@@ -67,6 +68,7 @@ class RunConfig:
     auto_execute: bool = False  # --idea --auto-execute: after planning, run the Executor for the first ticket
     auto_merge: bool = False  # --auto-merge: on success, open a PR into base_branch and squash-merge it (E2; implies push)
     scaffold_deploy: bool = False  # --scaffold-deploy: after a batch merges all tickets, generate + merge deploy manifests (E4)
+    release: bool = False  # --release: after a batch merges all tickets (+ optional scaffold), push a v* release tag (E6)
     budget_usd: Decimal | None = None  # --budget: app-wide money ceiling override for this invocation (E5); None → PIPELINE_APP_BUDGET_USD
 
 
@@ -105,16 +107,24 @@ def parse_args() -> RunConfig:
                              "Actions deploy workflow (GCP Cloud Run via WIF) for the finished app (E4). "
                              "Consumed only by the --auto-execute batch (or its --resume); requires the gh "
                              "CLI + GITHUB_TOKEN.")
+    parser.add_argument("--release", action="store_true",
+                        help="After the batch merges ALL tickets (and optional --scaffold-deploy), push a "
+                             "v* release tag — the repo's latest tag bumped (RELEASE_VERSION_BUMP, default "
+                             "minor; v0.1.0 greenfield) — to trigger the deploy/release workflow (E6). "
+                             "Opt-in; consumed only by the --auto-execute batch (or its --resume); reuses "
+                             "the batch's git push credentials.")
 
     args = parser.parse_args()
 
     # --auto-merge needs the branch on origin before a PR can reference it, so it implies --push.
     push = args.push or args.auto_merge
 
-    # --scaffold-deploy is consumed ONLY by the post-batch terminal phase (run_batch). On any non-batch
-    # invocation it is inert — warn rather than silently ignore it.
-    if args.scaffold_deploy and not (args.auto_execute or args.resume):
-        log.warning("⚠️  --scaffold-deploy is consumed only by the --auto-execute batch (or its --resume); "
+    # --scaffold-deploy and --release are consumed ONLY by the post-batch terminal phase (run_batch). On any
+    # non-batch invocation they are inert — warn rather than silently ignore them.
+    if (args.scaffold_deploy or args.release) and not (args.auto_execute or args.resume):
+        flags = " / ".join(f for f, on in (("--scaffold-deploy", args.scaffold_deploy),
+                                           ("--release", args.release)) if on)
+        log.warning(f"⚠️  {flags} is consumed only by the --auto-execute batch (or its --resume); "
                     "it has no effect on this invocation.")
 
     # Nexus Control Plane: an idea starts a new project (planning run). --repo (optional) is captured
@@ -127,7 +137,8 @@ def parse_args() -> RunConfig:
         return RunConfig(
             description=None, base_branch=args.base_branch, resume=None, reset_attempts=False,
             idea=args.idea, repo=args.repo, push=(push or auto_merge), auto_execute=args.auto_execute,
-            auto_merge=auto_merge, scaffold_deploy=args.scaffold_deploy, budget_usd=args.budget,
+            auto_merge=auto_merge, scaffold_deploy=args.scaffold_deploy, release=args.release,
+            budget_usd=args.budget,
         )
 
     # Execute a ticket under an existing project: --run <project> -f <ticket>.
@@ -154,7 +165,7 @@ def parse_args() -> RunConfig:
             description=None, base_branch=args.base_branch, resume=None,
             reset_attempts=args.reset_attempts, push=push, auto_merge=args.auto_merge,
             resume_project=first, resume_number=(args.resume[1] if len(args.resume) > 1 else None),
-            scaffold_deploy=args.scaffold_deploy, budget_usd=args.budget,
+            scaffold_deploy=args.scaffold_deploy, release=args.release, budget_usd=args.budget,
         )
 
     # Fresh DIRECT run: a target repo and ticket are mandatory for git-anchored bootstrapping.
@@ -349,6 +360,82 @@ async def finalize_pr(ctx: GlobalPipelineContext, cfg: RunConfig, head_branch: s
     await approve_pr(repo_dir, pr)        # best-effort; needs a separate GITHUB_REVIEWER_TOKEN
     await merge_pr(repo_dir, pr)
     log.info(f"✅ Closed the loop: {head_branch} squash-merged into {cfg.base_branch}.")
+
+
+# ==========================================
+# E6 — AUTONOMOUS RELEASE TAGGING (--release)
+# ==========================================
+_SEMVER_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")  # strict vMAJOR.MINOR.PATCH; pre-release/metadata ignored
+
+
+def compute_next_tag(existing_tags: list[str], bump: str = RELEASE_VERSION_BUMP) -> str:
+    """Resolve the next ``v*`` release tag from a repo's existing tags — repo-derived, never invented.
+
+    Parses the strict ``vMAJOR.MINOR.PATCH`` tags (anything else — ``v1.2``, ``latest``, a pre-release
+    ``v1.0.0-rc1`` — is ignored), takes the highest, and bumps it by ``bump`` (``major|minor|patch``;
+    an unrecognized value falls back to ``minor``). A repo with no conforming tag is greenfield → ``v0.1.0``
+    (the bump level does not apply to the very first release). Pure + deterministic, so independent builds
+    never collide and a ``--resume`` re-derives the identical value.
+    """
+    parsed = [
+        (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        for m in (_SEMVER_TAG_RE.match(t.strip()) for t in existing_tags) if m
+    ]
+    if not parsed:
+        return "v0.1.0"
+    major, minor, patch = max(parsed)
+    level = (bump or "minor").lower()
+    if level == "major":
+        major, minor, patch = major + 1, 0, 0
+    elif level == "patch":
+        patch += 1
+    else:  # "minor" — the default, and the fallback for an unrecognized RELEASE_VERSION_BUMP
+        minor, patch = minor + 1, 0
+    return f"v{major}.{minor}.{patch}"
+
+
+async def finalize_release(projects: Projects, project, cfg: RunConfig, nexus_run_dir: Path,
+                           batch: BatchState) -> None:
+    """E6: after a batch merges every ticket, push a ``v*`` tag to trigger the deploy/release workflow.
+
+    The final step of the autonomy loop (``--release``). Resolves the next version from the target repo's
+    existing tags (``compute_next_tag``), clones the base branch FRESH onto a throwaway local branch, and
+    pushes an annotated tag at the base-branch tip via the shared forge seam — the user's Actions then runs
+    the actual publish (the engine never holds cloud creds; it only pushes the tag).
+
+    Idempotent: a ``batch.released_tag`` set by a prior run short-circuits this (the marker is persisted by
+    ``run_batch``'s ``finally``), and ``push_tag`` itself treats an already-present remote tag as success —
+    so re-runs / ``--resume`` neither duplicate nor collide a tag. Best-effort: a failed push logs and
+    returns (the merged application on the base branch is unaffected) rather than crashing a successful build.
+    Decoupled from ``--scaffold-deploy``: if no tag-triggered workflow exists on the base branch the tag is
+    simply inert (an acceptable no-op)."""
+    from src.shared.utils.forge import list_remote_tags, push_tag
+    if batch.released_tag:
+        log.info(f"🏷️  [E6] Release already cut for this batch ({batch.released_tag}) — skipping (idempotent).")
+        return
+
+    cfg.repo = cfg.repo or project.repo
+    cfg.base_branch = project.base_branch
+    cfg.ticket = "release"
+    run_dir = projects.allocate(project.slug, "release", "tag")
+    reconfigure_logging(run_dir / "logs")
+    log.info(f"🚀 [E6] Release-tagging for project '{project.slug}' → {run_dir.name}.")
+
+    # The throwaway "chore/release-tag" branch is never pushed; bootstrap_session fetches a LOCAL ref for
+    # the base branch (origin/<base> tip), which is the commit the tag points at.
+    ws = await bootstrap_session(cfg, run_dir, branch="chore/release-tag")
+    existing = await list_remote_tags(ws.repo_dir)
+    tag = compute_next_tag(existing, RELEASE_VERSION_BUMP)
+    log.info(f"🏷️  [E6] Resolved next release tag {tag} (from {len(existing)} existing tag(s), "
+             f"bump={RELEASE_VERSION_BUMP}).")
+
+    if await push_tag(ws.repo_dir, tag, ref=cfg.base_branch, message=f"Release {tag}"):
+        batch.released_tag = tag  # persisted by run_batch's finally; the idempotent guard for a --resume
+        log.info(f"🏁 [E6] Released {tag} on {cfg.base_branch}. A tag-triggered workflow (e.g. from "
+                 f"--scaffold-deploy) is now running the publish; if none exists the tag is inert.")
+    else:
+        log.error(f"🚨 [E6] Release tag {tag} did not land — the merged app on {cfg.base_branch} is "
+                  f"unaffected. Push it manually, or re-run `--resume {project.slug} --release`.")
 
 
 # ==========================================
@@ -558,31 +645,22 @@ def lint_test_suite_consistency(test_snapshot: str, function_signatures: str) ->
 # ==========================================
 FEEDBACK_TAIL_LINES = 50        # budget for runner lines fed forward to the Reviewer (context pruning)
 FEEDBACK_MAX_CHARS = 8000       # hard cap on any failure text injected into an agent prompt
-# Lead-ins that mark the ORIGIN of a failure. The root ImportError/Traceback can sit far above the
-# final summary, so a plain tail slice would drop it — the extractor keeps an error-origin head too.
-_TRACEBACK_MARKERS = (
-    "Traceback (most recent call",
-    "ImportError",
-    "ModuleNotFoundError",
-    "cannot import name",
-    "ERROR:",
-    "FAILED",
-)
-
-
-def _extract_failure_context(lines: list[str], max_lines: int = FEEDBACK_TAIL_LINES) -> str:
+def _extract_failure_context(lines: list[str], environment_id: str, max_lines: int = FEEDBACK_TAIL_LINES) -> str:
     """Marker-aware slice that guarantees the root error reaches the Reviewer.
 
-    A bare tail slice can drop the root ``ImportError``/``Traceback`` when it sits above a long stack
-    or many ``_FailedTest`` entries. So when the log overflows the budget we keep BOTH an error-origin
-    head window (anchored at the first traceback/import marker) AND the final summary tail, separated
-    by a snip marker. With no marker present we fall back to a plain tail (failures live at the end).
+    A bare tail slice can drop the root error (an unresolved-import / build / runtime failure) when it sits
+    above a long stack or many failure entries. So when the log overflows the budget we keep BOTH an
+    error-origin head window (anchored at the first failure marker) AND the final summary tail, separated by
+    a snip marker. With no marker present we fall back to a plain tail (failures live at the end). The
+    failure markers are REGISTRY-DRIVEN per stack (``failure_origin_markers``) — no hardcoded Python bias —
+    so a go/node/.NET failure keeps its origin too, not just a Python traceback.
     """
     if len(lines) <= max_lines:
         return "\n".join(lines)
+    markers = failure_origin_markers(environment_id)
     half = max_lines // 2
     first = next(
-        (i for i, line in enumerate(lines) if any(m in line for m in _TRACEBACK_MARKERS)),
+        (i for i, line in enumerate(lines) if any(m in line for m in markers)),
         None,
     )
     if first is None:
@@ -600,10 +678,42 @@ def _cap_text(text: str, max_chars: int = FEEDBACK_MAX_CHARS) -> str:
     return f"{text[:half]}\n…[truncated]…\n{text[-half:]}"
 
 
-# Language-agnostic comment lead-ins. ''' is added beyond the spec list so a Python single-quote module
-# docstring (a valid justification) isn't flagged as undocumented; '<!--' covers XML-family files
-# (.csproj / .xml / .html) whose only valid comment syntax the scanner would otherwise miss.
-_COMMENT_PREFIXES = ("#", "//", "/*", "*", '"""', "'''", "<!--")
+def reconcile_feedback_routing(review_report, arbiter_verdict):
+    """Single SSOT for assigning the two isolated feedback channels (BACKLOG #18/#25).
+
+    Returns ``(dev_trace, qa_trace)``, both ``_cap_text``-capped. Language-agnostic: it operates only on
+    approval booleans and opaque diagnostic text.
+
+    * #18 coherence floor — feed a channel ONLY if its own side was rejected, so a payload that landed on
+      an approved side never drives the next cycle (the Developer and QA cannot fight over a defect-free
+      side). The model validator makes an incoherent report rare; this is the deterministic backstop.
+    * #25 Arbiter authority — when a stuck-cycle verdict routes ``developer``/``qa`` and DISAGREES with
+      which side the Reviewer rejected (a Reviewer misroute), the Arbiter wins: its reasoning plus whatever
+      fix text the Reviewer wrote is moved into the Arbiter-chosen channel and the other is cleared. On
+      AGREEMENT the coherence-floored Reviewer payloads pass through unchanged.
+    """
+    dev = review_report.dev_diagnostic_payload if not review_report.code_quality_approved else ""
+    qa = review_report.qa_diagnostic_payload if not review_report.test_integrity_approved else ""
+    if arbiter_verdict and arbiter_verdict.route in ("developer", "qa"):
+        dev_rejected = not review_report.code_quality_approved
+        qa_rejected = not review_report.test_integrity_approved
+        agrees = (
+            (arbiter_verdict.route == "developer" and dev_rejected and not qa_rejected)
+            or (arbiter_verdict.route == "qa" and qa_rejected and not dev_rejected)
+        )
+        if not agrees:
+            merged = "\n\n".join(
+                p for p in (review_report.dev_diagnostic_payload, review_report.qa_diagnostic_payload)
+                if p.strip()
+            )
+            directive = (arbiter_verdict.reasoning + ("\n\n" + merged if merged else "")).strip()
+            dev, qa = (directive, "") if arbiter_verdict.route == "developer" else ("", directive)
+    return _cap_text(dev), _cap_text(qa)
+
+
+# Registry-derived comment lead-ins — each env declares its own ``comment_prefixes``; the union
+# covers every supported stack without any hardcoded language knowledge here.
+_COMMENT_PREFIXES = all_comment_prefixes()
 _GUARDRAIL_MESSAGE = (
     "SYSTEM GUARDRAIL: File `{file_name}` was created without an architectural justification. "
     "You must add a comment block at the top of the file explaining its purpose before the system "
@@ -926,6 +1036,13 @@ async def run_batch(projects: Projects, project, cfg: RunConfig, nexus_run_dir: 
             # to the main.py guard; the outer finally below persists the app report either way.
             await run_devops_scaffold(projects, project, cfg, nexus_run_dir,
                                       budget_usd_ceiling=devops_remaining, app_telemetry=batch.app_telemetry)
+
+        # E6 — once every ticket has merged (and the optional deploy config landed above), push the release
+        # tag as the FINAL step of the autonomy loop. Gated on --release ONLY (decoupled from
+        # --scaffold-deploy): a release is "the build finished", not "we regenerated CI". No LLM spend, so no
+        # budget threading; idempotent on --resume via batch.released_tag (persisted by the finally below).
+        if cfg.release:
+            await finalize_release(projects, project, cfg, nexus_run_dir, batch)
     finally:
         # Always persist the application-wide spend + report, regardless of how the batch exits.
         batch.save_checkpoint(batch_path)
@@ -1063,6 +1180,19 @@ async def main():
     await run_executor(cfg, run_dir, resume_checkpoint, budget_usd_ceiling=cfg.budget_usd)
 
 
+async def _timed_phase(telemetry, phase: str, coro):
+    """Await ``coro`` (a non-LLM infra step — a docker gate, the SAST scan, git clone, a forge op) and
+    record its wall-clock into ``telemetry.by_phase[phase]`` (``record_phase``), so the FinOps TOTAL
+    reflects real end-to-end time — the gates/SAST/git that run BETWEEN agent calls were previously
+    untimed (the TOTAL counted LLM time only). Timing wraps the FULL call, so container startup counts;
+    the elapsed is recorded even if the step raises."""
+    t0 = time.perf_counter()
+    try:
+        return await coro
+    finally:
+        telemetry.record_phase(phase, time.perf_counter() - t0)
+
+
 async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | None = None,
                        budget_usd_ceiling: Decimal | None = None) -> GlobalPipelineContext:
     """Execute ONE ticket end-to-end in a prepared run dir: bootstrap (or resume) → TechLead → the FSM
@@ -1097,7 +1227,9 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
             ctx.current_attempt = 1
             log.info("🔄 State mutated: attempt counter reset to 1.")
     else:
-        # Bootstrap an isolated git-anchored session into the pre-bound run dir.
+        # Bootstrap an isolated git-anchored session into the pre-bound run dir. Timed manually (ctx —
+        # hence ctx.telemetry — does not exist yet) and recorded as the "git:clone" infra phase below.
+        _clone_t0 = time.perf_counter()
         paths = await bootstrap_session(cfg, run_dir)
         ctx = GlobalPipelineContext(
             pr_description=cfg.description or "",
@@ -1105,6 +1237,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
             ticket=cfg.ticket or "",
             workspace_paths=paths,
         )
+        ctx.telemetry.record_phase("git:clone", time.perf_counter() - _clone_t0)
 
         # Context routing: feed the architectural blueprint (sibling of the ticket file) into the
         # TechLead's input. TechLead is the SOLE router — it reads ticket + blueprint and distributes
@@ -1270,8 +1403,9 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
                 # Compile gate: give the Developer REAL build feedback before the expensive QA/Reviewer
                 # cycle. Build/run-only (never tests). A clean build → proceed; a failure fast-fail
                 # reroutes to the Developer (no functional-budget spent), exactly like the doc guardrail.
-                build_ok, build_lines = await run_build_gate(
-                    ctx.contract.environment_id, str(ctx.workspace_paths.repo_dir)
+                build_ok, build_lines = await _timed_phase(
+                    ctx.telemetry, "build",
+                    run_build_gate(ctx.contract.environment_id, str(ctx.workspace_paths.repo_dir)),
                 )
                 if build_ok:
                     break  # documented + compiles → proceed to gates/Reviewer
@@ -1282,8 +1416,9 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
                 # transient blip; a persistent outage fails FAST with a precise, retry-later incident.
                 if build_failure_is_environmental(ctx.contract.environment_id, build_lines):
                     log.warning("🔶 Compile gate failed on a NETWORK/restore error (not a code defect) — retrying the build once before judging.")
-                    build_ok, build_lines = await run_build_gate(
-                        ctx.contract.environment_id, str(ctx.workspace_paths.repo_dir)
+                    build_ok, build_lines = await _timed_phase(
+                        ctx.telemetry, "build",
+                        run_build_gate(ctx.contract.environment_id, str(ctx.workspace_paths.repo_dir)),
                     )
                     if build_ok:
                         break
@@ -1333,8 +1468,9 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
         #     not clearly test-only (env/network, or a production-referencing failure) falls through to
         #     the Reviewer unchanged, so real production bugs are never misrouted to QA.
         for qa_gate_retries in range(QA_GATE_MAX_REROUTES + 1):
-            tc_ok, tc_lines = await run_test_compile_gate(
-                ctx.contract.environment_id, str(ctx.workspace_paths.repo_dir)
+            tc_ok, tc_lines = await _timed_phase(
+                ctx.telemetry, "test-compile",
+                run_test_compile_gate(ctx.contract.environment_id, str(ctx.workspace_paths.repo_dir)),
             )
             if tc_ok:
                 break
@@ -1375,9 +1511,13 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
         lint_test_findings: list[str] = []
         prev_lint_findings: tuple | None = None
         for lint_retries in range(LINT_GATE_MAX_REROUTES + 1):
-            await run_format_pass(ctx.contract.environment_id, str(ctx.workspace_paths.repo_dir))
-            lint_ok, lint_lines = await run_lint_gate(
-                ctx.contract.environment_id, str(ctx.workspace_paths.repo_dir)
+            await _timed_phase(
+                ctx.telemetry, "format",
+                run_format_pass(ctx.contract.environment_id, str(ctx.workspace_paths.repo_dir)),
+            )
+            lint_ok, lint_lines = await _timed_phase(
+                ctx.telemetry, "lint",
+                run_lint_gate(ctx.contract.environment_id, str(ctx.workspace_paths.repo_dir)),
             )
             if lint_ok:
                 break
@@ -1428,14 +1568,19 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
         #    purging, no cycle skipping. All runner logs (stdout+stderr) flow to the Reviewer, the sole
         #    node that semantically judges failures (incl. ImportError) and routes the fix.
         log.debug("Triggering parallel validation gates (QA & Security)")
-        qa_result, sec_result = await asyncio.gather(
-            run_qa_unit_tests(
-                environment_id=ctx.contract.environment_id,
-                repo_root=str(ctx.workspace_paths.repo_dir),
-            ),
-            run_security_scan(
-                environment_id=ctx.contract.environment_id,
-                repo_root=str(ctx.workspace_paths.repo_dir),
+        # Timed as ONE "qa+sast" phase = the gather's true wall-clock (= max of the two, they run in
+        # parallel), so the parallel work is NOT double-counted in the infra total.
+        qa_result, sec_result = await _timed_phase(
+            ctx.telemetry, "qa+sast",
+            asyncio.gather(
+                run_qa_unit_tests(
+                    environment_id=ctx.contract.environment_id,
+                    repo_root=str(ctx.workspace_paths.repo_dir),
+                ),
+                run_security_scan(
+                    environment_id=ctx.contract.environment_id,
+                    repo_root=str(ctx.workspace_paths.repo_dir),
+                ),
             ),
         )
         qa_success, qa_lines = qa_result
@@ -1443,7 +1588,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
 
         # 5. Comprehensive Audit Phase (Reviewer Agent) — failure log sliced marker-aware so the root
         #    ImportError/Traceback is preserved even when buried above a long stack.
-        await run_reviewer_node(ctx, qa_success, _extract_failure_context(qa_lines), sec_success, sec_lines)
+        await run_reviewer_node(ctx, qa_success, _extract_failure_context(qa_lines, ctx.contract.environment_id), sec_success, sec_lines)
         enforce_financial_circuit_breaker(ctx, budget_usd)
 
         # Print execution logs of utilities ONLY in case of an actual failure to CLI, but log everything to file
@@ -1481,7 +1626,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
                 (["FUNCTIONAL-TESTS"] if not qa_success else [])
                 + (["SAST-SECURITY"] if not sec_success else [])
             )
-            gate_output = _extract_failure_context(qa_lines) if not qa_success else "\n".join(sec_lines)
+            gate_output = _extract_failure_context(qa_lines, ctx.contract.environment_id) if not qa_success else "\n".join(sec_lines)
             _abort_with_incident(
                 ctx,
                 f"\n🚨 ENVIRONMENT/RUNNER MISCONFIGURATION: the {', '.join(failed_gates)} gate FAILED, "
@@ -1496,12 +1641,15 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
             regenerate_tests = True
 
         if not all_gates_passed:
+            # Authoritative only for the cycle the Arbiter actually ran (ctx.arbiter_verdict persists across
+            # cycles, so it must NOT leak into a later cycle's routing). Set just below at the fall-through.
+            arbiter_verdict_this_cycle = None
             # Arbiter (contract self-healing): once a cycle is demonstrably stuck (a prior fix already
             # failed), classify the root cause. Beyond the Developer/QA channels it can route to the
             # CONTRACT — re-deriving the TechLead spec — for failures no downstream agent can fix
             # (contradictory contract, missing error precedence, a fix that would break an NFR).
             if attempt >= ARBITER_TRIGGER_ATTEMPT:
-                gate_output = _extract_failure_context(qa_lines) if not qa_success else "\n".join(sec_lines)
+                gate_output = _extract_failure_context(qa_lines, ctx.contract.environment_id) if not qa_success else "\n".join(sec_lines)
                 await run_arbiter_node(
                     ctx, gate_output=_cap_text(gate_output),
                     prev_dev_trace=prev_dev_trace, prev_qa_trace=prev_qa_trace,
@@ -1532,12 +1680,34 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
                         f"\n🚨 ARBITER: unrecoverable spec conflict (amendments "
                         f"{ctx.contract_amendments}/{MAX_CONTRACT_AMENDMENTS}) — {verdict.reasoning}",
                     )
-                # route in {developer, qa}: fall through to the normal isolated channel routing below.
+                # route in {developer, qa}: authoritative for THIS cycle — hand the verdict to the
+                # reconciler below so it can override a Reviewer misroute (BACKLOG #25).
+                arbiter_verdict_this_cycle = verdict
 
-            # Isolated routing: production-code fixes → Developer channel; test fixes → QA channel.
-            ctx.error_trace = _cap_text(ctx.review_report.dev_diagnostic_payload)
-            ctx.qa_error_trace = _cap_text(ctx.review_report.qa_diagnostic_payload)
+            # Isolated routing (BACKLOG #18/#25): the reconciler is the single SSOT — it feeds a channel
+            # only for a genuinely-rejected side and lets an Arbiter developer/qa verdict override a
+            # Reviewer misroute. Replaces the prior unconditional copy of BOTH payloads.
+            ctx.error_trace, ctx.qa_error_trace = reconcile_feedback_routing(
+                ctx.review_report, arbiter_verdict_this_cycle
+            )
+            # When the Arbiter authoritatively routed (BACKLOG #25), align the regeneration flag with its
+            # chosen channel so the right agent actually re-runs: a `qa` route MUST re-run QA next cycle; a
+            # `developer` route must NOT (overriding a Reviewer test-rejection). On agreement this matches
+            # the Reviewer-driven flag exactly. A later lint finding can still force regeneration below.
+            if arbiter_verdict_this_cycle is not None:
+                regenerate_tests = arbiter_verdict_this_cycle.route == "qa"
             log.warning(f"🔶 Cycle {attempt} failed. Routing reviewer diagnostics to isolated channels.")
+
+            # Never route QA blind: when the test suite ACTUALLY failed at runtime, append the authoritative
+            # runner output (the verbatim expected-vs-actual) to whatever the reconciler routed. The raw
+            # slice is the highest-fidelity diagnostic and was already computed for the Reviewer; relying on
+            # the LLM's re-derivation alone loops the run when that payload comes back thin/empty.
+            if not qa_success and regenerate_tests:
+                raw_qa = _extract_failure_context(qa_lines, ctx.contract.environment_id)
+                ctx.qa_error_trace = _cap_text(
+                    (ctx.qa_error_trace
+                     + "\n\n=== RAW TEST RUNNER OUTPUT ===\n" + raw_qa).strip()
+                )
 
             # Lint stayed red after its fast-fail budget: those classified findings are the authoritative
             # feedback for the next budgeted cycle. The Reviewer is lint-blind and may have approved both
@@ -1570,7 +1740,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
             # SystemExit) still persists + surfaces the FinOps report — spend stays auditable.
             try:
                 if cfg.auto_merge:
-                    await finalize_pr(ctx, cfg)
+                    await _timed_phase(ctx.telemetry, "forge:pr", finalize_pr(ctx, cfg))
             finally:
                 write_finops_report(ctx)
                 log_finops_summary(ctx)

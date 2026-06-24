@@ -24,8 +24,25 @@
 #                Best-effort/non-fatal.
 #   test_compile_cmd  OPTIONAL compile-ONLY check of the QA tests (network-OFF) — builds the test
 #                code but runs no test bodies; drives the pre-Reviewer QA test-compile gate.
+#   empty_test_markers / ran_test_markers  OPTIONAL lowercased substrings of the test runner's output
+#                that drive the orphan-test backstop (gates.ran_zero_tests) WITHOUT hardcoding any
+#                language in the gate logic. empty_test_markers = the runner's "executed ZERO tests"
+#                signatures; ran_test_markers = its "tests executed" signatures, which SUPPRESS the
+#                backstop (multi-target safety). Omit BOTH to exempt a stack from the check entirely
+#                (e.g. Go, whose per-package "[no test files]" line is not orphan-able).
+#   failure_origin_markers  OPTIONAL substrings marking the ORIGIN line of a failure in this stack's
+#                test/build output, so the feedback extractor keeps the root error (not just a blind tail)
+#                for the Reviewer. failure_origin_markers() unions these with a cross-language generic base.
+#   repo_map_ignore_dirs  OPTIONAL build/dependency OUTPUT dir names (never source) the repo-map walker
+#                prunes for this stack (e.g. node_modules, bin, obj) so a fresh clone's artifacts don't
+#                bloat the topology map. Hidden dirs (.git/.venv) are pruned separately by the walker.
+#   comment_prefixes  OPTIONAL leading strings that mark a comment line in this stack's source files
+#                (e.g. "#", "//", "<!--"), used by the documentation-guardrail scanner to check for a
+#                top-of-file architectural justification. all_comment_prefixes() unions them across stacks.
 
 # SAST is generic across all stacks — one Semgrep image (SAST_IMAGE/SAST_CMD), never per-language.
+
+from pathlib import Path
 
 SUPPORTED_ENVIRONMENTS = {
     "python-3.12-core": {
@@ -55,6 +72,13 @@ SUPPORTED_ENVIRONMENTS = {
         # Persistent download cache (survives the separate restore/build/test containers + across runs);
         # mounted RW only on the network-ON restore phase. Overrides the tmpfs pip cache.
         "cache_volume": {"name": "sdlc-cache-python", "mount": "/cache", "env": {"PIP_CACHE_DIR": "/cache/pip"}},
+        # Orphan-test backstop signals (gates.ran_zero_tests): pytest prints "no tests ran" for an empty
+        # collection; any "<n> passed/failed/error" line proves it ran and suppresses the check.
+        "empty_test_markers": ("no tests ran",),
+        "ran_test_markers": (" passed", " failed", " error"),
+        "failure_origin_markers": ("Traceback (most recent call", "ImportError", "ModuleNotFoundError", "cannot import name"),
+        "repo_map_ignore_dirs": ("__pycache__",),
+        "comment_prefixes": ("#", '"""', "'''"),
         "language_id": "python",
         "description": "Python 3.12 core runtime (pytest; Semgrep SAST).",
     },
@@ -81,6 +105,12 @@ SUPPORTED_ENVIRONMENTS = {
         "sandbox_env": {"HOME": "/tmp", "GOCACHE": "/tmp/.cache/go-build", "GOPATH": "/tmp/go", "GOMODCACHE": "/tmp/go/pkg/mod"},  # nosec B108 — in-container tmpfs paths
         # Persist the module DOWNLOAD cache (GOMODCACHE) only; the build cache (GOCACHE) stays on tmpfs.
         "cache_volume": {"name": "sdlc-cache-go", "mount": "/cache", "env": {"GOMODCACHE": "/cache/go/pkg/mod"}},
+        # No empty/ran_test markers → the orphan-test backstop is EXEMPT for Go: `go test ./...` prints
+        # `[no test files]` per-package even when sibling packages ran, and colocated Go tests can't be
+        # orphaned the way a separate test project can — so there is no safe "ran zero" signal to key on.
+        "failure_origin_markers": ("panic:", "--- FAIL", "build failed", "cannot find package"),
+        "repo_map_ignore_dirs": ("vendor", "bin"),
+        "comment_prefixes": ("//", "/*", "*"),
         "language_id": "go",
         "description": "Go 1.23 CLI runtime, full compile toolchain (go test; Semgrep SAST).",
     },
@@ -89,17 +119,27 @@ SUPPORTED_ENVIRONMENTS = {
         "build_cmd": "npm run build --if-present",
         "test_cmd": "npm test",
         "setup_cmd": "npm ci || npm install",
-        # lint_cmd: HARD lint gate via the project's own eslint. run_lint_gate FIRST checks (host-side)
-        # that an eslint config is present in the clone — absent → the gate is a no-op pass (a project
-        # that never adopted eslint must not hard-fail). With a config, a real lint error is a non-zero
-        # exit. format_cmd (eslint --fix) auto-applies the fixable subset first.
-        "lint_cmd": "npx --no-install eslint .",
+        # lint_cmd: HARD lint gate via the project's own eslint. SELF-GUARDS in the command itself: if the
+        # clone carries no eslint config (flat eslint.config.* / legacy .eslintrc* / an "eslintConfig" key
+        # in package.json) it echoes a note and exits 0 — a project that never adopted eslint must not
+        # hard-fail. With a config, a real lint error is a non-zero exit. The guard lives HERE (registry),
+        # NOT as a node-specific branch in gates.py, so the engine carries no language. Mirrors the dotnet
+        # lint_cmd workspace self-guard. format_cmd (eslint --fix) auto-applies the fixable subset first.
+        # Single line (no-newline adapter rule); valid both in sh -c (sandbox) and a GH Actions run step.
+        "lint_cmd": "if ls eslint.config.js eslint.config.mjs eslint.config.cjs .eslintrc .eslintrc.* 2>/dev/null | grep -q . || grep -q '\"eslintConfig\"' package.json 2>/dev/null; then npx --no-install eslint .; else echo 'no eslint config at repo root — lint gate no-op pass'; fi",
         # Best-effort: only fixes if a project-local eslint is installed (--no-install never fetches).
         # Non-fatal, so a project without eslint just skips the cleanup.
         "format_cmd": "npx --no-install eslint --fix . || true",
         "sandbox_env": {"HOME": "/tmp", "npm_config_cache": "/tmp/.npm"},  # nosec B108 — in-container tmpfs paths
         # Persist the npm download cache across the restore/build/test containers + runs.
         "cache_volume": {"name": "sdlc-cache-node", "mount": "/cache", "env": {"npm_config_cache": "/cache/npm"}},
+        # Orphan-test backstop signals (gates.ran_zero_tests): jest/vitest print "no tests found" for an
+        # empty run; a "Tests:"/"passing"/"passed" summary proves it ran and suppresses the check.
+        "empty_test_markers": ("no tests found", "no test files found"),
+        "ran_test_markers": ("tests:", " passing", " passed"),
+        "failure_origin_markers": ("Error:", "Cannot find module", "ReferenceError", "SyntaxError", "TypeError:"),
+        "repo_map_ignore_dirs": ("node_modules", "dist", "build", "out", "coverage"),
+        "comment_prefixes": ("//", "/*", "*"),
         "language_id": "node",
         "description": "Node.js 20 / JS / React (node, npm — frontend build & tests; Semgrep SAST).",
     },
@@ -115,13 +155,34 @@ SUPPORTED_ENVIRONMENTS = {
         # lint_cmd: HARD lint gate. `dotnet format --verify-no-changes` exits non-zero iff the formatter
         # WOULD change anything (style/whitespace/unused usings). --no-restore keeps it network-OFF (the
         # restore phase ran first). format_cmd (dotnet format) auto-applies the same fixes beforehand.
-        "lint_cmd": "dotnet format --verify-no-changes --no-restore",
-        # Best-effort: --no-restore keeps it network-OFF; removes unused usings where the SDK supports it.
-        "format_cmd": "dotnet format --no-restore",
+        # MUST resolve a SINGLE explicit workspace target: `dotnet format` (unlike build/restore/test,
+        # which prefer the solution) hard-crashes in ParseWorkspaceOptions when the CWD is ambiguous ("Both
+        # a MSBuild project file and solution file found in '.'") OR empty ("no project or solution file
+        # found") — exit 1, masking lint as a permanent red and looping the FSM (the latter also fired the
+        # non-fatal format-pass crash before any solution existed). Resolution: prefer the root solution —
+        # the newer .slnx (the .NET 10 `dotnet new sln` DEFAULT) OR the classic .sln (the dotnet_core skill
+        # mandates exactly one at the root) — else a lone root .csproj (single-project repos); if NEITHER
+        # resolves, SKIP cleanly (exit 0) instead of passing '.' and crashing. `dotnet format` accepts a
+        # .slnx target; globbing only *.sln would MISS a .slnx and silently no-op the gate. The final
+        # `dotnet format` propagates its real exit code (2 = "would change") so the verify gate still fails
+        # on actual findings. Single line (no-newline adapter rule); valid in both `sh -c` (sandbox) and a
+        # GH Actions run step.
+        "lint_cmd": "ws=$(ls *.slnx *.sln 2>/dev/null | head -n1); ws=${ws:-$(ls *.csproj 2>/dev/null | head -n1)}; if [ -z \"$ws\" ]; then echo 'no .slnx/.sln/.csproj at repo root — nothing to verify'; exit 0; fi; dotnet format \"$ws\" --verify-no-changes --no-restore",
+        # Best-effort autofix: same workspace resolution; --no-restore keeps it network-OFF; removes unused
+        # usings where the SDK supports it. Skips cleanly (never crashes) when no workspace resolves.
+        "format_cmd": "ws=$(ls *.slnx *.sln 2>/dev/null | head -n1); ws=${ws:-$(ls *.csproj 2>/dev/null | head -n1)}; if [ -z \"$ws\" ]; then exit 0; fi; dotnet format \"$ws\" --no-restore",
         "sandbox_env": {"HOME": "/tmp", "DOTNET_CLI_HOME": "/tmp", "NUGET_PACKAGES": "/tmp/nuget", "XDG_DATA_HOME": "/tmp/.local"},  # nosec B108 — in-container tmpfs paths
         # Persist the NuGet global-packages folder; overrides the tmpfs NUGET_PACKAGES so a package
         # restored online once is reused offline on every later container/run (the NU1301 cure).
         "cache_volume": {"name": "sdlc-cache-dotnet", "mount": "/cache", "env": {"NUGET_PACKAGES": "/cache/nuget"}},
+        # Orphan-test backstop signals (gates.ran_zero_tests): `dotnet test` prints "No test is available"
+        # when a *Tests.cs lands in a project the solution never compiles; a "Passed!"/"Failed!" summary
+        # proves the runner executed and suppresses the check.
+        "empty_test_markers": ("no test is available", "no test source files were specified", "no test projects were found"),
+        "ran_test_markers": ("passed!", "failed!"),
+        "failure_origin_markers": ("error CS", "error MSB", "Stack trace:", "Unhandled exception"),
+        "repo_map_ignore_dirs": ("bin", "obj", "artifacts"),
+        "comment_prefixes": ("//", "/*", "*", "<!--"),
         "language_id": "dotnet",
         "description": ".NET 10 SDK (full toolchain — dotnet build & dotnet test; Semgrep SAST).",
     },
@@ -142,8 +203,11 @@ SAST_CMD = "semgrep scan --error --metrics off --config /opt/semgrep-rules /work
 # for the ticket's environment_id to decide test file extension, placement, framework idioms,
 # and which contract files are even testable source (vs docs/config/package markers).
 #
-#   layout         "separate"  -> tests live in a dedicated tests/ dir (pytest discovery)
-#                  "colocated" -> tests sit NEXT TO the source file (go test ./..., jest, dotnet test)
+#   layout         "separate"  -> tests live in a dedicated tests/ dir (pytest discovery), flat under test_root
+#                  "colocated" -> tests sit NEXT TO the source file (go test ./..., jest)
+#                  "project"   -> tests live INSIDE a separate test PROJECT dir resolved per-run from the
+#                                 contract's test build-manifest (.NET: tests/<Name>.Tests/; see
+#                                 resolve_test_project_dir) — NOT next to source, NOT a static root
 #   source_exts    extensions QA generates tests for; everything else (.md, LICENSE, .gitignore,
 #                  lockfiles, package markers) is filtered out.
 # Assembly is language-neutral: the QA agent always returns the COMPLETE test file (skills-driven,
@@ -181,11 +245,20 @@ QA_LANGUAGE_PROFILES = {
         "package_markers": ("package.json", "package-lock.json", "tsconfig.json", "yarn.lock"),
     },
     "dotnet": {
-        "layout": "colocated",
-        "test_root": None,      # colocated: tests sit next to source, no separate root
+        # "project" layout: tests live INSIDE a separate test PROJECT directory (tests/<Name>.Tests/),
+        # NOT next to the source. The dir is build-defined (varies by solution name) and is resolved at
+        # runtime from the TechLead contract's `*.Tests.csproj` (resolve_test_project_dir); colocating a
+        # `*Tests.cs` in src/ would put it in the PRODUCTION project's glob (no xUnit ref → CS0246) and
+        # contradicts the mandated src/+tests/ split. test_root stays None (resolved per-run, not static).
+        "layout": "project",
+        "test_root": None,
         "source_exts": (".cs",),
         "test_prefix": "",
         "test_suffix": "Tests.cs",
+        # The test build manifest's filename suffix — the SSOT for resolving the test project dir from
+        # the contract OR, on a follow-on ticket, by scanning the existing clone (resolve_test_project_dir).
+        # Absent from non-"project" layouts (python/go/node have no separate test build manifest to wire in).
+        "test_manifest_suffix": "Tests.csproj",
         "module_ref_style": "namespace",
         "framework_label": "xUnit (dotnet test)",
         "package_markers": (),  # *.csproj excluded via the generic non-source filter below
@@ -294,6 +367,88 @@ def env_language(environment_id: str) -> str:
     return env["language_id"]
 
 
+def all_source_extensions() -> tuple[str, ...]:
+    """Every source-file extension across all QA language profiles (e.g. ``.py``, ``.cs``, ``.ts``),
+    deduped and ordered longest-first then alphabetically.
+
+    The SSOT for any engine parser that must recognize a source/diagnostic file path (e.g. the gates'
+    compile-error regex). Registry-derived ON PURPOSE: adding a language to QA_LANGUAGE_PROFILES extends
+    those parsers automatically, with NO edit to the gate code — the language stays out of the engine.
+    """
+    exts = {ext for profile in QA_LANGUAGE_PROFILES.values() for ext in profile["source_exts"]}
+    return tuple(sorted(exts, key=lambda e: (-len(e), e)))
+
+
+def extension_language_map() -> dict[str, str]:
+    """Map each source extension → its ``language_id`` (e.g. ``.cs`` → ``dotnet``), derived from
+    QA_LANGUAGE_PROFILES.
+
+    The SSOT for extension-based language inference (the TechLead's early skill routing). Registry-derived
+    so a newly-registered language routes automatically — no edit to the agent code. Precision (e.g. not
+    matching ``.cs`` inside ``.csproj``) is the CALLER's concern at match time, not this map's.
+    """
+    return {
+        ext: language_id
+        for language_id, profile in QA_LANGUAGE_PROFILES.items()
+        for ext in profile["source_exts"]
+    }
+
+
+# Cross-language failure-origin markers appended to every env's stack-specific set — generic enough that
+# an unknown/new stack still gets a useful (non-empty) marker list without a registry entry.
+_GENERIC_FAILURE_MARKERS = ("ERROR:", "FAILED")
+
+
+def failure_origin_markers(environment_id: str) -> tuple[str, ...]:
+    """Substrings that mark the ORIGIN line of a failure in a stack's test/build output.
+
+    Lets the feedback extractor keep the ROOT error (not just a blind tail slice) for the Reviewer. Derived
+    from the env registry (per-env ``failure_origin_markers``) + a cross-language generic base — so a
+    non-Python stack is no longer second-class (the Python-only bias this replaces). Unknown env → the
+    generic base alone, never empty.
+    """
+    spec = SUPPORTED_ENVIRONMENTS.get(environment_id) or {}
+    return tuple(spec.get("failure_origin_markers", ())) + _GENERIC_FAILURE_MARKERS
+
+
+def all_comment_prefixes() -> tuple[str, ...]:
+    """Union of comment-line prefixes across all supported environments (registry-derived).
+
+    Used by the documentation-guardrail scanner so the engine carries no hardcoded language
+    syntax. Adding a new stack: declare its ``comment_prefixes`` in SUPPORTED_ENVIRONMENTS.
+    """
+    seen: dict[str, None] = {}
+    for spec in SUPPORTED_ENVIRONMENTS.values():
+        for prefix in spec.get("comment_prefixes", ()):
+            seen[prefix] = None
+    return tuple(seen)
+
+
+def repo_map_ignore_dirs(environment_id: str | None = None) -> frozenset[str]:
+    """Directory NAMES the repo-map walker prunes as build/dependency OUTPUT (never source).
+
+    Registry-derived (per-env ``repo_map_ignore_dirs``). With an ``environment_id``, returns THAT stack's
+    dirs; WITHOUT one — the TechLead builds the map before the language is known — returns the UNION across
+    all stacks, so a fresh clone's ``node_modules``/``bin``/``obj`` never bloats the topology map for any
+    stack. Hidden dirs (``.git``/``.venv``/…) are pruned separately by the walker, not here.
+    """
+    if environment_id is not None:
+        spec = SUPPORTED_ENVIRONMENTS.get(environment_id) or {}
+        return frozenset(spec.get("repo_map_ignore_dirs", ()))
+    return frozenset(
+        d for spec in SUPPORTED_ENVIRONMENTS.values() for d in spec.get("repo_map_ignore_dirs", ())
+    )
+
+
+def test_manifest_suffix(environment_id: str) -> str | None:
+    """The test build-manifest filename suffix for a ``layout == "project"`` stack (.NET ``Tests.csproj``).
+
+    Registry-driven (per-env ``test_manifest_suffix``); ``None`` for stacks with no separate test build
+    manifest (python/go/node), so the resolver below is a no-op for them — the engine stays language-agnostic.
+    """
+    return get_qa_profile(environment_id).get("test_manifest_suffix")
+
+
 def _posix(rel_path: str) -> str:
     return rel_path.replace("\\", "/").strip("/")
 
@@ -343,12 +498,73 @@ def derive_test_target(environment_id: str, rel_source_path: str) -> tuple[str, 
         slug = path_no_ext.replace("/", "_")
         return f"{profile['test_prefix']}{slug}{profile['test_suffix']}", module_ref
 
-    # Colocated: test file sits next to the source file.
+    if profile["layout"] == "project":
+        # Test source lives FLAT inside a separate test project dir (resolved by the QA node from the
+        # contract via resolve_test_project_dir) — return just the bare filename, no source-dir prefix.
+        return f"{profile['test_prefix']}{stem}{profile['test_suffix']}", module_ref
+
+    # Colocated: test file sits next to the source file (go/node).
     if env_language(environment_id) == "node":
         test_name = f"{stem}.test{src_ext}"          # foo.ts -> foo.test.ts
     else:
-        test_name = f"{profile['test_prefix']}{stem}{profile['test_suffix']}"  # go: foo_test.go / .NET: fooTests.cs
+        test_name = f"{profile['test_prefix']}{stem}{profile['test_suffix']}"  # go: foo_test.go
     return (f"{directory}/{test_name}" if directory else test_name), module_ref
+
+
+def resolve_test_project_dir(
+    files_to_modify: list[str],
+    repo_dir: str | Path | None = None,
+    environment_id: str | None = None,
+) -> str | None:
+    """For a ``layout == "project"`` stack (.NET), resolve the test project's directory.
+
+    The test build manifest (e.g. ``tests/JsonToCsv.Tests/JsonToCsv.Tests.csproj``) is Developer-owned
+    build glue. Two resolution paths, in order:
+
+    1. **Contract** — the manifest is listed in the TechLead contract's ``files_to_modify`` (the scaffold
+       ticket that creates it). Return its posix PARENT dir so the QA node writes ``*Tests.cs`` INSIDE the
+       project the test runner compiles.
+    2. **Existing clone** — on a FOLLOW-ON ticket the manifest already exists on disk (a prior ticket merged
+       it) but is NOT re-listed in this ticket's contract. Scan ``repo_dir`` for it (build output pruned via
+       ``repo_map_ignore_dirs``). When several manifests match, disambiguate BY NAME: prefer the test project
+       whose stem corresponds to a production project of THIS ticket (a directory token of ``files_to_modify``),
+       so ``JsonToCsv.Tests`` wins over an unrelated ``Other.Tests`` instead of a blind alphabetical pick.
+       A shallowest-then-lexical tie-break only decides between equally-affine candidates.
+
+    The manifest suffix is registry-driven (``test_manifest_suffix``); ``None`` for non-"project" stacks, so
+    this returns ``None`` immediately for python/go/node — the engine stays language-agnostic. Returns
+    ``None`` when nothing resolves (the QA node then falls back to a plain ``tests/`` dir and warns).
+    """
+    suffix = test_manifest_suffix(environment_id) if environment_id else "Tests.csproj"
+    if not suffix:
+        return None
+    # 1) Contract.
+    for entry in files_to_modify or []:
+        path = _posix(entry)
+        if path.rsplit("/", 1)[-1].endswith(suffix):
+            directory, _, _ = path.rpartition("/")
+            return directory or None
+    # 2) Existing clone (follow-on ticket).
+    if repo_dir is not None:
+        root = Path(repo_dir)
+        ignore = set(repo_map_ignore_dirs(environment_id))
+        matches = [
+            p for p in root.rglob(f"*{suffix}")
+            if not (set(p.relative_to(root).parts[:-1]) & ignore)
+        ]
+        if matches:
+            # Name affinity: the production project name(s) of THIS ticket, taken from the directory
+            # segments of the contracted production files.
+            prod_tokens = {seg for f in files_to_modify or [] for seg in _posix(f).split("/")[:-1]}
+
+            def _affine(p: Path) -> bool:
+                stem = p.name[: -len(suffix)].rstrip(".")  # "JsonToCsv.Tests.csproj" -> "JsonToCsv.Tests"
+                return any(stem == t or stem.startswith(t + ".") for t in prod_tokens)
+
+            pool = [p for p in matches if _affine(p)] or matches
+            best = min(pool, key=lambda p: (len(p.relative_to(root).parts), str(p)))
+            return _posix(str(best.parent.relative_to(root)))
+    return None
 
 
 # Node test files use a separate naming convention (jest/vitest) than the prefix/suffix profile.

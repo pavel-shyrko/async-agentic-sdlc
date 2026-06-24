@@ -57,17 +57,10 @@ async def run_devops_node(
         f"=== PLATFORM / ENVIRONMENT ID(S) ===\n{environment_ids or '(unknown)'}\n\n"
     )
     if ci_commands:
-        user_content += (
-            "=== CANONICAL PROJECT COMMANDS (the CI build/test/lint steps MUST run EXACTLY these — they are\n"
-            "the same commands the engine validated this code with; do NOT invent extra linters/type-checkers) ===\n"
-            f"{ci_commands}\n\n"
-        )
+        user_content += f"=== CANONICAL PROJECT COMMANDS ===\n{ci_commands}\n\n"
     user_content += f"=== FINISHED REPOSITORY MAP (base branch) ===\n{repo_map}"
     if gate_feedback:
-        user_content += (
-            "\n\n=== STATIC-VALIDATION ERRORS FROM YOUR PREVIOUS ATTEMPT (fix exactly these) ===\n"
-            f"{gate_feedback}"
-        )
+        user_content += f"\n\n=== STATIC-VALIDATION ERRORS FROM YOUR PREVIOUS ATTEMPT ===\n{gate_feedback}"
 
     result, raw_response = await run_structured_llm(
         "devops",

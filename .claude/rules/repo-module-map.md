@@ -6,8 +6,8 @@ first ticket, ADR 0017). Four planes under `src/` (ADR 0021 physical split — c
 shared; supersedes ADR 0012's virtual separation):
 
 **`src/shared/core/`** — engine SSOTs:
-- `models.py` — `RUNS_BASE`, `WorkspacePaths`, `PipelineTelemetry` (per-agent tokens/cost/**plane**/**duration** + `by_plane()`/`merge()`/money-only `finops_report()`), `GlobalPipelineContext` (`save_checkpoint`/`load_checkpoint`), `BatchState` (E3 batch checkpoint, `kind="batch"` → `reports/batch_state.json`; E5 adds `app_telemetry`/`nexus_merged`/`budget_marker`), `DevOpsManifests` (E4 deploy config: `archetype`/`dockerfile_content`/`workflow_content`/`env_scaffold_content`).
-- `config.py` — `ROLE_MODELS` (role→(model, label)), `AGENT_PLANE` (label→plane, E5 FinOps rollup), `PIPELINE_APP_BUDGET_USD`/`PIPELINE_APP_BUDGET_FLOOR_USD` (the money-only application budget — ADR 0022; `PIPELINE_BUDGET_TOKENS` is report-only since E5), `MODEL_PRICING_MATRIX`, `estimate_gemini_cost_usd`, `instructor_client` (built with a `GEMINI_REQUEST_TIMEOUT` `http_options` ceiling — every structured call is wall-clock-bounded), `check_environment(require_forge=…)` (with `--auto-merge` also requires `gh` + `GITHUB_TOKEN`).
+- `models.py` — `RUNS_BASE`, `WorkspacePaths`, `PipelineTelemetry` (per-agent tokens/cost/**plane**/**duration** + `by_plane()`/`merge()`/money-only `finops_report()`), `GlobalPipelineContext` (`save_checkpoint`/`load_checkpoint`), `BatchState` (E3 batch checkpoint, `kind="batch"` → `reports/batch_state.json`; E5 adds `app_telemetry`/`nexus_merged`/`budget_marker`; E6 adds `released_tag`), `DevOpsManifests` (E4 deploy config: `archetype`/`dockerfile_content`/`workflow_content`/`env_scaffold_content`).
+- `config.py` — `ROLE_MODELS` (role→(model, label)), `AGENT_PLANE` (label→plane, E5 FinOps rollup), `PIPELINE_APP_BUDGET_USD`/`PIPELINE_APP_BUDGET_FLOOR_USD` (the money-only application budget — ADR 0022; `PIPELINE_BUDGET_TOKENS` is report-only since E5), `RELEASE_VERSION_BUMP` (E6 release tag bump level, default minor), `MODEL_PRICING_MATRIX`, `estimate_gemini_cost_usd`, `instructor_client` (built with a `GEMINI_REQUEST_TIMEOUT` `http_options` ceiling — every structured call is wall-clock-bounded), `check_environment(require_forge=…)` (with `--auto-merge` also requires `gh` + `GITHUB_TOKEN`).
 - `observability.py` — `log`, `reconfigure_logging`, `log_token_usage` (telemetry-first), `log_finops_summary`, `describe_finish_reason`.
 - `runs.py` — `Projects` store + `allocate_run_dir` + `slugify` (run-layout SSOT; see [run-layout-and-cli](run-layout-and-cli.md)).
 - `docker_adapter.py` — `run_in_image` / `execute_in_sandbox` (sandbox least-privilege; see [qa-sandbox-hardening](qa-sandbox-hardening.md)).
@@ -16,7 +16,7 @@ shared; supersedes ADR 0012's virtual separation):
 
 **`src/shared/utils/`** — `subprocess_helpers.py` (`parse_claude_usage`, streaming, `sanitize_for_argv` — strips C0/NUL from every subprocess argv, the SSOT both `forge` and `runner._run_checked` call), `git_helpers.py`,
 `llm.py` (`run_structured_llm` + `_relocate_jinja_system_messages` — demotes a `{{ }}`/`{% %}`-bearing system message to a user turn so instructor's GenAI guard doesn't reject a config-teaching prompt, e.g. DevOps `${{ secrets.* }}`), `api_retry.py` (`with_api_retry`), `redaction.py` (`redact`),
-`forge.py` (`open_pr`/`approve_pr`/`merge_pr` — gh-backed PR auto-merge seam, E2 / `--auto-merge`).
+`forge.py` (`open_pr`/`approve_pr`/`merge_pr` — gh-backed PR auto-merge seam, E2 / `--auto-merge`; plus `list_remote_tags`/`push_tag` — the E6 `--release` annotated-tag seam, via a private `_run_git` that mirrors `_run_gh`'s sanitize + `GH_NETWORK_TIMEOUT` boundary).
 
 **`src/nexus/`** (control plane — orchestration + FSM + planning) — `runner.py` (`main()` dispatcher +
 `run_executor` per-ticket FSM + `prepare_ticket_run` cfg-wiring/allocation, shared by `--run`/`--auto-execute`
@@ -28,8 +28,14 @@ the **money-only** breaker (ADR 0022 / E5), gated on the *remaining* application
 cleanly at `PIPELINE_APP_BUDGET_FLOOR_USD`, and `write_app_finops_report` writes `app_finops_report.json`
 (per-role/plane/time) in a `finally` + `PipelineHalt` — the catchable FSM-halt exception
 `_abort_with_incident` raises (so the batch records `failed` and stops; `main.py` maps an uncaught one to
-exit 1) + the step-3.6 lint loop (`LINT_GATE_MAX_REROUTES`, `_LINT_FEEDBACK_PREAMBLE`); `run_batch` lazily
-imports `run_devops_scaffold` to break the `deployment → nexus` cycle, ADR 0021), `agents/{po,sa,tpm}.py`
+exit 1) + the step-3.6 lint loop (`LINT_GATE_MAX_REROUTES`, `_LINT_FEEDBACK_PREAMBLE`) + `reconcile_feedback_routing(review_report, arbiter_verdict)` —
+the routing-coherence SSOT (ADR 0024) that assigns the two isolated feedback channels: a coherence floor
+(feed a channel only for a rejected side, #18) + Arbiter `developer`/`qa` authority over a Reviewer misroute
+(#25); `run_batch` lazily
+imports `run_devops_scaffold` to break the `deployment → nexus` cycle, ADR 0021. + `finalize_release` /
+`compute_next_tag` — the E6 `--release` terminal phase (after the optional deploy-scaffold): clone `main`,
+resolve the next `v*` (`compute_next_tag`, repo-derived via `forge.list_remote_tags`), push an annotated tag
+(`forge.push_tag`); idempotent via `BatchState.released_tag`, ADR 0023), `agents/{po,sa,tpm}.py`
 (PO/SA/TPM agents), `nexus_runner.py` (`run_nexus` + `get_tasks_for_nexus_run` — planned ticket ids in TPM
 order, consumed by `--auto-execute`), `state.py` (`NexusState` checkpoint).
 

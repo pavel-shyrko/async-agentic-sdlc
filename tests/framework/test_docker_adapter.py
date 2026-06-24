@@ -138,5 +138,32 @@ class ExecuteInSandboxTests(unittest.IsolatedAsyncioTestCase):
             await execute_in_sandbox("no-such-env", "pytest", _REPO)
 
 
+class SandboxCpuCapTests(unittest.IsolatedAsyncioTestCase):
+    """The sandbox CPU cap is env-overridable (config-constant-convention) and defaults to 4 — more cores
+    speed CPU-bound gates (notably the semgrep SAST scan). The value flows verbatim into the docker argv."""
+
+    @mock.patch("src.shared.core.docker_adapter.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    async def test_cpus_value_flows_to_argv(self, mock_exec: AsyncMock) -> None:
+        mock_exec.return_value = _mock_proc(0)
+        await run_in_image("img:tag", "pytest", _REPO)
+        argv = list(mock_exec.call_args.args)
+        self.assertEqual(argv[argv.index("--cpus") + 1], docker_adapter._SANDBOX_CPUS)
+
+    def test_default_is_four_when_env_unset(self) -> None:
+        import importlib
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SANDBOX_CPUS", None)
+            reloaded = importlib.reload(docker_adapter)
+            self.addCleanup(importlib.reload, docker_adapter)  # restore the real-env constant after
+            self.assertEqual(reloaded._SANDBOX_CPUS, "4")
+
+    def test_env_override_is_honored(self) -> None:
+        import importlib
+        with mock.patch.dict(os.environ, {"SANDBOX_CPUS": "1"}):
+            reloaded = importlib.reload(docker_adapter)
+            self.addCleanup(importlib.reload, docker_adapter)
+            self.assertEqual(reloaded._SANDBOX_CPUS, "1")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -147,10 +147,21 @@ def log_finops_summary(telemetry: Any, budget_usd: Any) -> None:
             f"   ├─ cache (not budgeted) | read {tel.total_cache_read_tokens}t "
             f"| write {tel.total_cache_write_tokens}t"
         )
+    # Infra (non-LLM) wall-clock: docker gates / SAST / git / PR — previously invisible in this summary,
+    # which counted LLM time only. by_phase/total_infra_seconds default to {}/0.0 on older checkpoints.
+    by_phase = getattr(tel, "by_phase", {})
+    infra_seconds = getattr(tel, "total_infra_seconds", 0.0)
+    for phase, p in by_phase.items():
+        log.info(f"   ├─ ⛁ {phase} | {p.duration_seconds:.1f}s | runs: {p.calls}")
+    if by_phase:
+        log.info(f"   ├─ Σ LLM time | {tel.total_duration_seconds:.1f}s")
+        log.info(f"   ├─ Σ infra time (gates/sast/git) | {infra_seconds:.1f}s")
     used_pct_usd = (100.0 * float(tel.total_cost_usd) / float(budget_usd)) if budget_usd else 0.0
+    wall_seconds = getattr(tel, "total_wall_seconds", tel.total_duration_seconds)
     log.info(
         f"   └─ TOTAL | ${tel.total_cost_usd:.4f} / ${budget_usd:.2f} budget ({used_pct_usd:.1f}%) "
-        f"| {tel.total_tokens}t (reported) | {tel.total_duration_seconds:.1f}s"
+        f"| {tel.total_tokens}t (reported) | {tel.total_duration_seconds:.1f}s LLM "
+        f"+ {infra_seconds:.1f}s infra = {wall_seconds:.1f}s wall"
     )
 
 
