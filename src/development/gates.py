@@ -1,17 +1,22 @@
 import os
 import re
-from pathlib import Path
 
 from src.shared.core.observability import log
-from src.shared.core.environments import SUPPORTED_ENVIRONMENTS, SAST_IMAGE, SAST_CMD, is_test_file, env_language
+from src.shared.core.environments import (
+    SUPPORTED_ENVIRONMENTS, SAST_IMAGE, SAST_CMD, is_test_file, all_source_extensions,
+)
 from src.shared.core.docker_adapter import execute_in_sandbox, run_in_image
 
+# The source-file extension alternation is REGISTRY-DERIVED (all_source_extensions) — never a hardcoded
+# list — so adding a language to the env registry extends these parsers with NO edit here (the engine
+# stays language-agnostic). Sorted longest-first by the helper, so e.g. `tsx` is tried before `ts`.
+_SOURCE_EXT_ALT = "|".join(re.escape(ext.lstrip(".")) for ext in all_source_extensions())
 # Compiler/diagnostic lines reference a source file as `path/to/file.ext:line[:col]:`.
-_FILE_REF_RE = re.compile(r"^\s*([\w./\\-]+\.(?:go|cs|ts|tsx|js|jsx|py)):\d+")
+_FILE_REF_RE = re.compile(rf"^\s*([\w./\\-]+\.(?:{_SOURCE_EXT_ALT})):\d+")
 # A linter line that is ONLY a relative path with no `:line:col` (e.g. `gofmt -l` output). Kept as a
 # SEPARATE pattern so the compile-error regex above is never loosened (which would risk mis-parsing the
 # build gate's output). Used only by the lint-finding classifier.
-_BARE_PATH_RE = re.compile(r"^\s*([\w./\\-]+\.(?:go|cs|ts|tsx|js|jsx|py))\s*$")
+_BARE_PATH_RE = re.compile(rf"^\s*([\w./\\-]+\.(?:{_SOURCE_EXT_ALT}))\s*$")
 
 
 def build_failure_is_test_only(environment_id: str, log_lines: list[str]) -> bool:
@@ -32,7 +37,7 @@ def build_failure_is_test_only(environment_id: str, log_lines: list[str]) -> boo
 # (it drops mandated dependencies to "compile offline"). Matched case-insensitively. Kept to strong
 # network/restore signatures only, so a real compiler error is never misread as environmental.
 _ENV_BUILD_FAILURE_MARKERS = (
-    "nu1301",                              # NuGet: unable to load the service index for source
+    "nu1301",
     "unable to load the service index",
     "resource temporarily unavailable",    # EAGAIN — socket blocked (antivirus/proxy under burst)
     "temporary failure in name resolution",
@@ -45,8 +50,8 @@ _ENV_BUILD_FAILURE_MARKERS = (
     "failed to connect to",
     "tls handshake timeout",
     "proxyerror",
-    "etimedout", "enotfound", "eai_again", "econnreset",   # npm/node network errno
-    "dial tcp",                            # go module fetch
+    "etimedout", "enotfound", "eai_again", "econnreset",
+    "dial tcp",
     # NOTE: do NOT add the gates' own "🚨 Dependency restore failed:" banner here. It is prepended to
     # EVERY restore failure (gates.py run_*_gate), network OR not (e.g. MSB1003 "no project/solution",
     # a bad PackageReference). Matching it makes the classifier self-referential — it would tag every
@@ -88,41 +93,25 @@ def classify_lint_findings(environment_id: str, log_lines: list[str]) -> tuple[l
     return prod, test
 
 
-# Per-language signals that the functional-test runner executed ZERO tests even though the suite is
-# NON-empty (test files exist on disk). The orphan-test bug: QA-authored tests that aren't wired into a
-# build/execute target — e.g. a .NET `*Tests.cs` with no test `.csproj` in the solution — so `dotnet test`
-# discovers nothing and exits 0: a SILENT green with no coverage. We fail that explicitly. Each entry is
-# (empty_markers, ran_markers): fire ONLY when an empty marker is present AND no ran marker is — the
-# ran-marker guard prevents a false positive on a multi-target run where one target legitimately has no
-# tests while siblings ran. Substring match over the lowercased output. The check is asymmetric-safe: it
-# fires ONLY on an explicit "ran zero" marker, so a real run (which never prints one) can't trip it.
-# Languages whose default runner has no reliable per-run signal are omitted (their check never fires):
-# Go's `go test ./...` prints `[no test files]` per package even when siblings ran, and its passing line
-# is tab-formatted — unsafe to parse — and Go's colocated tests can't be orphaned like a separate .NET
-# test project can.
-_ZERO_TEST_SIGNALS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
-    "dotnet": (
-        ("no test is available", "no test source files were specified", "no test projects were found"),
-        ("passed!", "failed!"),
-    ),
-    "python": (("no tests ran",), (" passed", " failed", " error")),
-    "node": (("no tests found", "no test files found"), ("tests:", " passing", " passed")),
-}
-
-
 def ran_zero_tests(environment_id: str, log_lines: list[str]) -> bool:
     """True iff the functional-test output proves the runner executed ZERO tests for a NON-empty suite.
 
     Backstop for the orphan-test failure mode: test files exist on disk but aren't wired into any
-    compiled/executed target (e.g. a .NET test project missing from the solution), so the runner silently
-    discovers nothing and exits 0 — a green merge with no coverage. Conservative: only fires when the stack
-    has known zero-run signals AND an explicit empty marker is present AND no 'tests ran' marker is — so a
-    real run, or a multi-target run where one target has no tests while siblings ran, never trips it.
-    Unknown stacks (no entry) always return False, leaving gate behaviour unchanged."""
-    signals = _ZERO_TEST_SIGNALS.get(env_language(environment_id))
-    if not signals:
+    compiled/executed target (e.g. a test project missing from the solution), so the runner silently
+    discovers nothing and exits 0 — a green merge with no coverage. The per-stack signals live in the env
+    registry (``empty_test_markers``/``ran_test_markers`` on SUPPORTED_ENVIRONMENTS), NOT in this gate — so
+    the engine stays language-agnostic and a new stack opts in by declaring markers, with no edit here.
+
+    Conservative / asymmetric-safe: fires ONLY when the stack declares empty-markers AND an explicit empty
+    marker is present AND no 'tests ran' marker is — so a real run (which never prints an empty marker), or a
+    multi-target run where one target has no tests while siblings ran, never trips it. A stack that declares
+    no ``empty_test_markers`` (e.g. Go) is exempt: the check returns False, leaving gate behaviour unchanged.
+    """
+    spec = SUPPORTED_ENVIRONMENTS[environment_id]
+    empty_markers = spec.get("empty_test_markers")
+    if not empty_markers:
         return False
-    empty_markers, ran_markers = signals
+    ran_markers = spec.get("ran_test_markers", ())
     blob = "\n".join(log_lines).lower()
     if any(m in blob for m in ran_markers):
         return False
@@ -266,42 +255,18 @@ async def run_test_compile_gate(environment_id: str, repo_root: str) -> tuple[bo
     return returncode == 0, log_lines
 
 
-def _has_eslint_config(repo_root: str) -> bool:
-    """True if the clone ships an eslint configuration (host-side check). A node project with NO eslint
-    config must NOT hard-fail the lint gate (`npx eslint .` would exit non-zero with 'Configuration …
-    is missing'), so the node lint gate is a no-op pass unless a config is present."""
-    root = Path(repo_root)
-    for name in ("eslint.config.js", "eslint.config.mjs", "eslint.config.cjs"):
-        if (root / name).is_file():
-            return True
-    # Legacy .eslintrc / .eslintrc.{js,cjs,json,yml,yaml}
-    if any(p.name == ".eslintrc" or p.name.startswith(".eslintrc.") for p in root.glob(".eslintrc*")):
-        return True
-    # eslintConfig key inside package.json
-    pkg = root / "package.json"
-    if pkg.is_file():
-        try:
-            import json
-            if "eslintConfig" in json.loads(pkg.read_text(encoding="utf-8")):
-                return True
-        except (ValueError, OSError):
-            pass
-    return False
-
-
 async def run_lint_gate(environment_id: str, repo_root: str) -> tuple[bool, list[str]]:
     """HARD style/lint gate: restore deps (network ON) then run the env's `lint_cmd` (network OFF).
 
     The engine's own quality bar so a strict CI stays green — `lint_cmd` is the SSOT the DevOps-generated
     workflow also runs, making engine-green ⇒ CI-green. Returns ``(ok, log_lines)``; a no-op pass when the
-    env declares no `lint_cmd`, or (node) when the clone carries no eslint config. Verify-only — the
-    paired `format_cmd` autofix runs first, so only genuinely-unfixable findings (e.g. F841) fail here."""
+    env declares no `lint_cmd`. (A stack whose linter needs project config to run — e.g. node/eslint —
+    self-guards INSIDE its `lint_cmd`, exiting 0 when the config is absent, so the engine carries no
+    per-language branch.) Verify-only — the paired `format_cmd` autofix runs first, so only genuinely-
+    unfixable findings (e.g. F841) fail here."""
     spec = SUPPORTED_ENVIRONMENTS[environment_id]
     lint_cmd = spec.get("lint_cmd")
     if not lint_cmd:
-        return True, []
-    if env_language(environment_id) == "node" and not _has_eslint_config(repo_root):
-        log.debug(f"No eslint config in {repo_root} — lint gate is a no-op pass for this node project.")
         return True, []
 
     setup_cmd = spec.get("setup_cmd")

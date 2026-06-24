@@ -118,19 +118,24 @@ def get_system_prompt_sections(agent_name: str, separator: str = PROMPT_SECTION_
     return head, tail
 
 
-def generate_repo_map(repo_dir: Path) -> str:
+def generate_repo_map(repo_dir: Path, environment_id: str | None = None) -> str:
     """Render a recursive, depth-unlimited tree of ``repo_dir`` for topology-aware prompting.
 
-    Prunes hidden dirs (``.git``, ``.venv``, ``.pytest_cache``, …) and ``__pycache__`` so the map
-    reflects meaningful source/test topology. Returns "" when the dir is absent, so callers can
-    inject it unconditionally.
+    Prunes hidden dirs (``.git``, ``.venv``, …) PLUS the stack's build/dependency OUTPUT dirs — which are
+    REGISTRY-DRIVEN via ``repo_map_ignore_dirs`` (e.g. ``node_modules``/``bin``/``obj``), not a Python-only
+    hardcode — so a fresh clone's artifacts never bloat the map for any stack. ``environment_id`` narrows the
+    prune set to that stack; omitted (the TechLead builds the map before the language is known) → the union
+    across all stacks. Returns "" when the dir is absent, so callers can inject it unconditionally.
     """
     root = Path(repo_dir)
     if not root.is_dir():
         return ""
 
+    from src.shared.core.environments import repo_map_ignore_dirs
+    ignore_dirs = repo_map_ignore_dirs(environment_id)
+
     def _ignored(name: str) -> bool:
-        return name.startswith(".") or name == "__pycache__"
+        return name.startswith(".") or name in ignore_dirs
 
     lines: list[str] = [f"{root.name}/"]
 

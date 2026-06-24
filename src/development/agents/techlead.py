@@ -3,16 +3,15 @@ import re
 from src.shared.core.observability import log, log_token_usage
 from src.shared.core.config import TECHLEAD_MODEL
 from src.shared.core.models import TechLeadContract, GlobalPipelineContext
-from src.shared.core.environments import env_language
+from src.shared.core.environments import env_language, extension_language_map
 from src.shared.core.prompts import get_system_prompt, build_agent_context, generate_repo_map
 from src.shared.utils.llm import run_structured_llm
 
-# Source-extension → language tag for deterministic early skill routing (precise: the negative
-# lookahead stops `.js` matching inside `.json`, `.ts` inside `.tsx`/`tsconfig`, `.cs` inside `.csproj`).
-_EXT_LANG = {
-    ".py": "python", ".go": "go", ".cs": "dotnet",
-    ".ts": "node", ".tsx": "node", ".js": "node", ".jsx": "node",
-}
+# Source-extension → language tag for deterministic early skill routing. REGISTRY-DERIVED (never a
+# hardcoded map) so a newly-registered language routes automatically with no edit here. The match site
+# below stays precise via a negative lookahead (stops `.js` matching inside `.json`, `.ts` inside
+# `.tsx`/`tsconfig`, `.cs` inside `.csproj`).
+_EXT_LANG = extension_language_map()
 
 # ==========================================
 # AGENT NODES

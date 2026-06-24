@@ -2376,13 +2376,13 @@ class TestCollectionTriageHelperTests(unittest.TestCase):
 
     def test_extract_failure_context_returns_whole_when_short(self) -> None:
         lines = ["a", "b", "c"]
-        self.assertEqual(orchestrator._extract_failure_context(lines, max_lines=50), "a\nb\nc")
+        self.assertEqual(orchestrator._extract_failure_context(lines, "python-3.12-core", max_lines=50), "a\nb\nc")
 
     def test_extract_failure_context_preserves_buried_import_error(self) -> None:
         # Root ImportError sits near the TOP, buried above a long tail of _FailedTest noise.
         lines = ["ImportError: cannot import name 'JSONConverter'"]
         lines += [f"noise {i}" for i in range(200)]
-        out = orchestrator._extract_failure_context(lines, max_lines=50)
+        out = orchestrator._extract_failure_context(lines, "python-3.12-core", max_lines=50)
         # Marker-aware slice MUST keep the root error origin (a plain tail would have dropped it)…
         self.assertIn("ImportError: cannot import name 'JSONConverter'", out)
         # …and still keep the final summary tail.
@@ -2391,7 +2391,7 @@ class TestCollectionTriageHelperTests(unittest.TestCase):
 
     def test_extract_failure_context_falls_back_to_tail_without_marker(self) -> None:
         lines = [f"line {i}" for i in range(200)]
-        out = orchestrator._extract_failure_context(lines, max_lines=50)
+        out = orchestrator._extract_failure_context(lines, "python-3.12-core", max_lines=50)
         self.assertTrue(out.endswith("line 199"))
         self.assertNotIn("…[snip]…", out)
 

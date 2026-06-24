@@ -21,7 +21,7 @@ from src.shared.core.config import (
 )
 from src.shared.core.models import GlobalPipelineContext, WorkspacePaths, RUNS_BASE, BatchState, PipelineTelemetry
 from src.shared.core.runs import Projects
-from src.shared.core.environments import is_test_file, get_qa_profile
+from src.shared.core.environments import is_test_file, get_qa_profile, failure_origin_markers, all_comment_prefixes
 from src.shared.core.prompts import generate_repo_map
 from src.shared.utils.git_helpers import get_git_root, get_pipeline_snapshot_files
 from src.shared.utils.redaction import redact
@@ -645,31 +645,22 @@ def lint_test_suite_consistency(test_snapshot: str, function_signatures: str) ->
 # ==========================================
 FEEDBACK_TAIL_LINES = 50        # budget for runner lines fed forward to the Reviewer (context pruning)
 FEEDBACK_MAX_CHARS = 8000       # hard cap on any failure text injected into an agent prompt
-# Lead-ins that mark the ORIGIN of a failure. The root ImportError/Traceback can sit far above the
-# final summary, so a plain tail slice would drop it — the extractor keeps an error-origin head too.
-_TRACEBACK_MARKERS = (
-    "Traceback (most recent call",
-    "ImportError",
-    "ModuleNotFoundError",
-    "cannot import name",
-    "ERROR:",
-    "FAILED",
-)
-
-
-def _extract_failure_context(lines: list[str], max_lines: int = FEEDBACK_TAIL_LINES) -> str:
+def _extract_failure_context(lines: list[str], environment_id: str, max_lines: int = FEEDBACK_TAIL_LINES) -> str:
     """Marker-aware slice that guarantees the root error reaches the Reviewer.
 
-    A bare tail slice can drop the root ``ImportError``/``Traceback`` when it sits above a long stack
-    or many ``_FailedTest`` entries. So when the log overflows the budget we keep BOTH an error-origin
-    head window (anchored at the first traceback/import marker) AND the final summary tail, separated
-    by a snip marker. With no marker present we fall back to a plain tail (failures live at the end).
+    A bare tail slice can drop the root error (an unresolved-import / build / runtime failure) when it sits
+    above a long stack or many failure entries. So when the log overflows the budget we keep BOTH an
+    error-origin head window (anchored at the first failure marker) AND the final summary tail, separated by
+    a snip marker. With no marker present we fall back to a plain tail (failures live at the end). The
+    failure markers are REGISTRY-DRIVEN per stack (``failure_origin_markers``) — no hardcoded Python bias —
+    so a go/node/.NET failure keeps its origin too, not just a Python traceback.
     """
     if len(lines) <= max_lines:
         return "\n".join(lines)
+    markers = failure_origin_markers(environment_id)
     half = max_lines // 2
     first = next(
-        (i for i, line in enumerate(lines) if any(m in line for m in _TRACEBACK_MARKERS)),
+        (i for i, line in enumerate(lines) if any(m in line for m in markers)),
         None,
     )
     if first is None:
@@ -687,10 +678,9 @@ def _cap_text(text: str, max_chars: int = FEEDBACK_MAX_CHARS) -> str:
     return f"{text[:half]}\n…[truncated]…\n{text[-half:]}"
 
 
-# Language-agnostic comment lead-ins. ''' is added beyond the spec list so a Python single-quote module
-# docstring (a valid justification) isn't flagged as undocumented; '<!--' covers XML-family files
-# (.csproj / .xml / .html) whose only valid comment syntax the scanner would otherwise miss.
-_COMMENT_PREFIXES = ("#", "//", "/*", "*", '"""', "'''", "<!--")
+# Registry-derived comment lead-ins — each env declares its own ``comment_prefixes``; the union
+# covers every supported stack without any hardcoded language knowledge here.
+_COMMENT_PREFIXES = all_comment_prefixes()
 _GUARDRAIL_MESSAGE = (
     "SYSTEM GUARDRAIL: File `{file_name}` was created without an architectural justification. "
     "You must add a comment block at the top of the file explaining its purpose before the system "
@@ -1565,7 +1555,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
 
         # 5. Comprehensive Audit Phase (Reviewer Agent) — failure log sliced marker-aware so the root
         #    ImportError/Traceback is preserved even when buried above a long stack.
-        await run_reviewer_node(ctx, qa_success, _extract_failure_context(qa_lines), sec_success, sec_lines)
+        await run_reviewer_node(ctx, qa_success, _extract_failure_context(qa_lines, ctx.contract.environment_id), sec_success, sec_lines)
         enforce_financial_circuit_breaker(ctx, budget_usd)
 
         # Print execution logs of utilities ONLY in case of an actual failure to CLI, but log everything to file
@@ -1603,7 +1593,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
                 (["FUNCTIONAL-TESTS"] if not qa_success else [])
                 + (["SAST-SECURITY"] if not sec_success else [])
             )
-            gate_output = _extract_failure_context(qa_lines) if not qa_success else "\n".join(sec_lines)
+            gate_output = _extract_failure_context(qa_lines, ctx.contract.environment_id) if not qa_success else "\n".join(sec_lines)
             _abort_with_incident(
                 ctx,
                 f"\n🚨 ENVIRONMENT/RUNNER MISCONFIGURATION: the {', '.join(failed_gates)} gate FAILED, "
@@ -1623,7 +1613,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
             # CONTRACT — re-deriving the TechLead spec — for failures no downstream agent can fix
             # (contradictory contract, missing error precedence, a fix that would break an NFR).
             if attempt >= ARBITER_TRIGGER_ATTEMPT:
-                gate_output = _extract_failure_context(qa_lines) if not qa_success else "\n".join(sec_lines)
+                gate_output = _extract_failure_context(qa_lines, ctx.contract.environment_id) if not qa_success else "\n".join(sec_lines)
                 await run_arbiter_node(
                     ctx, gate_output=_cap_text(gate_output),
                     prev_dev_trace=prev_dev_trace, prev_qa_trace=prev_qa_trace,

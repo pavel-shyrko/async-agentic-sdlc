@@ -124,8 +124,9 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
     elif profile["layout"] == "project":
         proj_dir = resolve_test_project_dir(ctx.contract.files_to_modify)
         if not proj_dir:
-            log.warning("🔶 QA: no *Tests.csproj in the contract's files_to_modify — placing tests in "
-                        "repo/tests (the test project should be contracted; see the dotnet_core skill).")
+            log.warning("🔶 QA: no test-project manifest in the contract's files_to_modify — placing tests "
+                        "in the fallback repo/tests dir (the test project should be contracted; see the "
+                        "stack's domain skill).")
         test_root = repo_dir / (proj_dir or "tests")
     else:  # colocated
         test_root = repo_dir
@@ -146,7 +147,7 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
     # Project intent as REFERENCE so the tester understands WHAT the system is for; the contract
     # files / production snapshot remain the authoritative source for what to assert. Empty → omitted.
     if ctx.contract.shared_context:
-        qa_system_prompt += "\n\n=== PROJECT CONTEXT (reference) ===\n" + ctx.contract.shared_context
+        qa_system_prompt += "\n\n=== PROJECT CONTEXT ===\n" + ctx.contract.shared_context
 
     qa_system_prompt += _environment_profile_block(env_id, profile)
 

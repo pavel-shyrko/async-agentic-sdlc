@@ -343,6 +343,24 @@ class GenerateRepoMapTests(unittest.TestCase):
             self.assertNotIn("__pycache__", tree)
             self.assertNotIn(".pyc", tree)
 
+    def test_prunes_build_and_dependency_dirs_registry_driven(self) -> None:
+        # The prune set is registry-derived (repo_map_ignore_dirs union) — a fresh clone's build/dependency
+        # output (node_modules/bin/obj/dist) must NOT bloat the topology map for any stack, not just Python.
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "src").mkdir()
+            (root / "src" / "app.ts").write_text("export const x = 1\n", encoding="utf-8")
+            for noise in ("node_modules", "bin", "obj", "dist"):
+                (root / noise).mkdir()
+                (root / noise / "junk.txt").write_text("junk", encoding="utf-8")
+
+            tree = generate_repo_map(root)
+
+            self.assertIn("src/", tree)
+            self.assertIn("app.ts", tree)
+            for noise in ("node_modules", "bin", "obj", "dist"):
+                self.assertNotIn(f"{noise}/", tree)
+
     def test_directories_sort_before_files(self) -> None:
         with TemporaryDirectory() as td:
             root = Path(td)

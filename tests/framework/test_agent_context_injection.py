@@ -18,8 +18,8 @@ os.environ.setdefault("GEMINI_API_KEY", "test-key")
 from src.development.agents import developer, qa
 from src.shared.core.models import GlobalPipelineContext, TechLeadContract, WorkspacePaths, QATestSuite
 
-_DEV_BLOCK = "=== PROJECT CONTEXT (reference only"
-_QA_BLOCK = "=== PROJECT CONTEXT (reference) ==="
+_DEV_BLOCK = "=== PROJECT CONTEXT ==="
+_QA_BLOCK = "=== PROJECT CONTEXT ==="
 _GOAL = "A CLI tool that converts JSON files to CSV."
 
 
@@ -63,7 +63,8 @@ class DeveloperContextInjectionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_block_absent_when_context_empty(self) -> None:
         prompt = await self._captured_prompt("")
-        self.assertNotIn(_DEV_BLOCK, prompt)
+        # Check the GOAL data is absent (the header itself appears in the system-prompt guardrail text).
+        self.assertNotIn(_GOAL, prompt)
 
 
 _CORRECTION_MARKER = "⚠️ MANDATORY CORRECTION"
@@ -99,7 +100,7 @@ class DeveloperRerouteFeedbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(f.replace("\\", "/").endswith("src/overreach.py") for f in files))
 
 
-_TOPO_BLOCK = "=== TOPOLOGY CONTRACT (authoritative file placement"
+_TOPO_BLOCK = "=== TOPOLOGY CONTRACT ==="
 
 
 class DeveloperTopologyInjectionTests(unittest.IsolatedAsyncioTestCase):

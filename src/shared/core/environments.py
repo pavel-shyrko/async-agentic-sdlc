@@ -24,6 +24,21 @@
 #                Best-effort/non-fatal.
 #   test_compile_cmd  OPTIONAL compile-ONLY check of the QA tests (network-OFF) — builds the test
 #                code but runs no test bodies; drives the pre-Reviewer QA test-compile gate.
+#   empty_test_markers / ran_test_markers  OPTIONAL lowercased substrings of the test runner's output
+#                that drive the orphan-test backstop (gates.ran_zero_tests) WITHOUT hardcoding any
+#                language in the gate logic. empty_test_markers = the runner's "executed ZERO tests"
+#                signatures; ran_test_markers = its "tests executed" signatures, which SUPPRESS the
+#                backstop (multi-target safety). Omit BOTH to exempt a stack from the check entirely
+#                (e.g. Go, whose per-package "[no test files]" line is not orphan-able).
+#   failure_origin_markers  OPTIONAL substrings marking the ORIGIN line of a failure in this stack's
+#                test/build output, so the feedback extractor keeps the root error (not just a blind tail)
+#                for the Reviewer. failure_origin_markers() unions these with a cross-language generic base.
+#   repo_map_ignore_dirs  OPTIONAL build/dependency OUTPUT dir names (never source) the repo-map walker
+#                prunes for this stack (e.g. node_modules, bin, obj) so a fresh clone's artifacts don't
+#                bloat the topology map. Hidden dirs (.git/.venv) are pruned separately by the walker.
+#   comment_prefixes  OPTIONAL leading strings that mark a comment line in this stack's source files
+#                (e.g. "#", "//", "<!--"), used by the documentation-guardrail scanner to check for a
+#                top-of-file architectural justification. all_comment_prefixes() unions them across stacks.
 
 # SAST is generic across all stacks — one Semgrep image (SAST_IMAGE/SAST_CMD), never per-language.
 
@@ -55,6 +70,13 @@ SUPPORTED_ENVIRONMENTS = {
         # Persistent download cache (survives the separate restore/build/test containers + across runs);
         # mounted RW only on the network-ON restore phase. Overrides the tmpfs pip cache.
         "cache_volume": {"name": "sdlc-cache-python", "mount": "/cache", "env": {"PIP_CACHE_DIR": "/cache/pip"}},
+        # Orphan-test backstop signals (gates.ran_zero_tests): pytest prints "no tests ran" for an empty
+        # collection; any "<n> passed/failed/error" line proves it ran and suppresses the check.
+        "empty_test_markers": ("no tests ran",),
+        "ran_test_markers": (" passed", " failed", " error"),
+        "failure_origin_markers": ("Traceback (most recent call", "ImportError", "ModuleNotFoundError", "cannot import name"),
+        "repo_map_ignore_dirs": ("__pycache__",),
+        "comment_prefixes": ("#", '"""', "'''"),
         "language_id": "python",
         "description": "Python 3.12 core runtime (pytest; Semgrep SAST).",
     },
@@ -81,6 +103,12 @@ SUPPORTED_ENVIRONMENTS = {
         "sandbox_env": {"HOME": "/tmp", "GOCACHE": "/tmp/.cache/go-build", "GOPATH": "/tmp/go", "GOMODCACHE": "/tmp/go/pkg/mod"},  # nosec B108 — in-container tmpfs paths
         # Persist the module DOWNLOAD cache (GOMODCACHE) only; the build cache (GOCACHE) stays on tmpfs.
         "cache_volume": {"name": "sdlc-cache-go", "mount": "/cache", "env": {"GOMODCACHE": "/cache/go/pkg/mod"}},
+        # No empty/ran_test markers → the orphan-test backstop is EXEMPT for Go: `go test ./...` prints
+        # `[no test files]` per-package even when sibling packages ran, and colocated Go tests can't be
+        # orphaned the way a separate test project can — so there is no safe "ran zero" signal to key on.
+        "failure_origin_markers": ("panic:", "--- FAIL", "build failed", "cannot find package"),
+        "repo_map_ignore_dirs": ("vendor", "bin"),
+        "comment_prefixes": ("//", "/*", "*"),
         "language_id": "go",
         "description": "Go 1.23 CLI runtime, full compile toolchain (go test; Semgrep SAST).",
     },
@@ -89,17 +117,27 @@ SUPPORTED_ENVIRONMENTS = {
         "build_cmd": "npm run build --if-present",
         "test_cmd": "npm test",
         "setup_cmd": "npm ci || npm install",
-        # lint_cmd: HARD lint gate via the project's own eslint. run_lint_gate FIRST checks (host-side)
-        # that an eslint config is present in the clone — absent → the gate is a no-op pass (a project
-        # that never adopted eslint must not hard-fail). With a config, a real lint error is a non-zero
-        # exit. format_cmd (eslint --fix) auto-applies the fixable subset first.
-        "lint_cmd": "npx --no-install eslint .",
+        # lint_cmd: HARD lint gate via the project's own eslint. SELF-GUARDS in the command itself: if the
+        # clone carries no eslint config (flat eslint.config.* / legacy .eslintrc* / an "eslintConfig" key
+        # in package.json) it echoes a note and exits 0 — a project that never adopted eslint must not
+        # hard-fail. With a config, a real lint error is a non-zero exit. The guard lives HERE (registry),
+        # NOT as a node-specific branch in gates.py, so the engine carries no language. Mirrors the dotnet
+        # lint_cmd workspace self-guard. format_cmd (eslint --fix) auto-applies the fixable subset first.
+        # Single line (no-newline adapter rule); valid both in sh -c (sandbox) and a GH Actions run step.
+        "lint_cmd": "if ls eslint.config.js eslint.config.mjs eslint.config.cjs .eslintrc .eslintrc.* 2>/dev/null | grep -q . || grep -q '\"eslintConfig\"' package.json 2>/dev/null; then npx --no-install eslint .; else echo 'no eslint config at repo root — lint gate no-op pass'; fi",
         # Best-effort: only fixes if a project-local eslint is installed (--no-install never fetches).
         # Non-fatal, so a project without eslint just skips the cleanup.
         "format_cmd": "npx --no-install eslint --fix . || true",
         "sandbox_env": {"HOME": "/tmp", "npm_config_cache": "/tmp/.npm"},  # nosec B108 — in-container tmpfs paths
         # Persist the npm download cache across the restore/build/test containers + runs.
         "cache_volume": {"name": "sdlc-cache-node", "mount": "/cache", "env": {"npm_config_cache": "/cache/npm"}},
+        # Orphan-test backstop signals (gates.ran_zero_tests): jest/vitest print "no tests found" for an
+        # empty run; a "Tests:"/"passing"/"passed" summary proves it ran and suppresses the check.
+        "empty_test_markers": ("no tests found", "no test files found"),
+        "ran_test_markers": ("tests:", " passing", " passed"),
+        "failure_origin_markers": ("Error:", "Cannot find module", "ReferenceError", "SyntaxError", "TypeError:"),
+        "repo_map_ignore_dirs": ("node_modules", "dist", "build", "out", "coverage"),
+        "comment_prefixes": ("//", "/*", "*"),
         "language_id": "node",
         "description": "Node.js 20 / JS / React (node, npm — frontend build & tests; Semgrep SAST).",
     },
@@ -135,6 +173,14 @@ SUPPORTED_ENVIRONMENTS = {
         # Persist the NuGet global-packages folder; overrides the tmpfs NUGET_PACKAGES so a package
         # restored online once is reused offline on every later container/run (the NU1301 cure).
         "cache_volume": {"name": "sdlc-cache-dotnet", "mount": "/cache", "env": {"NUGET_PACKAGES": "/cache/nuget"}},
+        # Orphan-test backstop signals (gates.ran_zero_tests): `dotnet test` prints "No test is available"
+        # when a *Tests.cs lands in a project the solution never compiles; a "Passed!"/"Failed!" summary
+        # proves the runner executed and suppresses the check.
+        "empty_test_markers": ("no test is available", "no test source files were specified", "no test projects were found"),
+        "ran_test_markers": ("passed!", "failed!"),
+        "failure_origin_markers": ("error CS", "error MSB", "Stack trace:", "Unhandled exception"),
+        "repo_map_ignore_dirs": ("bin", "obj", "artifacts"),
+        "comment_prefixes": ("//", "/*", "*", "<!--"),
         "language_id": "dotnet",
         "description": ".NET 10 SDK (full toolchain — dotnet build & dotnet test; Semgrep SAST).",
     },
@@ -313,6 +359,79 @@ def env_language(environment_id: str) -> str:
     if env is None:
         raise ValueError(f"Unsupported environment_id '{environment_id}'.")
     return env["language_id"]
+
+
+def all_source_extensions() -> tuple[str, ...]:
+    """Every source-file extension across all QA language profiles (e.g. ``.py``, ``.cs``, ``.ts``),
+    deduped and ordered longest-first then alphabetically.
+
+    The SSOT for any engine parser that must recognize a source/diagnostic file path (e.g. the gates'
+    compile-error regex). Registry-derived ON PURPOSE: adding a language to QA_LANGUAGE_PROFILES extends
+    those parsers automatically, with NO edit to the gate code — the language stays out of the engine.
+    """
+    exts = {ext for profile in QA_LANGUAGE_PROFILES.values() for ext in profile["source_exts"]}
+    return tuple(sorted(exts, key=lambda e: (-len(e), e)))
+
+
+def extension_language_map() -> dict[str, str]:
+    """Map each source extension → its ``language_id`` (e.g. ``.cs`` → ``dotnet``), derived from
+    QA_LANGUAGE_PROFILES.
+
+    The SSOT for extension-based language inference (the TechLead's early skill routing). Registry-derived
+    so a newly-registered language routes automatically — no edit to the agent code. Precision (e.g. not
+    matching ``.cs`` inside ``.csproj``) is the CALLER's concern at match time, not this map's.
+    """
+    return {
+        ext: language_id
+        for language_id, profile in QA_LANGUAGE_PROFILES.items()
+        for ext in profile["source_exts"]
+    }
+
+
+# Cross-language failure-origin markers appended to every env's stack-specific set — generic enough that
+# an unknown/new stack still gets a useful (non-empty) marker list without a registry entry.
+_GENERIC_FAILURE_MARKERS = ("ERROR:", "FAILED")
+
+
+def failure_origin_markers(environment_id: str) -> tuple[str, ...]:
+    """Substrings that mark the ORIGIN line of a failure in a stack's test/build output.
+
+    Lets the feedback extractor keep the ROOT error (not just a blind tail slice) for the Reviewer. Derived
+    from the env registry (per-env ``failure_origin_markers``) + a cross-language generic base — so a
+    non-Python stack is no longer second-class (the Python-only bias this replaces). Unknown env → the
+    generic base alone, never empty.
+    """
+    spec = SUPPORTED_ENVIRONMENTS.get(environment_id) or {}
+    return tuple(spec.get("failure_origin_markers", ())) + _GENERIC_FAILURE_MARKERS
+
+
+def all_comment_prefixes() -> tuple[str, ...]:
+    """Union of comment-line prefixes across all supported environments (registry-derived).
+
+    Used by the documentation-guardrail scanner so the engine carries no hardcoded language
+    syntax. Adding a new stack: declare its ``comment_prefixes`` in SUPPORTED_ENVIRONMENTS.
+    """
+    seen: dict[str, None] = {}
+    for spec in SUPPORTED_ENVIRONMENTS.values():
+        for prefix in spec.get("comment_prefixes", ()):
+            seen[prefix] = None
+    return tuple(seen)
+
+
+def repo_map_ignore_dirs(environment_id: str | None = None) -> frozenset[str]:
+    """Directory NAMES the repo-map walker prunes as build/dependency OUTPUT (never source).
+
+    Registry-derived (per-env ``repo_map_ignore_dirs``). With an ``environment_id``, returns THAT stack's
+    dirs; WITHOUT one — the TechLead builds the map before the language is known — returns the UNION across
+    all stacks, so a fresh clone's ``node_modules``/``bin``/``obj`` never bloats the topology map for any
+    stack. Hidden dirs (``.git``/``.venv``/…) are pruned separately by the walker, not here.
+    """
+    if environment_id is not None:
+        spec = SUPPORTED_ENVIRONMENTS.get(environment_id) or {}
+        return frozenset(spec.get("repo_map_ignore_dirs", ()))
+    return frozenset(
+        d for spec in SUPPORTED_ENVIRONMENTS.values() for d in spec.get("repo_map_ignore_dirs", ())
+    )
 
 
 def _posix(rel_path: str) -> str:

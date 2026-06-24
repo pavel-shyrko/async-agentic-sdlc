@@ -10,10 +10,10 @@ from unittest.mock import AsyncMock, call
 
 from src.development.gates import (
     run_qa_unit_tests, run_security_scan, run_build_gate, run_format_pass, run_test_compile_gate,
-    run_lint_gate, classify_lint_findings, _has_eslint_config, ran_zero_tests,
+    run_lint_gate, classify_lint_findings, ran_zero_tests,
     build_failure_is_test_only, build_failure_is_environmental, _has_test_files, _FILE_REF_RE,
 )
-from src.shared.core.environments import SUPPORTED_ENVIRONMENTS, SAST_IMAGE, SAST_CMD
+from src.shared.core.environments import SUPPORTED_ENVIRONMENTS, SAST_IMAGE, SAST_CMD, all_source_extensions
 
 _ENV = "python-3.12-core"
 _REPO = "/abs/repo/root"
@@ -125,6 +125,19 @@ class ZeroTestsGuardTests(unittest.IsolatedAsyncioTestCase):
         mock_sandbox.side_effect = [(0, "restored", ""), (0, "Passed!  - Failed: 0, Passed: 1, Total: 1", "")]
         ok, log_lines = await run_qa_unit_tests(environment_id=self._DOTNET, repo_root=_REPO)
         self.assertTrue(ok)
+
+
+class FileRefRegexDerivationTests(unittest.TestCase):
+    """The compile-error/lint file-ref regex is built from all_source_extensions() — not a hardcoded
+    extension list — so a new registry language is parsed with no edit to gates.py. Pin that linkage."""
+
+    def test_regex_matches_every_registered_source_extension(self) -> None:
+        for ext in all_source_extensions():
+            self.assertIsNotNone(_FILE_REF_RE.match(f"  src/pkg/file{ext}:12:5: error"), ext)
+
+    def test_regex_rejects_a_non_source_extension(self) -> None:
+        # A doc/config path must NOT be misread as a compiled source ref.
+        self.assertIsNone(_FILE_REF_RE.match("README.md:3:1: note"))
 
 
 class RunFormatPassTests(unittest.IsolatedAsyncioTestCase):
@@ -402,7 +415,8 @@ class DotnetFormatWorkspaceTargetingTests(unittest.TestCase):
 
 class RunLintGateTests(unittest.IsolatedAsyncioTestCase):
     """The HARD lint gate restores deps (network ON) then runs the registry `lint_cmd` (network OFF);
-    no-op pass when the env has no `lint_cmd`, and (node) when the clone carries no eslint config."""
+    no-op pass when the env has no `lint_cmd`; a stack whose linter needs project config (node/eslint)
+    self-guards INSIDE its own `lint_cmd` (exit 0 when the config is absent), so gates.py has no node branch."""
 
     @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
     async def test_restore_then_lint_with_network_phasing(self, mock_sandbox: AsyncMock) -> None:
@@ -436,43 +450,25 @@ class RunLintGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok)
         mock_sandbox.assert_not_awaited()
 
-    @mock.patch("src.development.gates._has_eslint_config", return_value=False)
     @mock.patch("src.development.gates.execute_in_sandbox", new_callable=AsyncMock)
-    async def test_node_noop_when_no_eslint_config(self, mock_sandbox: AsyncMock, _cfg: mock.Mock) -> None:
-        # A node project with no eslint config must NOT hard-fail — the gate is a no-op pass.
+    async def test_node_lint_runs_through_sandbox_no_host_branch(self, mock_sandbox: AsyncMock) -> None:
+        # The node "no eslint config" skip moved INTO the lint_cmd (registry self-guard) — gates.py no
+        # longer special-cases "node" host-side, so the gate always restores then runs the command, which
+        # itself exits 0 when no config is present.
+        mock_sandbox.side_effect = [(0, "restored", ""), (0, "no eslint config at repo root — lint gate no-op pass", "")]
+        node_lint = SUPPORTED_ENVIRONMENTS["node-20-web"]["lint_cmd"]
         ok, log_lines = await run_lint_gate(environment_id="node-20-web", repo_root=_REPO)
         self.assertTrue(ok)
-        mock_sandbox.assert_not_awaited()
+        self.assertEqual(mock_sandbox.await_args_list[-1], call("node-20-web", node_lint, _REPO, network="none"))
 
-
-class HasEslintConfigTests(unittest.TestCase):
-    """Host-side eslint-config detection gates the node lint run (Risk 3)."""
-
-    def test_flat_config_detected(self) -> None:
-        import tempfile, os as _os
-        with tempfile.TemporaryDirectory() as d:
-            open(_os.path.join(d, "eslint.config.js"), "w").close()
-            self.assertTrue(_has_eslint_config(d))
-
-    def test_legacy_rc_detected(self) -> None:
-        import tempfile, os as _os
-        with tempfile.TemporaryDirectory() as d:
-            open(_os.path.join(d, ".eslintrc.json"), "w").close()
-            self.assertTrue(_has_eslint_config(d))
-
-    def test_package_json_key_detected(self) -> None:
-        import tempfile, os as _os
-        with tempfile.TemporaryDirectory() as d:
-            with open(_os.path.join(d, "package.json"), "w") as fh:
-                fh.write('{"name": "x", "eslintConfig": {"root": true}}')
-            self.assertTrue(_has_eslint_config(d))
-
-    def test_absent_when_no_config(self) -> None:
-        import tempfile, os as _os
-        with tempfile.TemporaryDirectory() as d:
-            with open(_os.path.join(d, "package.json"), "w") as fh:
-                fh.write('{"name": "x"}')
-            self.assertFalse(_has_eslint_config(d))
+    def test_node_lint_cmd_self_guards_for_missing_eslint_config(self) -> None:
+        # The eslint-config precondition lives in the REGISTRY command, not gates.py — the engine carries
+        # no language. Verify the guard tokens + the safe exit-0 fallback are in the command itself.
+        node_lint = SUPPORTED_ENVIRONMENTS["node-20-web"]["lint_cmd"]
+        self.assertIn("eslint.config.js", node_lint)
+        self.assertIn("eslintConfig", node_lint)
+        self.assertIn("npx --no-install eslint .", node_lint)
+        self.assertIn("no eslint config", node_lint)
 
 
 class ClassifyLintFindingsTests(unittest.TestCase):

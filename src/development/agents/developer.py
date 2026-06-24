@@ -1,6 +1,13 @@
 import time
 
 from src.shared.core.observability import log
+
+# Instructional preamble prepended on a correction cycle. Kept at module level (not inline) so a
+# prompt engineer can find and tune it without reading the control flow.
+_RETRY_PREAMBLE = (
+    "⚠️ MANDATORY CORRECTION (overrides the Contract below for this turn) — your previous "
+    "attempt was REJECTED. You MUST resolve the following before doing anything else:\n"
+)
 from src.shared.core.config import DEVELOPER_MODEL, DEVELOPER_EFFORT, DEVELOPER_CLI_TIMEOUT, DEVELOPER_CLI_IDLE_TIMEOUT
 from src.shared.core.models import GlobalPipelineContext
 from src.shared.core.prompts import get_system_prompt, build_agent_context
@@ -36,28 +43,21 @@ async def run_developer_node(
             f"{n.file_path} | exports: {', '.join(n.exports)} | depends_on: {', '.join(n.depends_on)}"
             for n in ctx.contract.topology_contract
         )
-        prompt += (
-            "\n\n=== TOPOLOGY CONTRACT (authoritative file placement — write EXACTLY these paths, "
-            "repo-root-relative; never add a `src/` or other parent prefix) ===\n" + topo
-        )
+        prompt += "\n\n=== TOPOLOGY CONTRACT ===\n" + topo
 
     # Project intent as REFERENCE (subordinate to the Contract Directives above) so the Developer
     # understands WHAT it is building and does not fabricate goals — the raw ticket/blueprint never
     # reach this node. Omitted entirely when empty so no stray header pollutes the prompt.
     if ctx.contract.shared_context:
-        prompt += (
-            "\n\n=== PROJECT CONTEXT (reference only — the Contract Directives above are "
-            f"authoritative) ===\n{ctx.contract.shared_context}"
-        )
+        prompt += f"\n\n=== PROJECT CONTEXT ===\n{ctx.contract.shared_context}"
 
     # On a reroute the Developer is a FRESH Claude session — it has no memory of the prior correction.
     # A trailing footer loses to the strong system-prompt directives above it, so the correction is
     # PREPENDED as a mandatory, contract-overriding header: highest salience, read first.
     if error_trace:
         prompt = (
-            "⚠️ MANDATORY CORRECTION (overrides the Contract below for this turn) — your previous "
-            "attempt was REJECTED. You MUST resolve the following before doing anything else:\n"
-            f"{error_trace}\n"
+            _RETRY_PREAMBLE
+            + f"{error_trace}\n"
             + "=" * 60 + "\n\n"
             + prompt
         )
