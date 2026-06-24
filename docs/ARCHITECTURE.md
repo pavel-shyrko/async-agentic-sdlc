@@ -30,13 +30,13 @@ flowchart TB
     docker["🐳 Docker Engine<br/>sandboxed build / test / SAST"]
     github["🔗 Git / GitHub remote<br/>+ target repository"]
 
-    human -->|"--idea [--auto-execute] [--budget] / --run / --resume (CLI)"| engine
+    human -->|"--idea [--auto-execute] [--budget] [--scaffold-deploy] [--release] / --run / --resume (CLI)"| engine
     engine -->|"epic, blueprint, tickets;<br/>per-role/plane/time FinOps, atomic commit"| human
 
     engine -->|"prompts → structured JSON<br/>(PO/SA/TPM, TechLead, QA, Reviewer,<br/>TechWriter, Arbiter, DevOps)"| gemini
     engine -->|"prompt + tools → file edits<br/>(Developer only)"| claude
     engine -->|"run code in least-priv container"| docker
-    engine -->|"shallow clone, branch, atomic commit,<br/>optional push, PR open/approve/merge,<br/>deploy-scaffold PR (--scaffold-deploy)"| github
+    engine -->|"shallow clone, branch, atomic commit,<br/>optional push, PR open/approve/merge,<br/>deploy-scaffold PR (--scaffold-deploy),<br/>release tag push (--release)"| github
 
     classDef sys fill:#1168bd,stroke:#0b4884,color:#fff;
     classDef ext fill:#999,stroke:#6b6b6b,color:#fff;
@@ -264,7 +264,12 @@ sequenceDiagram
         X->>X: run_devops_gate (static-lint the manifests)
         X->>R: open PR → approve → squash-merge deploy config into main
     end
-    X-->>H: ✅ all tickets merged (+ deploy config) + app-wide FinOps (per-role/plane/time)
+    opt --release (final step, after the batch + optional scaffold — E6 / ADR 0023)
+        X->>R: shallow-clone main → chore/release-tag; git ls-remote --tags
+        X->>X: compute_next_tag (latest v* bumped; v0.1.0 greenfield)
+        X->>R: git push origin v* (annotated tag → trips the tag-gated release workflow)
+    end
+    X-->>H: ✅ all tickets merged (+ deploy config + released v* tag) + app-wide FinOps (per-role/plane/time)
 ```
 
 ---
@@ -326,6 +331,7 @@ for the full module map and [agent-contracts](../.claude/rules/agent-contracts.m
 | Nexus | PO / SA / TPM | `src/nexus/agents/{po,sa,tpm}.py` | Idea → Epic → Blueprint → task tickets (structured Gemini). |
 | Nexus | Runner / State | `src/nexus/nexus_runner.py`, `state.py` | Drive PO→SA→TPM; `NexusState` checkpoint + resume. |
 | Nexus | FSM driver | `src/nexus/runner.py` | `main()` dispatch/resume; per-ticket FSM (`run_executor`) — outer cycle, reroutes, breaker, routing, commit; E3 batch loop (`run_batch`). |
+| Nexus | Release-tag | `src/nexus/runner.py` `finalize_release` + `compute_next_tag` | Post-batch terminal phase (`--release`, E6): clone `main` → resolve the next `v*` (repo-derived, `RELEASE_VERSION_BUMP`) → push an annotated tag via the forge seam; idempotent via `BatchState.released_tag`. |
 | Development | TechLead | `src/development/agents/techlead.py` | Derive (and, in amendment mode, re-derive) the `TechLeadContract`. |
 | Development | Developer | `src/development/agents/developer.py` | Implement code in the clone (Claude CLI, agentic). |
 | Development | QA | `src/development/agents/qa.py` | Generate per-module tests (contract-first). |
@@ -335,20 +341,20 @@ for the full module map and [agent-contracts](../.claude/rules/agent-contracts.m
 | Development | Gates | `src/development/gates.py` | Build / unit-test / **lint** (`run_lint_gate` + `classify_lint_findings`) / SAST in the sandbox. |
 | Deployment | DevOps | `src/deployment/agents/devops.py` | Generate `DevOpsManifests` (archetype-aware Dockerfile + GitHub Actions deploy workflow, WIF) for the finished app (`--scaffold-deploy`, E4). |
 | Deployment | Deploy-scaffold | `src/deployment/provision/scaffold.py` `run_devops_scaffold` | Post-batch terminal phase: clone `main` → DevOps node → `run_devops_gate` (`provision/gates.py`) → merge `chore/devops-scaffold` via the forge flow. |
-| Shared | Models | `src/shared/core/models.py` | `GlobalPipelineContext`, `TechLeadContract`, `ReviewReport`, `ArbiterVerdict`, `BatchState` (E3 batch checkpoint + E5 `app_telemetry`/`budget_marker`/`nexus_merged`), `DevOpsManifests` (E4 deploy config), `PipelineTelemetry` (per-agent tokens/cost/**plane**/**time** + `by_plane()`/`merge()`/`finops_report()`). |
-| Shared | Config | `src/shared/core/config.py` | `ROLE_MODELS`, `AGENT_PLANE` (label→plane), the app-wide money budget (`PIPELINE_APP_BUDGET_USD` + floor), pricing, FSM constants. |
+| Shared | Models | `src/shared/core/models.py` | `GlobalPipelineContext`, `TechLeadContract`, `ReviewReport`, `ArbiterVerdict`, `BatchState` (E3 batch checkpoint + E5 `app_telemetry`/`budget_marker`/`nexus_merged` + E6 `released_tag`), `DevOpsManifests` (E4 deploy config), `PipelineTelemetry` (per-agent tokens/cost/**plane**/**time** + `by_plane()`/`merge()`/`finops_report()`). |
+| Shared | Config | `src/shared/core/config.py` | `ROLE_MODELS`, `AGENT_PLANE` (label→plane), the app-wide money budget (`PIPELINE_APP_BUDGET_USD` + floor), `RELEASE_VERSION_BUMP` (E6 tag bump), pricing, FSM constants. |
 | Shared | Observability | `src/shared/core/observability.py` | Logging, per-role/**plane**/**time** FinOps telemetry (`log_token_usage` reads per-call time from the `run_structured_llm` ContextVar), money-only `log_finops_summary`, finish-reason diagnostics. |
 | Shared | Run layout | `src/shared/core/runs.py` | `Projects` store + `allocate_run_dir` (run-layout SSOT). |
 | Shared | Docker adapter | `src/shared/core/docker_adapter.py` | Least-privilege `run_in_image` / `execute_in_sandbox`. |
 | Shared | Environments | `src/shared/core/environments.py` | `SUPPORTED_ENVIRONMENTS` (image + build/test/**lint** cmds + gitignore); `lint_cmd` is the SSOT shared with the generated CI. |
 | Shared | Prompts | `src/shared/core/prompts.py` | `get_system_prompt*`, `build_agent_context` (skill routing). |
 | Shared | LLM / retry | `src/shared/utils/{llm,api_retry}.py` | `run_structured_llm` (relocates Jinja-marker system messages to a user turn for GenAI); backoff + non-retryable/RECITATION handling. |
-| Shared | PR forge | `src/shared/utils/forge.py` | Provider-agnostic `open_pr`/`approve_pr`/`merge_pr` (`gh`-backed); `--auto-merge` loop closure to `base_branch`. |
+| Shared | PR forge | `src/shared/utils/forge.py` | Provider-agnostic `open_pr`/`approve_pr`/`merge_pr` (`gh`-backed, `--auto-merge` loop closure) + `list_remote_tags`/`push_tag` (E6 `--release` annotated-tag push, boundary-safe `_run_git`). |
 
 ---
 
-*Diagrams reflect the engine as of the application-wide FinOps-budget iteration ([CHANGELOG](../CHANGELOG.md)
-v0.22.0 — money-only app budget + per-role/plane/time reporting, ADR
-[0022](decisions/0022-application-wide-finops-budget.md); over the three-plane split of v0.21.0, ADR
-[0021](decisions/0021-physical-three-plane-split.md)). For the "why" behind each decision see
+*Diagrams reflect the engine as of the autonomous release-tagging iteration ([CHANGELOG](../CHANGELOG.md)
+v0.23.0 — `--release` pushes a repo-derived `v*` tag as the build's final step, ADR
+[0023](decisions/0023-autonomous-release-tagging.md); over the application-wide FinOps budget of v0.22.0, ADR
+[0022](decisions/0022-application-wide-finops-budget.md)). For the "why" behind each decision see
 [decisions/](decisions/README.md); for what's still open see [BACKLOG.md](BACKLOG.md).*

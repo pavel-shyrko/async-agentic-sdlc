@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each release maps to a completed SDLC iteration; the corresponding Architecture
 Decision Record (ADR) is linked from the version heading.
 
+## [v0.23.0] - 2026-06-24 — Autonomous Release-Tagging (`--release`): close the loop to a published artifact
+
+ADR: [0023-autonomous-release-tagging](./docs/decisions/0023-autonomous-release-tagging.md)
+(depends on [0020](./docs/decisions/0020-deploy-scaffolding-and-lint-gate.md),
+[0019](./docs/decisions/0019-cyclical-multi-ticket-orchestration.md); extends
+[0018](./docs/decisions/0018-auto-merge-pr-loop-closure.md)) ·
+Archive: [iteration_22](./docs/releases/iteration_22/iteration_22_README.md)
+
+### Added
+- **Autonomous release-tagging (E6).** New opt-in **`--release`** flag: after a `--idea --auto-execute` batch
+  merges every ticket (and after the optional `--scaffold-deploy`), `run_batch` pushes a `v*` git tag as the
+  build's final step, tripping the tag-gated deploy/release workflow the E4 DevOps plane already generated.
+  Turns "idea in → merged app on `main`" into "idea in → **released artifact out**, zero human touches." The
+  engine pushes only a *tag*; the user's Actions performs the publish (the engine never holds cloud creds).
+- **Repo-derived version policy.** `compute_next_tag` reads the target repo's existing `v*` tags
+  (`forge.list_remote_tags` → `git ls-remote`), takes the latest semver, and bumps it by
+  **`RELEASE_VERSION_BUMP`** (env, default `minor`); a tagless/greenfield repo → `v0.1.0`. Deterministic +
+  repo-derived (the version number is never persisted) → independent builds never collide and `--resume`
+  re-derives the identical value.
+- **Forge tag seam.** `src/shared/utils/forge.py` gains `list_remote_tags` + `push_tag` (an **annotated**
+  tag, then `git push origin <tag>`) beside `open_pr`/`merge_pr`, via a new boundary-safe `_run_git` runner
+  (every argv `sanitize_for_argv`'d, a `GH_NETWORK_TIMEOUT` ceiling, `GIT_TERMINAL_PROMPT=0`).
+- **Idempotent release marker.** `BatchState.released_tag` (persisted in `run_batch`'s `finally`, sibling of
+  `nexus_merged`/`budget_marker`) short-circuits a complete-batch `--resume`; `push_tag` also treats an
+  already-present remote tag as success — so re-runs / `--resume` neither duplicate nor collide a tag. A new
+  `NNN_release_tag_…` run-dir label is allocated for the release clone.
+
+### Changed
+- `run_batch` runs a new `finalize_release` terminal step after the (optional) deploy-scaffold, gated on
+  `--release` **only** — decoupled from `--scaffold-deploy` (a release is "the build finished", not "we
+  regenerated CI"). The phase makes no agent call (no budget threading) and reuses the batch's existing git
+  push credentials. `--release` is off by default and inert (with a warning) on a non-batch invocation.
+
 ## [v0.22.0] - 2026-06-23 — Application-wide FinOps Budget (money-only) + per-role/plane/time reporting
 
 ADR: [0022-application-wide-finops-budget](./docs/decisions/0022-application-wide-finops-budget.md)

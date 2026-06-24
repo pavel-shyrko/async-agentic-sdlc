@@ -76,6 +76,14 @@ push would bypass branch protection + the audited PR trail every ticket uses. Th
 untouched on any deploy-phase failure (a persistent gate failure writes an incident in the
 `NNN_devops_scaffold_…` run dir).
 
+**The generated release workflow is tag-gated — E6 `--release` is what trips it (ADR 0023).** The DevOps
+agent emits a workflow whose publish/release job triggers on `tags: ['v*']` (the CLI archetype gates it with
+`if: startsWith(github.ref, 'refs/tags/v')`), so a merge to `main` runs tests but **skips** release. The
+separate **`--release`** flag (E6) makes `run_batch`'s `finalize_release` push that `v*` tag as the build's
+final step, tripping this workflow — **decoupled** from `--scaffold-deploy` (gated on `cfg.release` alone).
+Keep the workflow tag-gated; do NOT make the release job fire on a plain push to `main`, or every merge would
+publish. See [[run-layout-and-cli]] (`--release`) and [[pipeline-fsm-loops]] (the release terminal phase).
+
 **E5 budget (ADR 0022):** `run_batch` threads the *remaining* application budget into
 `run_devops_scaffold(budget_usd_ceiling=…)`, and the deploy phase enforces it via
 `enforce_financial_circuit_breaker(ctx, budget_usd)` **after every DevOps generation** — including inside the

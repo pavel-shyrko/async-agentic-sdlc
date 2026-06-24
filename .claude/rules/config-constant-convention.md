@@ -19,7 +19,9 @@ batch stops cleanly before dispatching a ticket once the remaining budget drops 
 fast-fail budget), `DEVOPS_MAX_RETRIES` (E4 deploy-manifest static-lint self-heal budget, default 1),
 `MAX_FILE_SIZE_BYTES`, `FEEDBACK_TAIL_LINES`, `FEEDBACK_MAX_CHARS`, `GIT_NETWORK_TIMEOUT`,
 `GEMINI_REQUEST_TIMEOUT` (per-request wall-clock ceiling on every structured Gemini call, wired into the
-shared genai client as `http_options.timeout`), `RUNS_BASE`.
+shared genai client as `http_options.timeout`), `RELEASE_VERSION_BUMP` (E6 — the `--release` tag bump level,
+`major`|`minor`|`patch`, default `minor`; a *policy* string, not a numeric cap, but env-overridable by the
+same convention), `RUNS_BASE`.
 The Arbiter self-healing knobs follow the same convention: `ARBITER_TRIGGER_ATTEMPT`,
 `MAX_CONTRACT_AMENDMENTS`, `AMENDMENT_RETRY_BONUS` (ADR 0016). The E2 auto-merge knobs live in
 `src/shared/utils/forge.py`: `GH_NETWORK_TIMEOUT` (gh call ceiling) and `GITHUB_MERGE_STRATEGY`

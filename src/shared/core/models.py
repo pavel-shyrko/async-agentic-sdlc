@@ -409,6 +409,7 @@ class BatchState(BaseModel):
     app_telemetry: PipelineTelemetry = Field(default_factory=PipelineTelemetry)
     nexus_merged: bool = False         # guards against folding the Nexus planning telemetry in twice on resume
     budget_marker: str | None = None   # set on a clean budget-exhaustion stop; cleared when a resume continues
+    released_tag: str | None = None    # E6: the v* tag pushed after the batch completed (--release); idempotent resume guard
 
     def save_checkpoint(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

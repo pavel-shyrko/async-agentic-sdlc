@@ -58,13 +58,14 @@ E1 ✅ Nexus auto-dispatches Executor (one ticket)   — DONE (v0.17.0 / ADR 001
       └─► E2 ✅ Close the loop to main (auto-approved PR + merge)  — DONE (v0.18.0 / ADR 0018)
               └─► E3 ✅ Cyclical multi-ticket orchestration (all tasks, each building on the last)  — DONE (v0.19.0 / ADR 0019)
                       ├─► E4 ✅ DevOps deploy-scaffolding (--scaffold-deploy)  — DONE (v0.20.0 / ADR 0020)
-                      │       └─► E6 ⬜ Autonomous release-tagging (--release; nexus tags main → triggers the E4 workflow)  — PLANNED
+                      │       └─► E6 ✅ Autonomous release-tagging (--release; nexus tags main → triggers the E4 workflow)  — DONE (v0.23.0 / ADR 0023)
                       └─► E5 ✅ Application-wide FinOps budget (one money ceiling, remaining threaded per ticket)  — DONE (v0.22.0 / ADR 0022)
 ```
 
 E3 depends on E2 for a hard structural reason (see E3): each ticket clones `main` **fresh**, so TASK-02 only
 sees TASK-01 if TASK-01 has already been merged to `main`. E4 and E5 both build on E3's batch loop and are
-independent of each other.
+independent of each other. E6 builds on E4 (a tag-triggered workflow must already exist on `main` for the
+pushed tag to do anything) + E3's batch-completion point, and is independent of E5.
 
 ---
 
@@ -290,7 +291,7 @@ runs against the remaining unused budget; the batch halts cleanly with an incide
 exhausted, and `--resume` continues with the correct remaining total. A batch can no longer overspend `N×`
 the intended ceiling.
 
-## E6. [⬜ PLANNED] Autonomous release-tagging (`--release`) — close the loop to a published artifact
+## E6. [✅ DONE — v0.23.0 / ADR 0023] Autonomous release-tagging (`--release`) — close the loop to a published artifact
 
 **Goal:** make the final step of the autonomy loop — cutting the release — agent-driven too. Behind an
 opt-in `--release` flag, after a batch has merged every ticket (and optionally scaffolded deploy), the

@@ -167,6 +167,17 @@ class ParseArgsProjectVerbsTests(unittest.TestCase):
         # Off by default.
         self.assertFalse(self._parse("--idea", "an app", "--repo", "r", "--auto-execute").scaffold_deploy)
 
+    def test_release_flag_threads_into_idea_and_resume(self) -> None:
+        # E6: --release is carried on the batch paths (--idea --auto-execute and a bare --resume), and is
+        # independent of --scaffold-deploy (decoupled).
+        idea = self._parse("--idea", "an app", "--repo", "r", "--auto-execute", "--release")
+        self.assertTrue(idea.release)
+        self.assertFalse(idea.scaffold_deploy)             # decoupled — --release alone does not imply E4
+        resume = self._parse("--resume", "my-proj", "--release")
+        self.assertTrue(resume.release)
+        # Off by default.
+        self.assertFalse(self._parse("--idea", "an app", "--repo", "r", "--auto-execute").release)
+
     def test_run_project_requires_ticket(self) -> None:
         with self.assertRaises(SystemExit) as ctx:
             self._parse("--run", "my-proj")            # missing -f
@@ -1245,6 +1256,41 @@ class RunBatchTests(unittest.IsolatedAsyncioTestCase):
                 await orchestrator.run_batch(projects, project, cfg, nexus_dir, ["TASK-01"])
             scaffold.assert_not_awaited()
 
+    async def test_release_runs_after_a_complete_batch(self) -> None:
+        # E6: a fully-merged batch with --release pushes the release tag once, as the FINAL step, and is
+        # handed the BatchState so it can record/short-circuit on batch.released_tag.
+        with TemporaryDirectory() as td:
+            projects, project, cfg, nexus_dir = self._fixtures(td)
+            cfg.release = True
+            release = AsyncMock()
+            with (
+                mock.patch.object(orchestrator, "prepare_ticket_run",
+                                  side_effect=lambda _p, _pr, _c, t: Path(td) / f"exec_{t}"),
+                mock.patch.object(orchestrator, "run_executor",
+                                  new=AsyncMock(side_effect=lambda *_a, **_k: _ctx_with_cost("0.10"))),
+                mock.patch.object(orchestrator, "finalize_release", new=release),
+            ):
+                await orchestrator.run_batch(projects, project, cfg, nexus_dir, ["TASK-01", "TASK-02"])
+            release.assert_awaited_once()
+            args = release.await_args.args
+            self.assertEqual(args[:4], (projects, project, cfg, nexus_dir))
+            self.assertIsInstance(args[4], BatchState)           # the batch checkpoint, for the idempotent guard
+
+    async def test_release_skipped_when_flag_off(self) -> None:
+        with TemporaryDirectory() as td:
+            projects, project, cfg, nexus_dir = self._fixtures(td)
+            cfg.release = False
+            release = AsyncMock()
+            with (
+                mock.patch.object(orchestrator, "prepare_ticket_run",
+                                  side_effect=lambda _p, _pr, _c, t: Path(td) / f"exec_{t}"),
+                mock.patch.object(orchestrator, "run_executor",
+                                  new=AsyncMock(side_effect=lambda *_a, **_k: _ctx_with_cost("0.10"))),
+                mock.patch.object(orchestrator, "finalize_release", new=release),
+            ):
+                await orchestrator.run_batch(projects, project, cfg, nexus_dir, ["TASK-01"])
+            release.assert_not_awaited()
+
 
 class BatchResumeRoutingTests(unittest.IsolatedAsyncioTestCase):
     """A bare `--resume <project>` re-enters an in-progress batch (batch_state.json present) instead of
@@ -1634,6 +1680,97 @@ class FinalizePrTests(unittest.IsolatedAsyncioTestCase):
                 await orchestrator.finalize_pr(ctx, self._cfg())
             ap.assert_not_awaited()    # open_pr returned None (already merged) → idempotent skip
             mp.assert_not_awaited()
+
+
+class ComputeNextTagTests(unittest.TestCase):
+    """E6 version policy: repo-derived next v* tag bumped per RELEASE_VERSION_BUMP; greenfield → v0.1.0."""
+
+    def test_greenfield_is_v010(self) -> None:
+        self.assertEqual(orchestrator.compute_next_tag([], "minor"), "v0.1.0")
+        # Non-conforming tags (no patch / pre-release / non-semver) don't count → still greenfield.
+        self.assertEqual(orchestrator.compute_next_tag(["latest", "v1.2", "v1.0.0-rc1"], "minor"), "v0.1.0")
+
+    def test_minor_is_default_and_fallback(self) -> None:
+        self.assertEqual(orchestrator.compute_next_tag(["v1.2.3"], "minor"), "v1.3.0")
+        self.assertEqual(orchestrator.compute_next_tag(["v1.2.3"], "nonsense"), "v1.3.0")  # unknown → minor
+
+    def test_major_and_patch_bumps(self) -> None:
+        self.assertEqual(orchestrator.compute_next_tag(["v1.2.3"], "major"), "v2.0.0")
+        self.assertEqual(orchestrator.compute_next_tag(["v1.2.3"], "patch"), "v1.2.4")
+
+    def test_picks_numerically_highest_across_unsorted_input(self) -> None:
+        # max is (1,10,0), NOT the lexically-largest "v1.9.0"; minor bump → v1.11.0.
+        self.assertEqual(
+            orchestrator.compute_next_tag(["v0.9.0", "v1.10.0", "v1.2.0", "v1.9.0"], "minor"), "v1.11.0")
+
+
+class FinalizeReleaseTests(unittest.IsolatedAsyncioTestCase):
+    """E6 finalize_release: clone → resolve next tag → push it; idempotent on a prior released_tag."""
+
+    def _fixtures(self, td):
+        project = mock.MagicMock()
+        project.slug = "p"; project.repo = "some-repo"; project.base_branch = "main"
+        projects = mock.MagicMock()
+        projects.allocate.return_value = Path(td) / "003_release_tag"
+        cfg = orchestrator.RunConfig(
+            description=None, base_branch="main", resume=None, reset_attempts=False,
+            idea="an idea", repo="some-repo", auto_execute=True, auto_merge=True, push=True, release=True,
+        )
+        nexus_dir = Path(td) / "001_nexus_plan"
+        batch = BatchState(project_slug="p", nexus_run=nexus_dir.name,
+                           tickets=["TASK-01"], completed=["TASK-01"])
+        return projects, project, cfg, nexus_dir, batch
+
+    def _ws(self, td) -> WorkspacePaths:
+        return WorkspacePaths(logs_dir=Path(td) / "logs", reports_dir=Path(td) / "reports",
+                              repo_dir=Path(td) / "repo")
+
+    async def test_resolves_bumps_and_pushes_then_records_marker(self) -> None:
+        with TemporaryDirectory() as td:
+            projects, project, cfg, nexus_dir, batch = self._fixtures(td)
+            push = AsyncMock(return_value=True)
+            with (
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "bootstrap_session",
+                                  new=AsyncMock(return_value=self._ws(td))),
+                mock.patch("src.shared.utils.forge.list_remote_tags",
+                           new=AsyncMock(return_value=["v1.2.0"])),
+                mock.patch("src.shared.utils.forge.push_tag", new=push),
+            ):
+                await orchestrator.finalize_release(projects, project, cfg, nexus_dir, batch)
+            push.assert_awaited_once()
+            self.assertEqual(push.await_args.args[1], "v1.3.0")          # minor bump of the repo's latest
+            self.assertEqual(push.await_args.kwargs.get("ref"), "main")  # tags the base-branch tip
+            self.assertEqual(batch.released_tag, "v1.3.0")               # marker set for an idempotent --resume
+
+    async def test_idempotent_skip_when_already_released(self) -> None:
+        with TemporaryDirectory() as td:
+            projects, project, cfg, nexus_dir, batch = self._fixtures(td)
+            batch.released_tag = "v9.9.9"
+            push = AsyncMock(return_value=True)
+            with (
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "bootstrap_session", new=AsyncMock()) as boot,
+                mock.patch("src.shared.utils.forge.push_tag", new=push),
+            ):
+                await orchestrator.finalize_release(projects, project, cfg, nexus_dir, batch)
+            boot.assert_not_awaited()                  # never clones
+            push.assert_not_awaited()                  # never pushes a second tag
+            projects.allocate.assert_not_called()
+            self.assertEqual(batch.released_tag, "v9.9.9")
+
+    async def test_failed_push_leaves_no_marker(self) -> None:
+        with TemporaryDirectory() as td:
+            projects, project, cfg, nexus_dir, batch = self._fixtures(td)
+            with (
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "bootstrap_session",
+                                  new=AsyncMock(return_value=self._ws(td))),
+                mock.patch("src.shared.utils.forge.list_remote_tags", new=AsyncMock(return_value=[])),
+                mock.patch("src.shared.utils.forge.push_tag", new=AsyncMock(return_value=False)),
+            ):
+                await orchestrator.finalize_release(projects, project, cfg, nexus_dir, batch)
+            self.assertIsNone(batch.released_tag)      # no marker → a later --resume retries the push
 
 
 class AutoMergeLoopClosureTests(unittest.IsolatedAsyncioTestCase):

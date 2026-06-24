@@ -89,6 +89,12 @@ GEMINI_REQUEST_TIMEOUT = int(os.environ.get("GEMINI_REQUEST_TIMEOUT", "300"))
 # `claude.exe` across the WSL↔Win32 interop boundary. Env-overridable.
 CLAUDE_CLI_BIN = os.environ.get("CLAUDE_CLI_BIN", "claude")
 
+# Semver bump level for the E6 autonomous release tag (`--release`): one of `major|minor|patch`. After a
+# batch merges every ticket, the engine derives the next `v*` tag from the repo's existing tags and bumps it
+# by this much (`v0.1.0` on a tagless/greenfield repo). The version itself is repo-derived — never persisted
+# — so only the bump POLICY is a knob. Env-overridable.
+RELEASE_VERSION_BUMP = os.environ.get("RELEASE_VERSION_BUMP", "minor")
+
 # ==========================================
 # FINOPS — Financial Circuit Breaker budget
 # ==========================================

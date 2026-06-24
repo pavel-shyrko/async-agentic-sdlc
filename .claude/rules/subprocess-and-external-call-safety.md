@@ -29,7 +29,8 @@ mangled to NUL). The helper strips C0 controls + DEL while preserving `\t`/`\n`/
 survive intact.
 
 **How to apply:** the existing seams already do this — `forge._run_gh` (`safe_args = [sanitize_for_argv(a)
-for a in args]`) and `runner._run_checked` (`safe_cmd = [sanitize_for_argv(c) for c in cmd]`). A **new**
+for a in args]`), `forge._run_git` (the E6 release-tag git runner, same `safe_args` line), and
+`runner._run_checked` (`safe_cmd = [sanitize_for_argv(c) for c in cmd]`). A **new**
 subprocess call site must do the same at the argv boundary — not by cleaning one upstream field. (Cleaning
 the glyph at *ingest*, when Nexus persists `TASK-*.md` / sets `pr_description`, is a separate deferred
 BACKLOG hardening — it does not replace the boundary guard.)
@@ -42,7 +43,8 @@ constant ([[config-constant-convention]]):
   `http_options=types.HttpOptions(timeout=GEMINI_REQUEST_TIMEOUT * 1000)` (`config.py`). Do NOT instead wrap
   the `run_in_executor` await in `asyncio.wait_for` — the executor thread cannot be cancelled, so that only
   orphans the worker thread and leaks the pool. Bound the *request*, not the await.
-- **`gh` (forge)** — `GH_NETWORK_TIMEOUT` via `asyncio.wait_for(proc.communicate(), …)` in `forge._run_gh`.
+- **`gh` (forge)** — `GH_NETWORK_TIMEOUT` via `asyncio.wait_for(proc.communicate(), …)` in `forge._run_gh`;
+  the same ceiling bounds the E6 release-tag git ops (`list_remote_tags`/`push_tag`) in `forge._run_git`.
 - **`git`** — `GIT_NETWORK_TIMEOUT` in `runner._run_checked` / `git_helpers`.
 - **Developer CLI** — `DEVELOPER_CLI_TIMEOUT` (hard) + `DEVELOPER_CLI_IDLE_TIMEOUT` (inactivity).
 

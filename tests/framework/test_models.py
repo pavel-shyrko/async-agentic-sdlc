@@ -507,6 +507,7 @@ class BatchStateCheckpointTests(unittest.TestCase):
         self.assertEqual(batch.app_telemetry.total_cost_usd, Decimal("0"))
         self.assertFalse(batch.nexus_merged)
         self.assertIsNone(batch.budget_marker)
+        self.assertIsNone(batch.released_tag)            # E6 — no release cut yet
 
     def test_app_telemetry_and_markers_survive_round_trip(self) -> None:
         # E5 — the running application spend + resume markers must persist for --resume re-budgeting.
@@ -514,7 +515,8 @@ class BatchStateCheckpointTests(unittest.TestCase):
             path = Path(td) / "reports" / "batch_state.json"
             batch = BatchState(project_slug="p", nexus_run="001_nexus_plan",
                                tickets=["TASK-01", "TASK-02"], completed=["TASK-01"],
-                               nexus_merged=True, budget_marker="App budget exhausted before 'TASK-02'.")
+                               nexus_merged=True, budget_marker="App budget exhausted before 'TASK-02'.",
+                               released_tag="v1.3.0")
             batch.app_telemetry.record("Developer Agent", 1000, 200, "0.42",
                                        provider="claude", plane="development", duration_seconds=5.0)
             batch.save_checkpoint(path)
@@ -522,6 +524,7 @@ class BatchStateCheckpointTests(unittest.TestCase):
             loaded = BatchState.load_checkpoint(path)
             self.assertTrue(loaded.nexus_merged)
             self.assertEqual(loaded.budget_marker, "App budget exhausted before 'TASK-02'.")
+            self.assertEqual(loaded.released_tag, "v1.3.0")   # E6 — release marker survives --resume
             self.assertEqual(loaded.app_telemetry.total_cost_usd, Decimal("0.42"))
             self.assertAlmostEqual(loaded.app_telemetry.total_duration_seconds, 5.0)
             self.assertEqual(loaded.app_telemetry.by_plane()["development"]["calls"], 1)

@@ -16,7 +16,7 @@ from src.shared.core.observability import log, reconfigure_logging
 from src.shared.core.observability import log_finops_summary as _render_finops_summary
 from src.shared.core.config import (
     check_environment, PIPELINE_APP_BUDGET_USD, PIPELINE_APP_BUDGET_FLOOR_USD,
-    EFFECTIVE_BUDGET_USD, effective_budget_usd,
+    EFFECTIVE_BUDGET_USD, effective_budget_usd, RELEASE_VERSION_BUMP,
 )
 from src.shared.core.models import GlobalPipelineContext, WorkspacePaths, RUNS_BASE, BatchState, PipelineTelemetry
 from src.shared.core.runs import Projects
@@ -67,6 +67,7 @@ class RunConfig:
     auto_execute: bool = False  # --idea --auto-execute: after planning, run the Executor for the first ticket
     auto_merge: bool = False  # --auto-merge: on success, open a PR into base_branch and squash-merge it (E2; implies push)
     scaffold_deploy: bool = False  # --scaffold-deploy: after a batch merges all tickets, generate + merge deploy manifests (E4)
+    release: bool = False  # --release: after a batch merges all tickets (+ optional scaffold), push a v* release tag (E6)
     budget_usd: Decimal | None = None  # --budget: app-wide money ceiling override for this invocation (E5); None → PIPELINE_APP_BUDGET_USD
 
 
@@ -105,16 +106,24 @@ def parse_args() -> RunConfig:
                              "Actions deploy workflow (GCP Cloud Run via WIF) for the finished app (E4). "
                              "Consumed only by the --auto-execute batch (or its --resume); requires the gh "
                              "CLI + GITHUB_TOKEN.")
+    parser.add_argument("--release", action="store_true",
+                        help="After the batch merges ALL tickets (and optional --scaffold-deploy), push a "
+                             "v* release tag — the repo's latest tag bumped (RELEASE_VERSION_BUMP, default "
+                             "minor; v0.1.0 greenfield) — to trigger the deploy/release workflow (E6). "
+                             "Opt-in; consumed only by the --auto-execute batch (or its --resume); reuses "
+                             "the batch's git push credentials.")
 
     args = parser.parse_args()
 
     # --auto-merge needs the branch on origin before a PR can reference it, so it implies --push.
     push = args.push or args.auto_merge
 
-    # --scaffold-deploy is consumed ONLY by the post-batch terminal phase (run_batch). On any non-batch
-    # invocation it is inert — warn rather than silently ignore it.
-    if args.scaffold_deploy and not (args.auto_execute or args.resume):
-        log.warning("⚠️  --scaffold-deploy is consumed only by the --auto-execute batch (or its --resume); "
+    # --scaffold-deploy and --release are consumed ONLY by the post-batch terminal phase (run_batch). On any
+    # non-batch invocation they are inert — warn rather than silently ignore them.
+    if (args.scaffold_deploy or args.release) and not (args.auto_execute or args.resume):
+        flags = " / ".join(f for f, on in (("--scaffold-deploy", args.scaffold_deploy),
+                                           ("--release", args.release)) if on)
+        log.warning(f"⚠️  {flags} is consumed only by the --auto-execute batch (or its --resume); "
                     "it has no effect on this invocation.")
 
     # Nexus Control Plane: an idea starts a new project (planning run). --repo (optional) is captured
@@ -127,7 +136,8 @@ def parse_args() -> RunConfig:
         return RunConfig(
             description=None, base_branch=args.base_branch, resume=None, reset_attempts=False,
             idea=args.idea, repo=args.repo, push=(push or auto_merge), auto_execute=args.auto_execute,
-            auto_merge=auto_merge, scaffold_deploy=args.scaffold_deploy, budget_usd=args.budget,
+            auto_merge=auto_merge, scaffold_deploy=args.scaffold_deploy, release=args.release,
+            budget_usd=args.budget,
         )
 
     # Execute a ticket under an existing project: --run <project> -f <ticket>.
@@ -154,7 +164,7 @@ def parse_args() -> RunConfig:
             description=None, base_branch=args.base_branch, resume=None,
             reset_attempts=args.reset_attempts, push=push, auto_merge=args.auto_merge,
             resume_project=first, resume_number=(args.resume[1] if len(args.resume) > 1 else None),
-            scaffold_deploy=args.scaffold_deploy, budget_usd=args.budget,
+            scaffold_deploy=args.scaffold_deploy, release=args.release, budget_usd=args.budget,
         )
 
     # Fresh DIRECT run: a target repo and ticket are mandatory for git-anchored bootstrapping.
@@ -349,6 +359,82 @@ async def finalize_pr(ctx: GlobalPipelineContext, cfg: RunConfig, head_branch: s
     await approve_pr(repo_dir, pr)        # best-effort; needs a separate GITHUB_REVIEWER_TOKEN
     await merge_pr(repo_dir, pr)
     log.info(f"✅ Closed the loop: {head_branch} squash-merged into {cfg.base_branch}.")
+
+
+# ==========================================
+# E6 — AUTONOMOUS RELEASE TAGGING (--release)
+# ==========================================
+_SEMVER_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")  # strict vMAJOR.MINOR.PATCH; pre-release/metadata ignored
+
+
+def compute_next_tag(existing_tags: list[str], bump: str = RELEASE_VERSION_BUMP) -> str:
+    """Resolve the next ``v*`` release tag from a repo's existing tags — repo-derived, never invented.
+
+    Parses the strict ``vMAJOR.MINOR.PATCH`` tags (anything else — ``v1.2``, ``latest``, a pre-release
+    ``v1.0.0-rc1`` — is ignored), takes the highest, and bumps it by ``bump`` (``major|minor|patch``;
+    an unrecognized value falls back to ``minor``). A repo with no conforming tag is greenfield → ``v0.1.0``
+    (the bump level does not apply to the very first release). Pure + deterministic, so independent builds
+    never collide and a ``--resume`` re-derives the identical value.
+    """
+    parsed = [
+        (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        for m in (_SEMVER_TAG_RE.match(t.strip()) for t in existing_tags) if m
+    ]
+    if not parsed:
+        return "v0.1.0"
+    major, minor, patch = max(parsed)
+    level = (bump or "minor").lower()
+    if level == "major":
+        major, minor, patch = major + 1, 0, 0
+    elif level == "patch":
+        patch += 1
+    else:  # "minor" — the default, and the fallback for an unrecognized RELEASE_VERSION_BUMP
+        minor, patch = minor + 1, 0
+    return f"v{major}.{minor}.{patch}"
+
+
+async def finalize_release(projects: Projects, project, cfg: RunConfig, nexus_run_dir: Path,
+                           batch: BatchState) -> None:
+    """E6: after a batch merges every ticket, push a ``v*`` tag to trigger the deploy/release workflow.
+
+    The final step of the autonomy loop (``--release``). Resolves the next version from the target repo's
+    existing tags (``compute_next_tag``), clones the base branch FRESH onto a throwaway local branch, and
+    pushes an annotated tag at the base-branch tip via the shared forge seam — the user's Actions then runs
+    the actual publish (the engine never holds cloud creds; it only pushes the tag).
+
+    Idempotent: a ``batch.released_tag`` set by a prior run short-circuits this (the marker is persisted by
+    ``run_batch``'s ``finally``), and ``push_tag`` itself treats an already-present remote tag as success —
+    so re-runs / ``--resume`` neither duplicate nor collide a tag. Best-effort: a failed push logs and
+    returns (the merged application on the base branch is unaffected) rather than crashing a successful build.
+    Decoupled from ``--scaffold-deploy``: if no tag-triggered workflow exists on the base branch the tag is
+    simply inert (an acceptable no-op)."""
+    from src.shared.utils.forge import list_remote_tags, push_tag
+    if batch.released_tag:
+        log.info(f"🏷️  [E6] Release already cut for this batch ({batch.released_tag}) — skipping (idempotent).")
+        return
+
+    cfg.repo = cfg.repo or project.repo
+    cfg.base_branch = project.base_branch
+    cfg.ticket = "release"
+    run_dir = projects.allocate(project.slug, "release", "tag")
+    reconfigure_logging(run_dir / "logs")
+    log.info(f"🚀 [E6] Release-tagging for project '{project.slug}' → {run_dir.name}.")
+
+    # The throwaway "chore/release-tag" branch is never pushed; bootstrap_session fetches a LOCAL ref for
+    # the base branch (origin/<base> tip), which is the commit the tag points at.
+    ws = await bootstrap_session(cfg, run_dir, branch="chore/release-tag")
+    existing = await list_remote_tags(ws.repo_dir)
+    tag = compute_next_tag(existing, RELEASE_VERSION_BUMP)
+    log.info(f"🏷️  [E6] Resolved next release tag {tag} (from {len(existing)} existing tag(s), "
+             f"bump={RELEASE_VERSION_BUMP}).")
+
+    if await push_tag(ws.repo_dir, tag, ref=cfg.base_branch, message=f"Release {tag}"):
+        batch.released_tag = tag  # persisted by run_batch's finally; the idempotent guard for a --resume
+        log.info(f"🏁 [E6] Released {tag} on {cfg.base_branch}. A tag-triggered workflow (e.g. from "
+                 f"--scaffold-deploy) is now running the publish; if none exists the tag is inert.")
+    else:
+        log.error(f"🚨 [E6] Release tag {tag} did not land — the merged app on {cfg.base_branch} is "
+                  f"unaffected. Push it manually, or re-run `--resume {project.slug} --release`.")
 
 
 # ==========================================
@@ -926,6 +1012,13 @@ async def run_batch(projects: Projects, project, cfg: RunConfig, nexus_run_dir: 
             # to the main.py guard; the outer finally below persists the app report either way.
             await run_devops_scaffold(projects, project, cfg, nexus_run_dir,
                                       budget_usd_ceiling=devops_remaining, app_telemetry=batch.app_telemetry)
+
+        # E6 — once every ticket has merged (and the optional deploy config landed above), push the release
+        # tag as the FINAL step of the autonomy loop. Gated on --release ONLY (decoupled from
+        # --scaffold-deploy): a release is "the build finished", not "we regenerated CI". No LLM spend, so no
+        # budget threading; idempotent on --resume via batch.released_tag (persisted by the finally below).
+        if cfg.release:
+            await finalize_release(projects, project, cfg, nexus_run_dir, batch)
     finally:
         # Always persist the application-wide spend + report, regardless of how the batch exits.
         batch.save_checkpoint(batch_path)

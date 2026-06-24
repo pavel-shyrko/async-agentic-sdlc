@@ -14,7 +14,11 @@ checkpoints progress to `batch_state.json`, and stops on the first `PipelineHalt
 `--scaffold-deploy` is set, **`run_devops_scaffold`** runs once as a post-batch terminal phase (E4, ADR 0020):
 it clones `main` onto `chore/devops-scaffold`, has the `devops` agent emit `DevOpsManifests`, static-lints
 them (`run_devops_gate`, 1 self-heal retry), and merges via the same `finalize_pr` forge flow — it is NOT
-part of the per-ticket FSM cycle. The control-plane (PO→SA→TPM) is linear with no loops; all cycling lives
+part of the per-ticket FSM cycle. Then, if `--release` is set, **`finalize_release`** runs as the **final**
+terminal phase (E6, ADR 0023): it clones `main` onto `chore/release-tag`, resolves the next `v*` via
+`compute_next_tag` (repo-derived, `RELEASE_VERSION_BUMP`), and pushes an annotated tag (`forge.push_tag`) —
+no agent call, idempotent via `BatchState.released_tag`, gated on `cfg.release` alone (decoupled from
+`--scaffold-deploy`). The control-plane (PO→SA→TPM) is linear with no loops; all cycling lives
 here. Related: [repo-module-map](repo-module-map.md),
 [agent-contracts](agent-contracts.md), [config-constant-convention](config-constant-convention.md).
 

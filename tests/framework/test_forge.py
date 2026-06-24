@@ -116,5 +116,63 @@ class ApprovePrTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(approved)
 
 
+class ListRemoteTagsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_parses_and_dedupes_peeled_tags(self) -> None:
+        # `git ls-remote --tags origin` rows: <sha>\trefs/tags/<name>, with peeled `^{}` rows for
+        # annotated tags. The peeled row must collapse to its base name and not duplicate it.
+        out = ("aaaa\trefs/tags/v1.2.0\n"
+               "bbbb\trefs/tags/v1.2.0^{}\n"
+               "cccc\trefs/tags/v0.9.0\n"
+               "dddd\trefs/heads/main\n").encode()  # a non-tag ref must be ignored
+        with mock.patch("asyncio.create_subprocess_exec", new=AsyncMock(side_effect=[_proc(0, stdout=out)])):
+            tags = await forge.list_remote_tags("/repo")
+        self.assertEqual(tags, ["v1.2.0", "v0.9.0"])
+
+    async def test_empty_on_failure(self) -> None:
+        with mock.patch("asyncio.create_subprocess_exec",
+                        new=AsyncMock(side_effect=[_proc(128, stderr=b"fatal: no origin")])):
+            tags = await forge.list_remote_tags("/repo")
+        self.assertEqual(tags, [])             # greenfield/degraded → empty, never raises
+
+
+class PushTagTests(unittest.IsolatedAsyncioTestCase):
+    async def test_creates_annotated_tag_then_pushes(self) -> None:
+        # tag (-a -m) then push; both exit 0.
+        with mock.patch("asyncio.create_subprocess_exec",
+                        new=AsyncMock(side_effect=[_proc(0), _proc(0)])) as ex:
+            ok = await forge.push_tag("/repo", "v1.5.0", ref="main", message="Release v1.5.0")
+        self.assertTrue(ok)
+        self.assertEqual(ex.call_count, 2)
+        tag_cmd = ex.call_args_list[0].args
+        for token in ("tag", "-a", "v1.5.0", "main", "-m", "Release v1.5.0"):
+            self.assertIn(token, tag_cmd)
+        push_cmd = ex.call_args_list[1].args
+        for token in ("push", "origin", "v1.5.0"):
+            self.assertIn(token, push_cmd)
+
+    async def test_already_exists_is_idempotent_success(self) -> None:
+        # A tag that already landed on the remote (re-run/--resume) is success, not an error.
+        procs = [_proc(0), _proc(1, stderr=b"! [rejected] v1.5.0 -> v1.5.0 (already exists)")]
+        with mock.patch("asyncio.create_subprocess_exec", new=AsyncMock(side_effect=procs)):
+            ok = await forge.push_tag("/repo", "v1.5.0", ref="main", message="Release v1.5.0")
+        self.assertTrue(ok)
+
+    async def test_genuine_push_failure_returns_false(self) -> None:
+        procs = [_proc(0), _proc(1, stderr=b"fatal: could not read from remote")]
+        with mock.patch("asyncio.create_subprocess_exec", new=AsyncMock(side_effect=procs)):
+            ok = await forge.push_tag("/repo", "v1.5.0", ref="main", message="Release v1.5.0")
+        self.assertFalse(ok)                   # best-effort: logs, never sys.exits
+
+    async def test_null_byte_in_message_does_not_crash_argv(self) -> None:
+        # Regression: a corrupted glyph (NUL) in the tag message must not reach execvp ("embedded null
+        # byte"). _run_git sanitizes every arg — assert the argv is NUL-free (mirrors the open_pr test).
+        with mock.patch("asyncio.create_subprocess_exec",
+                        new=AsyncMock(side_effect=[_proc(0), _proc(0)])) as ex:
+            await forge.push_tag("/repo", "v1.5.0", ref="main", message="Release \x00 v1.5.0")
+        for call in ex.call_args_list:
+            for arg in call.args:
+                self.assertNotIn("\x00", str(arg))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -63,7 +63,7 @@ This repository is strictly organized to provide 100% traceability for evaluatio
 token-burners-factory/
 ├── src/                        # Source code, split into 3 physical planes (control / worker / infra) + shared
 │   ├── nexus/                  # Control Plane — orchestration + FSM + planning
-│   │   ├── runner.py           # main() dispatcher + run_executor FSM + run_batch (E3); resume routing, --auto-execute/--scaffold-deploy bridges
+│   │   ├── runner.py           # main() dispatcher + run_executor FSM + run_batch (E3); resume routing, --auto-execute/--scaffold-deploy/--release bridges
 │   │   ├── nexus_runner.py     # run_nexus (idea→epic→blueprint→tickets); state.py = NexusState checkpoint
 │   │   └── agents/             # Planning agents: po.py / sa.py / tpm.py
 │   ├── development/            # Worker Plane — code generation + quality gates
@@ -104,7 +104,7 @@ token-burners-factory/
 │   ├── guides/                 # setup.md · docker-on-windows.md (environment bring-up)
 │   ├── decisions/              # Architecture Decision Records (MADR) 0000–0021 + index README
 │   ├── releases/               # Per-iteration release write-ups (iteration_NN/)
-│   └── BACKLOG.md              # Capability roadmap (E1–E5) + open defects & refinements
+│   └── BACKLOG.md              # Capability roadmap (E1–E6) + open defects & refinements
 ├── main.py                     # Root CLI entrypoint: runs src/nexus/runner.py:main()
 ├── CLAUDE.md                   # Claude Code project governance: CLI economy, dev commands, guardrails
 ├── CHANGELOG.md                # Release history (Keep a Changelog), linked to ADRs
@@ -185,6 +185,13 @@ python3 main.py --idea "CLI that converts JSON to CSV with a selectable delimite
 # workflow, GCP Cloud Run via WIF) through a chore/devops-scaffold PR. One-time org setup: docs/guides/devops_setup.md.
 python3 main.py --idea "CLI that converts JSON to CSV with a selectable delimiter" \
     --repo https://github.com/acme/widgets.git --auto-execute --scaffold-deploy
+
+# Add --release to ALSO cut the release (E6): after the batch merges (and optional --scaffold-deploy), the
+# engine pushes a v* tag — the repo's latest tag bumped (RELEASE_VERSION_BUMP, default minor; v0.1.0
+# greenfield) — which trips the tag-gated deploy/release workflow. Idea in → released artifact out, no
+# manual tag. The engine pushes only the tag; the user's Actions runs the publish. Off by default.
+python3 main.py --idea "CLI that converts JSON to CSV with a selectable delimiter" \
+    --repo https://github.com/acme/widgets.git --auto-execute --scaffold-deploy --release
 
 # A mid-batch halt stops cleanly (per-ticket incident + a batch_state.json checkpoint); resume the batch
 # from the failed ticket — already-merged tickets are skipped — with a bare project slug:

@@ -28,6 +28,15 @@ flaw, then recommend a fix in `src/`/`prompts/` — NEVER edit the generated clo
   run dir (cloned on `chore/devops-scaffold`), separate from the ticket runs. A persistent `run_devops_gate`
   failure writes an `incident_report.json` *there*; a forge merge failure of the scaffold PR is a
   loop-closure failure (no incident). The merged application code is untouched on any deploy-phase failure.
+- **Release-tagging (`--release`, E6):** the release phase is its own `<NNN>_release_tag_…` run dir (cloned
+  on `chore/release-tag`), the FINAL step after the batch (+ optional scaffold). It makes **no agent call**
+  and is **best-effort** — a failed `forge.push_tag` logs `🚨 [E6] Release tag … did not land` and returns;
+  it writes **no incident** and does NOT fail the build (the app already merged). The pushed tag is recorded
+  in `BatchState.released_tag` (a complete-batch `--resume` short-circuits via it). Diagnose a "the release
+  workflow didn't run" report by checking: did the tag push log success (grep the release run's
+  `sdlc_audit.log` for `🏷️`/`🏁 [E6]`)? Is `released_tag` set in `batch_state.json`? Does a tag-triggered
+  workflow (`on: push: tags: ['v*']`) actually exist on `main` (an **inert tag** if `--scaffold-deploy` never
+  ran is expected, not a bug)? The fix points at the forge seam / env or the missing workflow — never an agent.
 
 ## Step 2 — Gather state (in this order)
 1. **Checkpoint** — `reports/checkpoint.json`. Executor (`GlobalPipelineContext`): `current_attempt`,
