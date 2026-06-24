@@ -2636,6 +2636,75 @@ class LintGateLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("MISCONFIGURATION", abort_msgs[0])
 
 
+class RawRunnerOutputToQaChannelTests(unittest.IsolatedAsyncioTestCase):
+    """Fix B: when the test suite ACTUALLY fails at runtime, the QA channel carries the authoritative runner
+    output (verbatim expected-vs-actual) appended to the Reviewer's transcription — so QA is never rerouted
+    blind even when the Reviewer's payload is thin. Pairs with the payload-on-rejection validator (#17)."""
+
+    @staticmethod
+    def _ctx(base: Path) -> GlobalPipelineContext:
+        paths = WorkspacePaths(logs_dir=base / "logs", reports_dir=base / "reports", repo_dir=base)
+        ctx = GlobalPipelineContext(
+            pr_description="resume", workspace_paths=paths, test_code_snapshot="existing tests",
+        )
+        ctx.contract = TechLeadContract(
+            files_to_modify=["src/core/converter.py"], instruction="noop", function_signatures="noop",
+            strict_type_validation_rules="noop", techlead_reasoning="noop",
+            environment_id="python-3.12-core",
+            topology_contract=[{"file_path": "src/core/converter.py", "exports": [], "depends_on": []}],
+        )
+        return ctx
+
+    async def test_failing_tests_append_raw_runner_output_to_qa_channel(self) -> None:
+        with TemporaryDirectory() as td:
+            ctx = self._ctx(Path(td))
+            raw_fail = "FAILED test_write_csv[empty] - AssertionError: assert '' == '\\r\\n'"
+
+            async def _reject_tests(*_a, **_k) -> None:
+                ctx.review_report = ReviewReport(
+                    code_quality_analysis="ok", test_integrity_analysis="empty-input expectation wrong",
+                    log_verification_analysis="qa failed",
+                    code_quality_approved=True, test_integrity_approved=False,
+                    qa_diagnostic_payload="reconsider the empty-input case",
+                )
+
+            captured: list[str] = []
+
+            def _capture_abort(_ctx, _message, *a, **k):
+                captured.append(_ctx.qa_error_trace)   # the B-augmented channel at routing time
+                raise SystemExit(1)
+
+            with ExitStack() as stack:
+                stack.enter_context(mock.patch.object(orchestrator, "check_environment"))
+                stack.enter_context(mock.patch.object(orchestrator, "reconfigure_logging"))
+                stack.enter_context(mock.patch.object(orchestrator, "build_production_snapshot"))
+                stack.enter_context(mock.patch.object(orchestrator, "run_format_pass", new=AsyncMock(return_value=None)))
+                stack.enter_context(mock.patch.object(orchestrator, "run_lint_gate", new=AsyncMock(return_value=(True, []))))
+                stack.enter_context(mock.patch.object(orchestrator, "run_build_gate", new=AsyncMock(return_value=(True, []))))
+                stack.enter_context(mock.patch.object(orchestrator, "run_test_compile_gate", new=AsyncMock(return_value=(True, []))))
+                stack.enter_context(mock.patch.object(orchestrator, "_missing_contract_files", return_value=[]))
+                stack.enter_context(mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
+                    description=None, base_branch="main", resume=Path("cp.json"), reset_attempts=False)))
+                stack.enter_context(mock.patch.object(GlobalPipelineContext, "load_checkpoint", return_value=ctx))
+                stack.enter_context(mock.patch.object(orchestrator, "run_techlead_node", new_callable=AsyncMock))
+                stack.enter_context(mock.patch.object(orchestrator, "enforce_documentation_guardrail", new=AsyncMock(return_value=None)))
+                stack.enter_context(mock.patch.object(orchestrator, "run_developer_node", new_callable=AsyncMock))
+                stack.enter_context(mock.patch.object(orchestrator, "run_qa_agent_node", new_callable=AsyncMock))
+                stack.enter_context(mock.patch.object(orchestrator, "run_reviewer_node", new=AsyncMock(side_effect=_reject_tests)))
+                stack.enter_context(mock.patch.object(orchestrator, "run_qa_unit_tests", new=AsyncMock(return_value=(False, [raw_fail]))))
+                stack.enter_context(mock.patch.object(orchestrator, "run_security_scan", new=AsyncMock(return_value=(True, []))))
+                stack.enter_context(mock.patch.object(orchestrator, "MAX_FUNCTIONAL_RETRIES", 1))
+                stack.enter_context(mock.patch.object(orchestrator, "ARBITER_TRIGGER_ATTEMPT", 99))  # keep the Arbiter out
+                stack.enter_context(mock.patch.object(orchestrator, "_abort_with_incident", side_effect=_capture_abort))
+                with self.assertRaises(SystemExit):
+                    await orchestrator.main()
+
+            self.assertEqual(len(captured), 1)
+            self.assertIn("RAW TEST RUNNER OUTPUT", captured[0])
+            self.assertIn("assert '' == '\\r\\n'", captured[0])              # the verbatim runner evidence
+            self.assertIn("reconsider the empty-input case", captured[0])    # Reviewer transcription preserved
+
+
 class FinOpsReportTests(unittest.TestCase):
     """Per-provider sub-totals string and the persisted finops_report.json."""
 

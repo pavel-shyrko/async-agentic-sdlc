@@ -174,6 +174,24 @@ class GetSystemPromptTests(unittest.TestCase):
         result = get_system_prompt("reviewer")
         self.assertIn("CONSTRAINT-RESPECTING REPAIR", result)
 
+    def test_techlead_prompt_pins_behavioral_oracle(self) -> None:
+        # The TechLead authors acceptance_examples — the behavioral oracle the suite and audit share.
+        result = get_system_prompt("techlead")
+        self.assertIn("acceptance_examples", result)
+        self.assertIn("BEHAVIORAL ORACLE", result)
+
+    def test_qa_prompt_pins_authoritative_examples_then_expand(self) -> None:
+        # Hybrid: assert the contract's pinned examples verbatim, THEN expand with BVA (creative freedom).
+        result = get_system_prompt("qa")
+        self.assertIn("AUTHORITATIVE EXAMPLES FIRST", result)
+        self.assertIn("ACCEPTANCE EXAMPLES", result)
+        self.assertIn("Boundary Value Analysis", result)  # the expansion mandate survives
+
+    def test_reviewer_prompt_adjudicates_against_the_oracle(self) -> None:
+        # A test contradicting an acceptance example is a PRODUCTION bug; an altered example is a TEST bug.
+        result = get_system_prompt("reviewer")
+        self.assertIn("ACCEPTANCE-EXAMPLE ORACLE", result)
+
     def test_loads_template_with_placeholders(self) -> None:
         raw = get_system_prompt("developer")
         rendered = raw.format(

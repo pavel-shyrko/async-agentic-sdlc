@@ -367,17 +367,16 @@ the only failing file refs are test files, the production verdict must default t
 mitigated: `reviewer.md` now routes test-only import/linkage failures to the QA channel and forbids
 flagging legacy code — but verbatim-citation is still not enforced.)
 
-## 17. [P1] Reviewer can reject without guidance — silent retry-budget burn
-**Symptom:** the Reviewer sets `code_quality_approved=false` (or `test_integrity_approved=false`) while
-leaving the matching payload `""`. Routing at [runner.py:1089-1092](../src/nexus/runner.py#L1089-L1092)
-copies the empty trace; the agent re-runs next cycle with zero guidance, reproduces the same output, and
-the loop burns all `max_retries` cycles until aborting "Retries exhausted."
-**Cause:** no model/code invariant ties an approval to a non-empty payload. The deadlock guard
-([runner.py:1070](../src/nexus/runner.py#L1070)) only catches `gate_failed ∧ approved_both`, never
-`not approved ∧ empty payload`. Payload defaults are `""` ([models.py:244-245](../src/shared/core/models.py)).
-**Fix direction:** add a `ReviewReport` model validator — `not code_quality_approved ⇒ dev_diagnostic_payload != ""`
-and the QA analog — so a guidance-less rejection fails fast with a debuggable validation error instead of
-silently wasting the budget.
+## 17. [✅ RESOLVED] Reviewer can reject without guidance — silent retry-budget burn
+**Resolved (Unreleased):** added the `ReviewReport` model validator `_require_payload_on_rejection`
+(`not code_quality_approved ⇒ dev_diagnostic_payload != ""`, and the QA analog) — instructor re-prompts the
+Reviewer on the resulting `ValueError` instead of the loop silently burning the budget. Paired in the same
+change with the engine-side "never reroute QA blind" feedback (raw runner output appended to the QA channel
+in the routing block), so even a thin payload no longer loops. Related hardening still open: **#18**
+(feedback-channel isolation enforced only by prompt) and **#25** (Arbiter `developer`/`qa` routes advisory).
+**Original symptom (for reference):** the Reviewer set an approval flag false while leaving the matching
+payload `""`; the router copied the empty trace and the agent re-ran with zero guidance until "Retries
+exhausted." The deadlock guard only caught `gate_failed ∧ approved_both`, never `not approved ∧ empty payload`.
 
 ## 18. [P2] Feedback-channel isolation is enforced only by prompt, not by code
 **Symptom:** `reviewer.md` mandates "never duplicate an instruction across both channels," but

@@ -15,6 +15,7 @@ from src.shared.core.models import (
     ArchitectureUpdate,
     TechLeadContract,
     TopologyNode,
+    BehaviorExample,
     GlobalPipelineContext,
     QATestSuite,
     ReviewReport,
@@ -272,6 +273,45 @@ class ContractModelTests(unittest.TestCase):
         self.assertTrue(report.code_quality_approved)
         self.assertFalse(report.test_integrity_approved)
 
+    def test_acceptance_examples_default_to_empty(self) -> None:
+        # Back-compat: legacy contracts/checkpoints without the oracle field stay valid (empty list).
+        payload = {
+            "files_to_modify": ["src/core/calc.py"],
+            "topology_contract": [
+                {"file_path": "src/core/calc.py", "exports": ["is_prime"], "depends_on": []}
+            ],
+            "instruction": "Implement prime sieve.",
+            "function_signatures": "def is_prime(n: int) -> bool",
+            "strict_type_validation_rules": "bool must raise TypeError",
+            "techlead_reasoning": "Guard against bool subtype of int.",
+            "environment_id": "python-3.12-core",
+        }
+        self.assertEqual(TechLeadContract(**payload).acceptance_examples, [])
+
+    def test_acceptance_examples_round_trip(self) -> None:
+        # The behavioral oracle parses as structured BehaviorExample objects (input → expected | raises).
+        payload = {
+            "files_to_modify": ["src/core/calc.py"],
+            "topology_contract": [
+                {"file_path": "src/core/calc.py", "exports": ["is_prime"], "depends_on": []}
+            ],
+            "instruction": "Implement prime sieve.",
+            "function_signatures": "def is_prime(n: int) -> bool",
+            "acceptance_examples": [
+                {"input": "is_prime(2)", "expected": "True"},
+                {"input": "is_prime(-1.0)", "raises": "TypeError"},
+            ],
+            "strict_type_validation_rules": "bool must raise TypeError",
+            "techlead_reasoning": "Guard against bool subtype of int.",
+            "environment_id": "python-3.12-core",
+        }
+        contract = TechLeadContract(**payload)
+        self.assertEqual(len(contract.acceptance_examples), 2)
+        self.assertIsInstance(contract.acceptance_examples[0], BehaviorExample)
+        self.assertEqual(contract.acceptance_examples[0].expected, "True")
+        self.assertEqual(contract.acceptance_examples[1].raises, "TypeError")
+        self.assertEqual(contract.acceptance_examples[1].expected, "")  # output OR error, defaults empty
+
     def test_global_context_applies_defaults(self) -> None:
         # Arrange / Act
         ctx = GlobalPipelineContext(pr_description="add prime util")
@@ -285,6 +325,51 @@ class ContractModelTests(unittest.TestCase):
         self.assertIsNone(ctx.workspace_paths)
         self.assertIsInstance(ctx.telemetry, PipelineTelemetry)
         self.assertEqual(ctx.telemetry.total_tokens, 0)
+
+
+class ReviewReportPayloadValidatorTests(unittest.TestCase):
+    """BACKLOG #17: a rejection MUST carry an actionable diagnostic payload, or the agent re-runs with zero
+    guidance and the loop silently burns the retry budget. The model validator fails fast instead (instructor
+    re-prompts the Reviewer)."""
+
+    _base = dict(code_quality_analysis="a", test_integrity_analysis="b", log_verification_analysis="c")
+
+    def test_rejecting_code_without_dev_payload_raises(self) -> None:
+        with self.assertRaises(ValidationError):
+            ReviewReport(**self._base, code_quality_approved=False, test_integrity_approved=True,
+                         dev_diagnostic_payload="", qa_diagnostic_payload="")
+
+    def test_rejecting_tests_without_qa_payload_raises(self) -> None:
+        with self.assertRaises(ValidationError):
+            ReviewReport(**self._base, code_quality_approved=True, test_integrity_approved=False,
+                         dev_diagnostic_payload="", qa_diagnostic_payload="")
+
+    def test_whitespace_only_payload_is_treated_as_empty(self) -> None:
+        with self.assertRaises(ValidationError):
+            ReviewReport(**self._base, code_quality_approved=True, test_integrity_approved=False,
+                         qa_diagnostic_payload="   \n ")
+
+    def test_rejection_with_payload_passes(self) -> None:
+        ok = ReviewReport(**self._base, code_quality_approved=False, test_integrity_approved=False,
+                          dev_diagnostic_payload="fix prod", qa_diagnostic_payload="fix tests")
+        self.assertFalse(ok.code_quality_approved)
+        self.assertFalse(ok.test_integrity_approved)
+
+    def test_full_approval_needs_no_payloads(self) -> None:
+        ok = ReviewReport(**self._base, code_quality_approved=True, test_integrity_approved=True)
+        self.assertTrue(ok.code_quality_approved)
+        self.assertEqual(ok.qa_diagnostic_payload, "")
+
+
+class BehaviorExampleModelTests(unittest.TestCase):
+    """The behavioral oracle is language-neutral DATA (no code), with expected OR raises, both optional."""
+
+    def test_round_trips_and_defaults(self) -> None:
+        ex = BehaviorExample(input="write_csv([])")
+        self.assertEqual(ex.expected, "")
+        self.assertEqual(ex.raises, "")
+        ex2 = BehaviorExample(input="write_csv([])", expected="\\r\\n")
+        self.assertEqual(ex2.expected, "\\r\\n")
 
 
 class PipelineTelemetryTests(unittest.TestCase):
@@ -429,6 +514,8 @@ class NeedsTestRegenerationTests(unittest.TestCase):
             code_quality_approved=True,
             test_integrity_approved=test_integrity_approved,
             dev_diagnostic_payload="",
+            # A rejection must carry guidance (the payload-on-rejection validator); empty when approved.
+            qa_diagnostic_payload="" if test_integrity_approved else "regenerate the suite",
         )
 
     def test_rejected_tests_force_regeneration_even_with_snapshot(self) -> None:

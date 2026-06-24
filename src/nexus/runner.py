@@ -1651,6 +1651,17 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
             ctx.qa_error_trace = _cap_text(ctx.review_report.qa_diagnostic_payload)
             log.warning(f"🔶 Cycle {attempt} failed. Routing reviewer diagnostics to isolated channels.")
 
+            # Never route QA blind: when the test suite ACTUALLY failed at runtime, append the authoritative
+            # runner output (the verbatim expected-vs-actual) to whatever the Reviewer transcribed. The raw
+            # slice is the highest-fidelity diagnostic and was already computed for the Reviewer; relying on
+            # the LLM's re-derivation alone loops the run when that payload comes back thin/empty.
+            if not qa_success and regenerate_tests:
+                raw_qa = _extract_failure_context(qa_lines, ctx.contract.environment_id)
+                ctx.qa_error_trace = _cap_text(
+                    (ctx.review_report.qa_diagnostic_payload
+                     + "\n\n=== RAW TEST RUNNER OUTPUT ===\n" + raw_qa).strip()
+                )
+
             # Lint stayed red after its fast-fail budget: those classified findings are the authoritative
             # feedback for the next budgeted cycle. The Reviewer is lint-blind and may have approved both
             # sides (emptying the payloads above), so re-apply the lint feedback over whatever it routed.

@@ -30,6 +30,11 @@ When the test-runner log shows an import, module-resolution, or symbol-linkage f
 ## Test Integrity
 Reject any **test-softening**: exception-swallowing wrappers, no-op statements, or conditional assertions that mask failures. Also enforce **exception fidelity** (owned by the QA system prompt): a test MUST assert only the exception/error TYPE (or, in languages without exceptions, the error condition/sentinel) — a test that asserts against an exception's message, args, or string representation is a test defect → `qa_diagnostic_payload`.
 
+**ACCEPTANCE-EXAMPLE ORACLE (when `ARCHITECT CONTRACT.acceptance_examples` is non-empty):** those golden cases are ground truth — the expected value is fixed by the contract, not by the test or the code. Use them to disambiguate a failing case unambiguously:
+* A test whose assertion MATCHES an example but the production code produces a different result is a PRODUCTION bug (code ≠ contract) → `code_quality_approved: false`, `dev_diagnostic_payload`.
+* A test that ALTERED, dropped, or softened a pinned example's expectation is a TEST bug → `test_integrity_approved: false`, `qa_diagnostic_payload`.
+* If you judge a pinned example itself to be wrong (it contradicts a stated `architectural_constraints`/requirement), do NOT route it to either agent — name the conflicting example in `code_quality_analysis` so it is routed to a contract amendment (per CONSTRAINT-RESPECTING REPAIR above). For QA-invented cases with no backing example, judge as usual.
+
 ## Output (ReviewReport) Semantics
 * `code_quality_analysis` — detailed audit of production code: readability, cleanliness, algorithmic correctness.
 * `test_integrity_analysis` — strict validation of tests: determinism, contract coverage, no test-softening, exception fidelity.

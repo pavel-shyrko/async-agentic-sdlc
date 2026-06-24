@@ -42,6 +42,8 @@
 
 # SAST is generic across all stacks — one Semgrep image (SAST_IMAGE/SAST_CMD), never per-language.
 
+from pathlib import Path
+
 SUPPORTED_ENVIRONMENTS = {
     "python-3.12-core": {
         "image": "sdlc-sandbox/python:latest",
@@ -253,6 +255,10 @@ QA_LANGUAGE_PROFILES = {
         "source_exts": (".cs",),
         "test_prefix": "",
         "test_suffix": "Tests.cs",
+        # The test build manifest's filename suffix — the SSOT for resolving the test project dir from
+        # the contract OR, on a follow-on ticket, by scanning the existing clone (resolve_test_project_dir).
+        # Absent from non-"project" layouts (python/go/node have no separate test build manifest to wire in).
+        "test_manifest_suffix": "Tests.csproj",
         "module_ref_style": "namespace",
         "framework_label": "xUnit (dotnet test)",
         "package_markers": (),  # *.csproj excluded via the generic non-source filter below
@@ -434,6 +440,15 @@ def repo_map_ignore_dirs(environment_id: str | None = None) -> frozenset[str]:
     )
 
 
+def test_manifest_suffix(environment_id: str) -> str | None:
+    """The test build-manifest filename suffix for a ``layout == "project"`` stack (.NET ``Tests.csproj``).
+
+    Registry-driven (per-env ``test_manifest_suffix``); ``None`` for stacks with no separate test build
+    manifest (python/go/node), so the resolver below is a no-op for them — the engine stays language-agnostic.
+    """
+    return get_qa_profile(environment_id).get("test_manifest_suffix")
+
+
 def _posix(rel_path: str) -> str:
     return rel_path.replace("\\", "/").strip("/")
 
@@ -496,20 +511,59 @@ def derive_test_target(environment_id: str, rel_source_path: str) -> tuple[str, 
     return (f"{directory}/{test_name}" if directory else test_name), module_ref
 
 
-def resolve_test_project_dir(files_to_modify: list[str]) -> str | None:
-    """For a ``layout == "project"`` stack (.NET), find the test project's directory from the contract.
+def resolve_test_project_dir(
+    files_to_modify: list[str],
+    repo_dir: str | Path | None = None,
+    environment_id: str | None = None,
+) -> str | None:
+    """For a ``layout == "project"`` stack (.NET), resolve the test project's directory.
 
-    The test build manifest (``*.Tests.csproj``) is Developer-owned build glue listed in the TechLead
-    contract's ``files_to_modify`` (e.g. ``tests/JsonToCsv.Tests/JsonToCsv.Tests.csproj``). Return its
-    posix PARENT dir (``tests/JsonToCsv.Tests``) so the QA node writes ``*Tests.cs`` INSIDE the project the
-    test runner compiles. Returns ``None`` when no test manifest is contracted (the QA node then falls
-    back to a plain ``tests/`` dir and warns — the dotnet_core skill mandates the manifest, so this is rare).
+    The test build manifest (e.g. ``tests/JsonToCsv.Tests/JsonToCsv.Tests.csproj``) is Developer-owned
+    build glue. Two resolution paths, in order:
+
+    1. **Contract** — the manifest is listed in the TechLead contract's ``files_to_modify`` (the scaffold
+       ticket that creates it). Return its posix PARENT dir so the QA node writes ``*Tests.cs`` INSIDE the
+       project the test runner compiles.
+    2. **Existing clone** — on a FOLLOW-ON ticket the manifest already exists on disk (a prior ticket merged
+       it) but is NOT re-listed in this ticket's contract. Scan ``repo_dir`` for it (build output pruned via
+       ``repo_map_ignore_dirs``). When several manifests match, disambiguate BY NAME: prefer the test project
+       whose stem corresponds to a production project of THIS ticket (a directory token of ``files_to_modify``),
+       so ``JsonToCsv.Tests`` wins over an unrelated ``Other.Tests`` instead of a blind alphabetical pick.
+       A shallowest-then-lexical tie-break only decides between equally-affine candidates.
+
+    The manifest suffix is registry-driven (``test_manifest_suffix``); ``None`` for non-"project" stacks, so
+    this returns ``None`` immediately for python/go/node — the engine stays language-agnostic. Returns
+    ``None`` when nothing resolves (the QA node then falls back to a plain ``tests/`` dir and warns).
     """
+    suffix = test_manifest_suffix(environment_id) if environment_id else "Tests.csproj"
+    if not suffix:
+        return None
+    # 1) Contract.
     for entry in files_to_modify or []:
         path = _posix(entry)
-        if path.rsplit("/", 1)[-1].endswith("Tests.csproj"):
+        if path.rsplit("/", 1)[-1].endswith(suffix):
             directory, _, _ = path.rpartition("/")
             return directory or None
+    # 2) Existing clone (follow-on ticket).
+    if repo_dir is not None:
+        root = Path(repo_dir)
+        ignore = set(repo_map_ignore_dirs(environment_id))
+        matches = [
+            p for p in root.rglob(f"*{suffix}")
+            if not (set(p.relative_to(root).parts[:-1]) & ignore)
+        ]
+        if matches:
+            # Name affinity: the production project name(s) of THIS ticket, taken from the directory
+            # segments of the contracted production files.
+            prod_tokens = {seg for f in files_to_modify or [] for seg in _posix(f).split("/")[:-1]}
+
+            def _affine(p: Path) -> bool:
+                stem = p.name[: -len(suffix)].rstrip(".")  # "JsonToCsv.Tests.csproj" -> "JsonToCsv.Tests"
+                return any(stem == t or stem.startswith(t + ".") for t in prod_tokens)
+
+            pool = [p for p in matches if _affine(p)] or matches
+            best = min(pool, key=lambda p: (len(p.relative_to(root).parts), str(p)))
+            return _posix(str(best.parent.relative_to(root)))
     return None
 
 

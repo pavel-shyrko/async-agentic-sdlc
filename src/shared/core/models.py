@@ -3,7 +3,7 @@ import re
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from src.shared.core.environments import SUPPORTED_ENVIRONMENTS
 
@@ -79,6 +79,16 @@ class TopologyNode(BaseModel):
         description="Language-neutral dependency links as 'path/to/file.ext:symbol'.",
     )
 
+
+class BehaviorExample(BaseModel):
+    """One authoritative golden case — the behavioral ORACLE for a function. Language-neutral DATA: the
+    fields describe a case in prose/literals, never code, so the suite (QA) and the audit (Reviewer) share
+    ONE source of truth for the expected behavior instead of independently guessing it."""
+    input: str = Field(description="Language-neutral description of the input case.")
+    expected: str = Field(default="", description="Expected output/return value for this input.")
+    raises: str = Field(default="", description="OR the expected error TYPE/condition (never a message).")
+
+
 class TechLeadContract(BaseModel):
     files_to_modify: list[str] = Field(description="List of target source file paths.")
     topology_contract: list[TopologyNode] = Field(
@@ -101,6 +111,12 @@ class TechLeadContract(BaseModel):
         default_factory=list,
         description="Mandatory libraries and frameworks the implementation MUST use.")
     function_signatures: str = Field(description="Function names, arguments, types, and exceptions.")
+    acceptance_examples: list[BehaviorExample] = Field(
+        default_factory=list,
+        description="Authoritative golden cases (input → expected | raises) — the behavioral ORACLE the "
+        "QA suite asserts verbatim and the Reviewer adjudicates against. Pin the cases where the answer is "
+        "non-obvious (empty/degenerate inputs, library-defined output, boundaries). Empty for non-code/infra "
+        "tasks.")
     strict_type_validation_rules: str = Field(description="Type validation rules for the implementation.")
     techlead_reasoning: str = Field(description="Justification for the chosen design.")
     domain_tags: list[str] = Field(description="Up to 5 lowercase tags for the target tech stack/language AND business domain — e.g. 'python', 'dotnet', 'typescript', 'math', 'database'. The language tag acts as the dynamic skill router and MUST be declared first.", default_factory=list)
@@ -331,6 +347,19 @@ class ReviewReport(BaseModel):
         default_factory=list,
         description="List of specific obsolete or zombie test filenames that must be physically deleted from disk.",
     )
+
+    @model_validator(mode="after")
+    def _require_payload_on_rejection(self) -> "ReviewReport":
+        """A rejection MUST carry actionable guidance (BACKLOG #17): rejecting a side while leaving its
+        diagnostic payload empty routes the agent next cycle with ZERO signal — it reproduces the same
+        output and the loop silently burns the whole retry budget to "Retries exhausted". instructor
+        re-prompts the Reviewer on this ValueError, forcing it to articulate the defect."""
+        if not self.code_quality_approved and not self.dev_diagnostic_payload.strip():
+            raise ValueError("code_quality_approved=false requires a non-empty dev_diagnostic_payload.")
+        if not self.test_integrity_approved and not self.qa_diagnostic_payload.strip():
+            raise ValueError("test_integrity_approved=false requires a non-empty qa_diagnostic_payload.")
+        return self
+
 
 class ArbiterVerdict(BaseModel):
     """Root-cause triage of a STUCK cycle. Adds a third routing target — the contract — beyond the

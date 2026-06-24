@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Each release maps to a completed SDLC iteration; the corresponding Architecture
 Decision Record (ADR) is linked from the version heading.
 
+## [Unreleased] — QA-convergence hardening: behavioral oracle, raw-runner feedback, repo-aware test topology
+
+Three independent root-causes behind QA loops / weak tests (surfaced by the `json-to-csv` python & .NET runs),
+fixed in the engine/prompts — never the generated clone.
+
+### Added
+- **Behavioral oracle in the contract (A).** `TechLeadContract.acceptance_examples: list[BehaviorExample]`
+  (`{input, expected, raises}`) — the TechLead now pins the few decisive golden cases where the answer is
+  non-obvious (empty/degenerate inputs, library-defined output, boundaries). QA asserts these **verbatim**
+  (the expected value is fixed ONCE, not independently guessed by tests and code) and the Reviewer
+  adjudicates against them: a test contradicting an example is a **production** bug → Developer; an altered
+  example is a **test** bug → QA; a wrong example routes to a contract amendment. QA keeps full freedom to
+  expand with its own BVA/equivalence cases on top (hybrid: oracle floor + creative coverage). Language-neutral
+  DATA, so no stack assumptions. Prompts updated: `techlead.md`, `qa.md`, `reviewer.md`; injected in `qa.py`.
+- **Repo-aware test-project resolution (C).** `resolve_test_project_dir` now resolves a `layout=="project"`
+  (.NET) test project from the **existing clone** when a follow-on ticket doesn't re-list the manifest in its
+  contract — the root cause of orphaned tests (→ `ran_zero_tests` halt) on TASK-02+ of a multi-ticket .NET
+  batch. The manifest pattern is registry-driven (`test_manifest_suffix`; `None`/no-op for python/go/node) so
+  the engine stays language-agnostic. Multiple matches disambiguate **by name** (the test project whose stem
+  matches THIS ticket's production project) rather than a blind alphabetical pick, with a deterministic
+  shallowest-then-lexical tie-break.
+
+### Changed
+- **QA is never rerouted blind (B).** When the test suite actually fails at runtime, the QA channel now carries
+  the authoritative runner output (verbatim expected-vs-actual, the highest-fidelity diagnostic) **appended**
+  to the Reviewer's transcription — instead of relying on the LLM's re-derivation alone, which looped the run
+  when that payload came back thin (`src/nexus/runner.py`).
+
+### Fixed
+- **#17 — rejection without guidance (P1).** New `ReviewReport` model validator: rejecting a side
+  (`code_quality_approved`/`test_integrity_approved` = false) while leaving its diagnostic payload empty now
+  fails fast (instructor re-prompts the Reviewer) instead of silently burning the whole retry budget to
+  "Retries exhausted". The code-enforced half of the long-standing prompt-only invariant; pairs with B.
+
 ## [v0.23.0] - 2026-06-24 — Autonomous Release-Tagging (`--release`): close the loop to a published artifact
 
 ADR: [0023-autonomous-release-tagging](./docs/decisions/0023-autonomous-release-tagging.md)

@@ -5,7 +5,7 @@ from pathlib import Path
 from src.shared.core.observability import log, log_token_usage
 from src.shared.core.config import QA_MODEL
 from src.shared.core.models import QATestSuite, GlobalPipelineContext
-from src.shared.core.environments import get_qa_profile, is_testable_source, derive_test_target, env_language, is_test_file, resolve_test_project_dir
+from src.shared.core.environments import get_qa_profile, is_testable_source, derive_test_target, env_language, is_test_file, resolve_test_project_dir, test_manifest_suffix
 from src.shared.core.prompts import get_system_prompt_sections, build_agent_context, generate_repo_map
 from src.shared.utils.llm import run_structured_llm
 from src.shared.utils.git_helpers import get_git_root, get_pipeline_snapshot_files
@@ -122,11 +122,18 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
     if profile["layout"] == "separate":
         test_root = repo_dir / profile["test_root"]
     elif profile["layout"] == "project":
-        proj_dir = resolve_test_project_dir(ctx.contract.files_to_modify)
+        # Resolve from the contract, OR — on a follow-on ticket that didn't re-list the existing
+        # manifest — by scanning the clone (repo_dir) for it. Registry-driven, language-agnostic.
+        proj_dir = resolve_test_project_dir(ctx.contract.files_to_modify, repo_dir, env_id)
         if not proj_dir:
             log.warning("🔶 QA: no test-project manifest in the contract's files_to_modify — placing tests "
                         "in the fallback repo/tests dir (the test project should be contracted; see the "
                         "stack's domain skill).")
+        elif not any(f.rsplit("/", 1)[-1].endswith(test_manifest_suffix(env_id) or "\0")
+                     for f in ctx.contract.files_to_modify):
+            # Resolved by scanning the existing clone (the manifest is not in THIS ticket's contract) —
+            # surface WHERE tests land for operator visibility; the registry stays logger-free.
+            log.info(f"🔹 QA: test project resolved from the existing clone → {proj_dir}.")
         test_root = repo_dir / (proj_dir or "tests")
     else:  # colocated
         test_root = repo_dir
@@ -160,6 +167,16 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
         "\n\n=== CONTRACT FILES (authoritative module map) ===\n"
         + "\n".join(ctx.contract.files_to_modify)
     )
+
+    # Behavioral oracle: TechLead-pinned golden cases (input → expected | raises). QA asserts these
+    # VERBATIM (the expected values are ground truth, not to be re-guessed) and EXPANDS with its own
+    # BVA/equivalence coverage on top — the qa.md strategy governs the hybrid.
+    if ctx.contract.acceptance_examples:
+        examples = "\n".join(
+            f"- input: {e.input} | expected: {e.expected or '—'} | raises: {e.raises or '—'}"
+            for e in ctx.contract.acceptance_examples
+        )
+        qa_system_prompt += "\n\n=== ACCEPTANCE EXAMPLES (authoritative expected behavior) ===\n" + examples
 
     # Language-neutral dependency graph (SSOT). QA translates depends_on links into real imports.
     if ctx.contract.topology_contract:
