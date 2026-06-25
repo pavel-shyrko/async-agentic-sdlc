@@ -172,6 +172,22 @@ GitHub blocks OIDC for new organizations by default. You **must** flip this:
 
 Without it, the generated YAML's `permissions: id-token: write` fails with `Permission Denied`.
 
+### 2.4 Allow `github-actions` to bypass the default-branch protection (post-deploy README stamp)
+
+The deploy/release workflow's final step stamps the live deployment / release URL into `README.md` and
+pushes it to the default branch (`git push origin HEAD:<default-branch>`, the detached-HEAD-safe refspec —
+see the `deploy_*` platform skills). If the default branch is **protected**, that push is rejected unless the
+robot identity is allowed to bypass the rule. Grant it once:
+
+1. `Settings ➔ Branches` (org ruleset or per-repo branch protection rule for the default branch).
+2. Under **"Allow specified actors to bypass required pull requests"** (rulesets) / **"Allow bypass"**, add
+   the **`github-actions`** app (or your service account / token identity).
+
+Without this, the URL-stamp push fails with `protected branch hook declined` (the build/deploy itself still
+succeeds; only the cosmetic README update is skipped). The push uses the default `GITHUB_TOKEN` and carries
+`[skip ci]`, so it never loops. If you prefer not to relax protection, simply drop the README-URL step — the
+live URL is still available from the deploy step's logs and the GitHub Release page.
+
 ---
 
 ## Step 3 — Autonomous operation (zero-human-touch)
@@ -213,7 +229,8 @@ workflow that reads:
 - **Secrets:** `${{ secrets.GCP_WIF_PROVIDER }}`, `${{ secrets.GCP_SERVICE_ACCOUNT }}`
 - **Variables:** `${{ vars.GCP_PROJECT_ID }}`, `${{ vars.GCP_REGION }}`, `${{ vars.GCP_REGISTRY_NAME }}`
 - **Permissions:** `id-token: write` + `contents: write` (WIF needs the OIDC token; `contents: write` covers
-  the post-deploy README-URL commit).
+  the post-deploy README-URL commit, pushed via the `HEAD:<default-branch>` refspec — needs the §2.4 bypass
+  on a protected branch).
 - **Auth action:** `google-github-actions/auth` (WIF), then `deploy-cloudrun` (web service) or an
   Artifact-Registry / `gh-release` publish step (CLI tool).
 - **Public invocation (web service):** the deploy step passes `flags: '--allow-unauthenticated'` so the

@@ -713,6 +713,21 @@ class DevOpsPromptTests(unittest.TestCase):
         self.assertIn("github.event.repository.name", gcp)
         self.assertNotIn("fastapi-echo-service", gcp)   # no hardcoded example name leaks into the guidance
 
+    def test_deploy_platform_skills_push_readme_via_head_refspec_not_bare_push(self) -> None:
+        # Detached-HEAD fix: `actions/checkout` checks out `github.sha` (and a tag-gated release run has no
+        # branch at all), so a BARE `git push` dies with "fatal: You are not currently on a branch". The
+        # post-deploy/post-release README-URL step must push with the `HEAD:<default-branch>` refspec — which
+        # works from a detached HEAD — resolving the branch from the repo context, never a hardcoded `main`.
+        # Branch protection is handled out-of-band by a one-time `github-actions` "Allow bypass" grant
+        # (docs/guides/devops_setup.md). Verified for BOTH platform skills, so it holds for every archetype
+        # (CLI → github_release; REST/CRUD → gcp).
+        for skill_id in ("deploy_gcp", "deploy_github_release"):
+            body = get_skill(skill_id)
+            self.assertIn('git push origin HEAD:"${{ github.event.repository.default_branch }}"', body, skill_id)
+            self.assertIn("[skip ci]", body, skill_id)              # no re-trigger loop
+            self.assertNotIn("git push origin main", body, skill_id)  # never hardcode the default branch
+            self.assertNotIn("gh pr create", body, skill_id)        # bypass path: a direct push, not a PR
+
     def test_platform_skills_target_devops_node(self) -> None:
         # The extracted deploy-target platform skills follow the skill format and load on the devops node.
         from src.shared.core.prompts import _parse_frontmatter, _SKILLS_DIR

@@ -41,6 +41,22 @@ pre-seeded into `README.md` by the **Technical Writer** (the `README_SCAFFOLD` `
 its per-ticket rewrites — so the URL the workflow commits survives the next ticket's README regeneration. See
 [[agent-contracts]] (the TechWriter `DocumentationUpdate` contract).
 
+**The README-URL step pushes with the `HEAD:<default-branch>` refspec, NEVER a bare `git push`.** The
+generated *deployed* workflow runs in the user's Actions on a workspace `actions/checkout` leaves in
+**detached HEAD** (it checks out `github.sha`, not a branch — and the tag-gated release run has no branch at
+all), so a bare `git push` dies with `fatal: You are not currently on a branch`. Both platform skills
+(`deploy_{gcp,github_release}.md`) therefore commit and push with `git push origin
+HEAD:"${{ github.event.repository.default_branch }}"` — the refspec form sends the detached-HEAD commit
+straight to the default-branch ref (resolved from the repo context, never a hardcoded `main`). The commit
+message carries `[skip ci]` so the push does not re-trigger the workflow. Only `contents: write` is needed
+(no PR, no `pull-requests:` scope). **Branch protection is handled out-of-band:** a protected default branch
+rejects this push unless the `github-actions` app is on the branch rule's **"Allow bypass"** list — a
+one-time per-org/repo grant documented in [docs/guides/devops_setup.md](../../docs/guides/devops_setup.md).
+(This is deliberately distinct from the engine's own E4 scaffold landing in §4, which is an *audited PR* via
+host-side `finalize_pr`: that runs once per build under the engine's own forge creds, whereas this cosmetic
+URL stamp runs inside the user's deployed workflow where no second reviewer identity exists.) Pinned by
+`test_deploy_platform_skills_push_readme_via_head_refspec_not_bare_push`.
+
 **App SHAPE vs deploy TARGET — keep them in separate skills.** The archetype skills define the app's *shape*
 (container/server vs CLI artifact) ONLY; the **platform skills** (`prompts/skills/deploy_{gcp,github_release}.md`)
 own the *deploy mechanics* (WIF auth, image build/push, the Cloud Run deploy step, the public-invoker grant,
