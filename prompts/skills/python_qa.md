@@ -24,6 +24,18 @@ system prompt; this skill only maps them to Python idioms.
   `actual.replace("\r\n", "\n")`, or compare `actual.splitlines() == expected.splitlines()`). The same
   applies to any code path that goes through `csv.writer`/`csv.DictWriter`.
 
+## HTTP Endpoint Tests (FastAPI / Starlette `TestClient`)
+- Address an endpoint by the EXACT path the contract specifies (e.g. `self.client.get("/echo")`).
+  NEVER discover the path dynamically by iterating `app.routes` and filtering a hand-maintained
+  denylist — FastAPI auto-registers framework routes (`/openapi.json`, `/docs`,
+  `/docs/oauth2-redirect`, `/redoc`) and `/docs/oauth2-redirect` sorts BEFORE your app's routes, so a
+  denylist that forgets it silently returns the Swagger redirect HTML page. The test then exercises the
+  wrong endpoint and fails with a misleading `JSONDecodeError` (HTML where JSON was expected), a `405`,
+  or an unexpected `200` — never the route under test. The contract gives the path; use the literal.
+- When a `TestClient` response is expected to be JSON, assert `response.headers["content-type"]` starts
+  with `application/json` (or that the path actually hit is the contracted one) BEFORE `response.json()`,
+  so a wrong-endpoint hit fails with a clear signal instead of an opaque decode error.
+
 ## File Placement & Module Identity
 - Tests live in the dedicated `tests/` directory (the engine derives the exact path) — NEVER colocated
   next to the source file. Emit only the suite body for the assigned module.
