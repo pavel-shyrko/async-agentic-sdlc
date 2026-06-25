@@ -21,8 +21,8 @@ file here as user-owned content:
 ## 2. NEVER bundle these edits with code or other docs
 This directory is **excluded from every automated sync surface**. Do not couple a `docs/hackathon/`
 change to anything else:
-- The metadata-sync skills (`/docs-sync`, `/adr-generation`, `/claude-context-sync`,
-  `/practicum-update`, `/iteration-release`) MUST NOT read from or write to it. It is not part of the
+- The metadata-sync skills (`/tbf-docs-sync`, `/tbf-adr-generation`, `/tbf-claude-context-sync`,
+  `/tbf-practicum-update`, `/tbf-iteration-release`) MUST NOT read from or write to it. It is not part of the
   "peer-set" those skills reconcile against the code.
 - Do not update it as a side effect of a code change, an ADR, a CHANGELOG bump, an iteration release,
   or any other documentation edit. A commit that touches `src/`/`prompts/`/`docs/decisions/`/etc. must

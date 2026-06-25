@@ -369,7 +369,7 @@ living architecture record is `ArchitectureUpdate`.
   spend that would exceed the (threaded, remaining) money ceiling.
 
 ### 5.3 Observability (logs, traces, decisions)
-- **`sdlc_audit.log`** — per-run, append-only, redacted event trail (diagnosable by the `/analyze-run` skill).
+- **`sdlc_audit.log`** — per-run, append-only, redacted event trail (diagnosable by the `/tbf-analyze-run` skill).
 - **`PipelineTelemetry`** — per-agent **tokens / cost / time** with `provider` + `plane`, rolled up by
   `by_agent()`, `by_provider()`, `by_plane()`; cache tokens tracked but excluded from the budgeted total
   ([`token-budget-excludes-cache`](https://github.com/Cyberthon-2026-Token-Burners/token-burners-factory/blob/main/.claude/rules/token-budget-excludes-cache.md)).

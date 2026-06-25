@@ -67,7 +67,7 @@ conditionally (empty string on first cycle, filled on retry). Keep the full inst
   ([prompt-suite-conventions](prompt-suite-conventions.md)) and
   [prompt-language-independence](prompt-language-independence.md) rules — those fire only on
   `prompts/system/*.md` and `prompts/skills/*.md`.
-- Prompt text in Python is never reviewed by `/docs-sync` or `/claude-context-sync`.
+- Prompt text in Python is never reviewed by `/tbf-docs-sync` or `/tbf-claude-context-sync`.
 - Inline Python strings scatter the agent's effective instructions across two places, making prompt
   engineering harder to reason about and test.
 

@@ -22,6 +22,9 @@ LANGUAGE TARGET: Python — production-code rules for the Python tech stack.
 ## Package Glue
 - Create necessary Python infrastructure files not listed in the contract (e.g. `__init__.py`,
   a shared `utils.py`) so the module imports and compiles.
+- Every `pyproject.toml` MUST include a `[project]` table with `name` (kebab-case, derived from the
+  application/project name) and `version` (start at `"0.1.0"`). Without it `python -m build` emits
+  `unknown-0.0.0-py3-none-any.whl` and breaks GitHub Release artifact naming.
 
 ## Security
 - The Bandit SAST scanner runs before review; zero tolerance for flagged vulnerabilities.

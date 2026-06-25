@@ -1,5 +1,5 @@
 ---
-name: practicum-update
+name: tbf-practicum-update
 description: Distill a generalizable engineering lesson into PRACTICUM.md's "Key Engineering Takeaways" after a major milestone or complex iteration. Use when the user asks to update the practicum or capture an engineering takeaway/pattern/anti-pattern from recent work. Aborts if the changes were purely routine.
 ---
 

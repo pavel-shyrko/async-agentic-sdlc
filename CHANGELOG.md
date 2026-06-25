@@ -215,7 +215,7 @@ Archive: [iteration_20](./docs/releases/iteration_20/iteration_20_README.md)
   `instructor`/Google-GenAI `ValueError` crash on the DevOps prompt's `${{ secrets.* }}` expressions.
 - **Docs & meta-rules synced** — `docs/ARCHITECTURE.md` (the `devops` role + the deploy-scaffolding terminal
   phase + the step-3.6 lint gate); `.claude/rules/{repo-module-map,pipeline-fsm-loops,run-layout-and-cli,config-constant-convention,agent-provider-model-map}.md`
-  and the `analyze-run` skill (lint-gate / CI-strictness and GenAI-Jinja root-cause classes); `docs/BACKLOG.md`
+  and the `tbf-analyze-run` skill (lint-gate / CI-strictness and GenAI-Jinja root-cause classes); `docs/BACKLOG.md`
   (E4 → DONE; mypy/type-checking + node-eslint provisioning tracked as follow-ups).
 
 ## [v0.19.0] - 2026-06-22 — Cyclical Multi-Ticket Orchestration: Drive Every Ticket to `main` (`--auto-execute`, E3)
@@ -286,10 +286,10 @@ Archive: [iteration_18](./docs/releases/iteration_18/iteration_18_README.md)
   knobs, a pre-flight `gh` check, and troubleshooting rows; `docs/ARCHITECTURE.md` C4 + sequence + component
   table now include the PR/merge step and `forge.py`; `.claude/rules/*` record `forge.py`, the knobs, and
   `--auto-merge`.
-- **Governance tooling — auto-sync of Claude's operating context.** New `/claude-context-sync` skill
+- **Governance tooling — auto-sync of Claude's operating context.** New `/tbf-claude-context-sync` skill
   reconciles the *content* of `.claude/rules/*` + `.claude/skills/*` to the code (the complement to
-  `/docs-sync`'s human-doc + enumeration sync), now wired as a step in `/iteration-release` so rules/skills
-  stay current with each release. New `/agent-role-scaffold` skill operationalizes the `agent-role-registration`
+  `/tbf-docs-sync`'s human-doc + enumeration sync), now wired as a step in `/tbf-iteration-release` so rules/skills
+  stay current with each release. New `/tbf-agent-role-scaffold` skill operationalizes the `agent-role-registration`
   checklist for adding a structured agent. New rule `subprocess-and-external-call-safety` binds future engine
   edits to `sanitize_for_argv` + transport-layer timeouts (codifying the two fixes below).
 
@@ -366,7 +366,7 @@ Archive: [iteration_16.1](./docs/releases/iteration_16.1/iteration_16.1_README.m
 - **`docs/` restructured for navigability** (history-preserving `git mv`): `docs/adr/`→`docs/decisions/`,
   `docs/archive/`→`docs/releases/`, `docs/{setup,docker-on-windows}.md`→`docs/guides/`; every cross-link
   rewritten.
-- **`/docs-sync` and `/iteration-release` skills extended** to also synchronize the `docs/ARCHITECTURE.md`
+- **`/tbf-docs-sync` and `/tbf-iteration-release` skills extended** to also synchronize the `docs/ARCHITECTURE.md`
   C4 diagrams + component table when an iteration changes *structure* (a new/removed agent role, FSM route,
   external system, or plane/container).
 
@@ -401,7 +401,7 @@ Archive: [iteration_16](./docs/releases/iteration_16/iteration_16_README.md)
 - **`finish_reason_name` + `NON_RETRYABLE_FINISH_REASONS`** (`src/shared/core/observability.py`): the bare
   classification primitive behind the retry layer's fail-fast decision; `describe_finish_reason` now
   builds its hint on top of it.
-- **Run-diagnostics + scaffolding meta-tooling:** a `/analyze-run` Claude Code skill (evidence-first
+- **Run-diagnostics + scaffolding meta-tooling:** a `/tbf-analyze-run` Claude Code skill (evidence-first
   root-cause analysis of a failed/looping/halted run), a path-scoped `agent-role-registration` rule (the
   full checklist for adding a structured agent role), and `run-layout-and-cli` / `run-tests-via-wsl` rule
   extensions (non-interactive git auth for `--run`; Git-Bash↔WSL path translation).

@@ -330,7 +330,7 @@ Then run with a token-free URL — `--repo https://github.com/<owner>/<repo>.git
 
 - The log shows `🚨 CIRCUIT BREAKER OPEN` (retries exhausted) or `🚨 FINANCIAL CIRCUIT BREAKER OPEN`
   (budget breached), and the run writes `reports/incident_report.json`.
-- Diagnose it with the **`/analyze-run`** skill (evidence-first root-cause from the checkpoint + audit log),
+- Diagnose it with the **`/tbf-analyze-run`** skill (evidence-first root-cause from the checkpoint + audit log),
   per the [debugging-protocol](../../.claude/rules/debugging-protocol.md) rule. For a transient network
   blip, retry with `--resume <slug> <NNN> --reset-attempts`.
 
@@ -383,7 +383,7 @@ wsl -e bash -lc "cd /mnt/c/code/token-burners-factory && source venv/bin/activat
 | `🚨 CRITICAL: --auto-merge requires GITHUB_TOKEN …` | `--auto-merge` needs `gh` + `GITHUB_TOKEN` — set them up in [Step 9](#9-optional-github-cli-for---auto-merge), or drop `--auto-merge` to stop at the pushed feature branch. |
 | `Unable to find image 'sdlc-sandbox/…'` / image pull fails | You skipped Step 7 — run `bash scripts/build_sandbox_images.sh`. There is no auto-pull; behind a corp proxy see [docker-on-windows.md](docker-on-windows.md) §6. |
 | git `could not read Password … terminal prompts disabled` | The clone needs non-interactive creds. **Best:** an env-backed credential helper + clean URL — see [Git auth (private repos)](#git-auth-private-repos). One-off: `https://<user>:<token>@github.com/…` (a **bare** `https://<token>@…` fails — token is the password, not the user), or SSH. ⚠ A token in the URL persists into `project.json` + the clone's `.git/config`. |
-| Run halts with `CIRCUIT BREAKER` + `incident_report.json` | Diagnose with `/analyze-run`. If the cause was a transient network/API blip, retry with `--resume <slug> <NNN> --reset-attempts`. |
+| Run halts with `CIRCUIT BREAKER` + `incident_report.json` | Diagnose with `/tbf-analyze-run`. If the cause was a transient network/API blip, retry with `--resume <slug> <NNN> --reset-attempts`. |
 | `RUNTIME_ENV=docker but 'src/' is writable` | In container mode `src/` must be immutable — mount it read-only (`:ro`) or run as a non-root user. |
 | `docker: command not found` | Start the WSL2 engine: `sudo service docker start` (or `wsl -d Ubuntu -u root service docker start` from PowerShell). Confirm `docker-ce` per [docker-on-windows.md](docker-on-windows.md) §2 Step A. |
 | `permission denied` on docker socket | Add your user to the `docker` group: `sudo usermod -aG docker $USER`, then restart WSL (`wsl --shutdown`). |

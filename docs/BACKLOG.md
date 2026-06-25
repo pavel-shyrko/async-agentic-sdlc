@@ -595,7 +595,7 @@ command + the extraction regex live in the env registry, never as an `if lang ==
 5. **Tests** ([tests/](../tests), WSL) — `parse_coverage_percent` per stack against sample runner output; the
    `coverage_cmd` helper; the gate 3-tuple (mock `execute_in_sandbox`); the FSM unpack + ctx field.
 
-6. **Docs/rules** — `/docs-sync` + `/claude-context-sync` for the new registry fields, the report key, and
+6. **Docs/rules** — `/tbf-docs-sync` + `/tbf-claude-context-sync` for the new registry fields, the report key, and
    the image change; add the coverage fields to the `engine-language-agnostic` examples table.
 
 **Open questions to confirm before building:**
@@ -826,3 +826,15 @@ and zero-finding coverage parity — prove with a before/after on a repo with a 
 win via the `by_phase` telemetry (`qa+sast`). Distinct from #28 (model routing).
 **Acceptance:** the `qa+sast` infra phase drops materially with no loss of true-positive coverage; the scan
 still runs fully offline and fails on a planted finding.
+
+### CLI ergonomics
+
+## 30. [P3] `--idea` accepts only a raw string — no way to pass a long idea from a file
+**Symptom:** `--idea` is parsed as a single CLI string; ideas longer than a few sentences are awkward to
+pass (quoting, shell escaping) and cannot be stored in version control as a first-class artifact.
+**Fix direction:** in `parse_args()` (`src/nexus/runner.py`), resolve `cfg.idea` through a one-liner
+`resolve_idea(raw: str) -> str` helper immediately after parsing: if `raw` is an existing file path,
+read and strip its UTF-8 contents; otherwise return the string unchanged. All downstream consumers
+(`run_nexus`, `projects.create`, `GlobalPipelineContext`, `techwriter.py`) already receive a plain string
+and need no changes. Update the `--idea` help text to document the dual mode.
+**Scope:** one file (`src/nexus/runner.py`), ~10 lines. No new dependencies.

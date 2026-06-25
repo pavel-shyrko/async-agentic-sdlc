@@ -3,7 +3,7 @@
 The chronological decision log for the engine, in [MADR](https://adr.github.io/madr/) format (Context →
 Decision → Consequences). Each release in [../../CHANGELOG.md](../../CHANGELOG.md) links the ADR that
 drove it; the distilled lessons live in [../../PRACTICUM.md](../../PRACTICUM.md). New ADRs are generated
-with the `/adr-generation` skill (next free sequence number).
+with the `/tbf-adr-generation` skill (next free sequence number).
 
 > Read top-to-bottom for the project's evolution, or jump by theme below. ADRs frequently *extend* earlier
 > ones (e.g. 0016 extends 0001/0003/0006).

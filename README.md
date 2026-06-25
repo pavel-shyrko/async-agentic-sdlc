@@ -84,7 +84,7 @@ token-burners-factory/
 ├── docker/                     # Sandbox image Dockerfiles (python/go/node/dotnet) + semgrep SAST image
 ├── scripts/                    # build_sandbox_images.sh — builds the sandbox + SAST images
 ├── .claude/                    # Claude Code metadata (AI-assisted maintenance)
-│   ├── skills/                 # Native Agent Skills (/adr-generation, /docs-sync, /claude-context-sync, /analyze-run, …)
+│   ├── skills/                 # Native Agent Skills (/tbf-adr-generation, /tbf-docs-sync, /tbf-claude-context-sync, /tbf-analyze-run, /tbf-code-quality, …)
 │   └── rules/                  # Path-scoped project knowledge auto-loaded by Claude Code
 ├── .github/                    # CI workflows (workflows/ci.yml)
 ├── runs/                       # Volatile per-run sessions (created dynamically, ignored by git)
@@ -245,22 +245,23 @@ For the release-by-release history see [CHANGELOG.md](./CHANGELOG.md), the decis
 
 ## 🛠️ Developer Meta-Tools (AI-Assisted Maintenance)
 
-The repository ships a set of native [Claude Code Agent Skills](https://docs.claude.com/en/docs/claude-code/skills) under `.claude/skills/` that automate project governance, maintain the engineering journal, and keep documentation in sync. They are auto-discoverable (invoke with `/name`, or let Claude trigger them from their description) and strictly separated from the core runtime agent prompts in `prompts/`. Project knowledge is encoded as **path-scoped rules** under `.claude/rules/` — each rule's `paths:` frontmatter makes it auto-load only when you edit a matching file (e.g. [subprocess-and-external-call-safety](.claude/rules/subprocess-and-external-call-safety.md) loads when you touch a subprocess/external-call site), so there is no manual step; `/claude-context-sync` keeps both the rules and the skills current with the code.
+The repository ships a set of native [Claude Code Agent Skills](https://docs.claude.com/en/docs/claude-code/skills) under `.claude/skills/` that automate project governance, maintain the engineering journal, and keep documentation in sync. They are auto-discoverable (invoke with `/name`, or let Claude trigger them from their description) and strictly separated from the core runtime agent prompts in `prompts/`. Project knowledge is encoded as **path-scoped rules** under `.claude/rules/` — each rule's `paths:` frontmatter makes it auto-load only when you edit a matching file (e.g. [subprocess-and-external-call-safety](.claude/rules/subprocess-and-external-call-safety.md) loads when you touch a subprocess/external-call site), so there is no manual step; `/tbf-claude-context-sync` keeps both the rules and the skills current with the code.
 
-Release-time skills — run at the end of an iteration (or just run `/iteration-release`, which orchestrates them):
+Release-time skills — run at the end of an iteration (or just run `/tbf-iteration-release`, which orchestrates them):
 
-* **`/adr-generation`** — Generate Architecture Decision Records. Analyzes recent git diffs to catch systemic architectural shifts and documents them in MADR format into `docs/decisions/`.
-* **`/docs-sync`** — Synchronize factual docs. Parses recent commits to update `CHANGELOG.md` (Keep a Changelog standard) and align `README.md` / `docs/ARCHITECTURE.md` with new CLI flags / configuration.
-* **`/claude-context-sync`** — Reconcile Claude's own operating context: updates the *content* of `.claude/rules/*` + `.claude/skills/*` (module map, FSM states, CLI/env knobs, diagnostic classes) to the current code — the complement to `/docs-sync`'s human-doc + enumeration sync.
-* **`/practicum-update`** — Distill engineering lessons. Reflects on the latest ADR to extract generalized multi-agent patterns into `PRACTICUM.md`.
-* **`/iteration-release`** — One-shot release documentation: runs the four sync skills above plus an iteration archive, with all cross-links resolved.
+* **`/tbf-adr-generation`** — Generate Architecture Decision Records. Analyzes recent git diffs to catch systemic architectural shifts and documents them in MADR format into `docs/decisions/`.
+* **`/tbf-docs-sync`** — Synchronize factual docs. Parses recent commits to update `CHANGELOG.md` (Keep a Changelog standard) and align `README.md` / `docs/ARCHITECTURE.md` with new CLI flags / configuration.
+* **`/tbf-claude-context-sync`** — Reconcile Claude's own operating context: updates the *content* of `.claude/rules/*` + `.claude/skills/*` (module map, FSM states, CLI/env knobs, diagnostic classes) to the current code — the complement to `/tbf-docs-sync`'s human-doc + enumeration sync.
+* **`/tbf-practicum-update`** — Distill engineering lessons. Reflects on the latest ADR to extract generalized multi-agent patterns into `PRACTICUM.md`.
+* **`/tbf-iteration-release`** — One-shot release documentation: runs the four sync skills above plus an iteration archive, with all cross-links resolved.
 
 On-demand skills — invoke any time, not tied to a release:
 
-* **`/agent-role-scaffold`** — Scaffold a new structured (Gemini) agent role across every touch point (config/`ROLE_MODELS`, prompt, output model, node, persistence, FSM wiring, tests, ADR); operationalizes the `agent-role-registration` rule. (Pauses for sign-off before any `prompts/system/` write.)
-* **`/analyze-run`** — Run diagnostics. Evidence-first root-cause analysis of a failed, looping, or circuit-breaker-halted run (also a PR/merge failure or a non-halt crash/hang): reads the run's `reports/checkpoint.json` + `logs/sdlc_audit.log` + incident/finops, classifies the cause (content-filter block, agent-fixable bug, contract conflict, environment misconfig, budget breach, forge/loop-closure failure, lint-gate failure, boundary crash/hang), and points the fix at `src/`/`prompts/` — never the generated clone.
+* **`/tbf-agent-role-scaffold`** — Scaffold a new structured (Gemini) agent role across every touch point (config/`ROLE_MODELS`, prompt, output model, node, persistence, FSM wiring, tests, ADR); operationalizes the `agent-role-registration` rule. (Pauses for sign-off before any `prompts/system/` write.)
+* **`/tbf-analyze-run`** — Run diagnostics. Evidence-first root-cause analysis of a failed, looping, or circuit-breaker-halted run (also a PR/merge failure or a non-halt crash/hang): reads the run's `reports/checkpoint.json` + `logs/sdlc_audit.log` + incident/finops, classifies the cause (content-filter block, agent-fixable bug, contract conflict, environment misconfig, budget breach, forge/loop-closure failure, lint-gate failure, boundary crash/hang), and points the fix at `src/`/`prompts/` — never the generated clone.
+* **`/tbf-code-quality`** — Audit generated application code and tests. Reads the run's clone (`repo/`), checkpoint contract, and gate outputs to assess contract compliance, code quality (Reviewer analysis, lint/SAST), test quality (coverage, integrity), and run efficiency.
 
-Non-interactive form: `claude -p "/adr-generation"`.
+Non-interactive form: `claude -p "/tbf-adr-generation"`.
 
 ---
 

@@ -73,7 +73,7 @@ templated-config prompt crosses the structured-call boundary."
 
 **Diagnostic tell:** a hang, an `embedded null byte` traceback, or a Jinja-in-system-message `ValueError`
 that escapes to `main()` is **not** an FSM halt — no `incident_report.json` is written. See
-[[pipeline-fsm-loops]] and the `analyze-run` skill's boundary-crash/hang class.
+[[pipeline-fsm-loops]] and the `tbf-analyze-run` skill's boundary-crash/hang class.
 
 Related: [[repo-module-map]] (where these seams live), [[config-constant-convention]] (the env knobs),
 [[agent-provider-model-map]] (the Gemini timeout).

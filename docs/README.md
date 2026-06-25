@@ -44,9 +44,10 @@ docs/
   every argv + time-bound every blocking call),
   [debugging-protocol](../.claude/rules/debugging-protocol.md) (diagnose a run).
 - **`.claude/skills/`** — invokable meta-tools (type `/name`, or let Claude auto-trigger them from their
-  description): `/adr-generation`, `/docs-sync`, `/claude-context-sync` (sync the rules + skills above to the
-  code), `/practicum-update`, `/iteration-release` (orchestrates the four sync skills + the archive),
-  `/analyze-run` (diagnose a run), `/agent-role-scaffold` (add a new structured agent role end-to-end).
+  description): `/tbf-adr-generation`, `/tbf-docs-sync`, `/tbf-claude-context-sync` (sync the rules + skills above to the
+  code), `/tbf-practicum-update`, `/tbf-iteration-release` (orchestrates the four sync skills + the archive),
+  `/tbf-analyze-run` (diagnose a run), `/tbf-agent-role-scaffold` (add a new structured agent role end-to-end),
+  `/tbf-code-quality` (audit generated app code + tests).
   (Full usage in [../README.md](../README.md) → Developer Meta-Tools.)
 - **`prompts/`** — the runtime agent prompts (`prompts/system/*.md`) and gated skill fragments
   (`prompts/skills/*.md`). These configure the pipeline agents themselves, not the docs.
