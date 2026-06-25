@@ -14,9 +14,9 @@ flaw, then recommend a fix in `src/`/`prompts/` — NEVER edit the generated clo
 (confirming a stub was never implemented, a file landed at the wrong path, what the generated code
 actually does) is expected and often decisive — only *mutating* it is forbidden.
 
-Path note: read artifacts with the Read/Grep tools using the Windows path (`c:\code\…`); a verbatim
-`/mnt/c/…` path the user pastes fails from the Bash tool (Git Bash mounts the drive at `/c/…`) — see
-[run-tests-via-wsl](../../rules/run-tests-via-wsl.md).
+Path note: read artifacts with the Read/Grep tools using their drive-letter Windows path (`C:\…\runs\…`);
+a verbatim `/mnt/c/…` path the user pastes fails from the Bash tool (Git Bash mounts the drive at `/c/…`,
+not `/mnt/c/…`) — see [run-tests-via-wsl](../../rules/run-tests-via-wsl.md).
 
 ## Step 1 — Locate the run
 - If given a run dir, use it. If given a project slug, pick the relevant run under `runs/<slug>/`

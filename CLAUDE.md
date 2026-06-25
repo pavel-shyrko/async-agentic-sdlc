@@ -21,8 +21,8 @@ interpreter lacks the dependencies and the venv is WSL-only.
 * **Cut a release (E6)**: add `--release` to an `--auto-execute` run → as the build's final step (after all tickets merge + optional `--scaffold-deploy`), `run_batch` calls `finalize_release` to push a `v*` tag (repo-derived latest bumped by `RELEASE_VERSION_BUMP`, default minor; `v0.1.0` greenfield) that trips the tag-gated deploy/release workflow. Decoupled from `--scaffold-deploy`; off by default; reuses the batch's git push creds. Seam: `forge.push_tag`/`list_remote_tags`.
 * **Resume a run**: `python3 main.py --resume <project> [NNN]`  (slug alone → latest Nexus run; re-pass `--scaffold-deploy` and/or `--release` to run the deploy / release phase)
 * **Legacy direct run**: `python3 main.py --repo <url|path> --ticket <ID> -f <ticket_path>`
-* **Run Tests**: `wsl -e bash -lc "cd /mnt/c/code/token-burners-factory && source venv/bin/activate && python3 -m unittest discover -s tests"`
-* **Check Lint/Security**: `wsl -e bash -lc "cd /mnt/c/code/token-burners-factory && venv/bin/bandit -r src/"`
+* **Run Tests** (from the repo root — `wsl` inherits the cwd, no absolute `cd`): `wsl -e bash -lc "source venv/bin/activate && python3 -m unittest discover -s tests"`
+* **Check Lint/Security** (from the repo root): `wsl -e bash -lc "venv/bin/bandit -r src/"`
 
 ## Project Knowledge & Procedures
 * Project knowledge lives in `.claude/rules/*.md` — auto-loaded by Claude Code (path-scoped rules load only when you touch matching files; cross-cutting ones load every session). No manual step needed.

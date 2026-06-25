@@ -10,8 +10,8 @@ Reads the generated application clone and the run's gate/telemetry artifacts to 
 evidence-based quality assessment. **Reading** the clone is expected and required here — it is the
 primary artifact under audit. Only *mutating* the clone is forbidden (workspace guardrails).
 
-Path note: use Windows paths (`c:\code\…`) with Read/Grep tools; a verbatim `/mnt/c/…` path from
-the Bash tool fails. See [run-tests-via-wsl](../../rules/run-tests-via-wsl.md).
+Path note: use the drive-letter Windows path (`C:\…`) with Read/Grep tools; a verbatim `/mnt/c/…` path
+from the Bash tool fails. See [run-tests-via-wsl](../../rules/run-tests-via-wsl.md).
 
 ## Step 1 — Locate the run
 - If given a run dir path, use it directly.

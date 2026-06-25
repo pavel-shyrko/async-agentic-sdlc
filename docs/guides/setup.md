@@ -336,10 +336,11 @@ Then run with a token-free URL — `--repo https://github.com/<owner>/<repo>.git
 
 ### Contributors: verify the engine itself
 
-Tests, `bandit`, and the venv `python` are **WSL-only**. Run the suite as a smoke test:
+Tests, `bandit`, and the venv `python` are **WSL-only**. Run the suite as a smoke test from the repo
+root (`wsl` inherits the working directory, so no absolute `cd` is needed):
 
 ```bash
-wsl -e bash -lc "cd /mnt/c/code/token-burners-factory && source venv/bin/activate && python3 -m unittest discover -s tests"
+wsl -e bash -lc "source venv/bin/activate && python3 -m unittest discover -s tests"
 ```
 
 ---
