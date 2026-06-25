@@ -145,6 +145,32 @@ def run_devops_gate(repo_dir, archetype: str | None = None) -> list[str]:
                     "returns HTTP 403 for every anonymous request."
                 )
 
+        # Broken-continuation guard. `has_iam_binding` checks only that the strings "allusers" and
+        # "run.invoker" appear anywhere in the file — they will even when `\` continuation backslashes
+        # are dropped and `--member`/`--role` execute as separate (invalid) shell lines. Verify that
+        # `--member` and `--role` sit on the same logical command as `add-iam-policy-binding`.
+        if has_iam_binding:
+            lines = workflow_text.splitlines()
+            for i, line in enumerate(lines):
+                if "add-iam-policy-binding" in line.lower():
+                    logical_cmd = line
+                    j = i
+                    while lines[j].rstrip().endswith("\\") and j + 1 < len(lines):
+                        j += 1
+                        logical_cmd += " " + lines[j]
+                    lc = logical_cmd.lower()
+                    if "--member" not in lc or "--role" not in lc:
+                        problems.append(
+                            f"deploy.yml: `gcloud run services add-iam-policy-binding` is missing "
+                            "--member and/or --role on its logical command line. The flags are present "
+                            "elsewhere in the file but on unreachable lines — missing `\\` "
+                            "line-continuation backslashes cause the shell to run only the first line "
+                            "and ignore the rest, producing `argument --member --role: Must be "
+                            "specified` (exit 1). Write the full command on a single `run:` line "
+                            "(recommended) or ensure every continued line ends with ` \\\\'."
+                        )
+                    break
+
         # Service-name collision guard. A managed service is keyed by (name, region, project); a hardcoded
         # literal name lets one repo's deploy silently overwrite another's service (a new revision takes over
         # the live URL). The name MUST be derived from the GitHub repository context so every repo gets a

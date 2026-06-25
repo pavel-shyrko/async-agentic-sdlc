@@ -32,53 +32,73 @@ DEPLOY TARGET: Google Cloud Run (web services) via Workload Identity Federation.
   Reference implementation for the binding step (runs after the deploy step):
   ```yaml
         - name: Allow public (unauthenticated) invocation
-          run: |
-            gcloud run services add-iam-policy-binding ${{ github.event.repository.name }} \
-              --region="${{ vars.GCP_REGION }}" \
-              --project="${{ vars.GCP_PROJECT_ID }}" \
-              --member="allUsers" \
-              --role="roles/run.invoker"
+          env:
+            SERVICE: ${{ github.event.repository.name }}
+            REGION: ${{ vars.GCP_REGION }}
+            PROJECT: ${{ vars.GCP_PROJECT_ID }}
+          run: gcloud run services add-iam-policy-binding "$SERVICE" --region="$REGION" --project="$PROJECT" --member="allUsers" --role="roles/run.invoker"
   ```
+  **Use this single-line `run:` form (no `run: |`).** A multi-line block requires `\` line-continuation backslashes on every line but the last; if any backslash is dropped, the shell runs only the first line as the gcloud command and the `--member` / `--role` lines execute as separate invalid commands — gcloud returns `argument --member --role: Must be specified` (exit 1) and the step fails silently at the wrong point. The single-line form with `env:` vars is immune to this class of error.
+  The service name MUST remain `${{ github.event.repository.name }}` in the `env:` block — never hardcode a literal repo name.
 - The container listens on `$PORT` (Cloud Run injects it) and binds `0.0.0.0` — that is the archetype skill's Dockerfile/server concern; this deploy step does not set the port.
 
 ## Cloud SQL (only for a database-backed CRUD service)
 - Attach the instance to the Cloud Run revision via `--add-cloudsql-instances` (or the Cloud SQL Auth Proxy), referencing `${{ secrets.CLOUD_SQL_CONNECTION_NAME }}`.
 - If the app has a schema/migrations step, run migrations against the database BEFORE the new revision serves traffic (a migrate step gated on the same WIF auth).
 
-## Post-deploy: publish the live URL into the README
-- **After the deploy step, add an "Update README with deployment URL" step** that:
-  1. Reads the URL from `${{ steps.deploy.outputs.url }}`.
-  2. If `README.md` already contains the marker `<!-- DEPLOYMENT_URL_START -->`, replaces everything between `<!-- DEPLOYMENT_URL_START -->` and `<!-- DEPLOYMENT_URL_END -->` with a markdown link to the live URL. If the markers are absent, appends a new `## 🚀 Live Deployment` section with the markers and the link.
-  3. Uses `perl -i -0pe` for the in-place multiline replacement (available on all ubuntu-latest runners).
-  4. Commits only when `README.md` actually changed (`git diff --quiet` ⇒ exit early), and the commit message MUST end with `[skip ci]` to prevent a re-trigger loop.
-  5. **Pushes with the `HEAD:<default-branch>` refspec, NEVER a bare `git push`.** `actions/checkout` leaves the workspace in **detached HEAD** (it checks out `github.sha`, not a branch), so a bare `git push` fails with `fatal: You are not currently on a branch`. The refspec form `git push origin HEAD:"$DEFAULT_BRANCH"` pushes the just-made commit straight to the default-branch ref and works from a detached HEAD. Resolve the branch from `${{ github.event.repository.default_branch }}` — never hardcode `main`.
-  6. **Branch-protection prerequisite (one-time org setup):** a protected default branch rejects this push unless the `github-actions` app is on the branch rule's **"Allow bypass"** list. Grant that bypass once per org/repo — see docs/guides/devops_setup.md. (The push is best-effort: if the default branch advanced since checkout, the non-fast-forward push is skipped and the next deploy re-applies the URL.)
-  7. Authenticates via the default `GITHUB_TOKEN` (no extra secret — `contents: write` above covers it).
-  8. **Author it as a literal `run: |` block — NEVER assemble the script with a `${{ format(...) }}` expression (or any expression-built `run:`).** A `format()` string-literal escapes every single quote by DOUBLING it (`'` → `''`); that doubling survives into the executed bash, so `printf ''\n…''` word-splits the format string and appends a stray `##` line instead of the URL. Interpolate `${{ steps.deploy.outputs.url }}` and `${{ github.event.repository.default_branch }}` DIRECTLY inside the literal block, exactly as the reference shows.
+## Post-deploy: publish the live URLs into the README
+- **After the deploy step, add two steps: "Extract Cloud Run URLs" then "Update README with deployment URLs".**
 
-  Reference implementation for the step:
+### Why two URLs
+The `deploy-cloudrun` action's `outputs.url` returns the **revision-specific** URL (format: `https://<service>-<hash>-<region-code>.a.run.app`). Some corporate proxies (e.g. Symantec/Broadcom) block this domain pattern on first encounter, classifying new hash-subdomains as "Placeholders" or "Uncategorized". The **stable service URL** returned by `gcloud run services describe ... --format='value(status.url)'` uses a region-anchored format (`https://<service>-<project-number>.<region>.run.app`) that is already trusted by those proxies. Always write **both** into the README so users can use whichever works in their network.
+
+### Step 1 — Extract Cloud Run URLs
+Add a step with `id: urls` immediately after the deploy step:
+```yaml
+      - name: Extract Cloud Run URLs
+        env:
+          SERVICE: ${{ github.event.repository.name }}
+          REGION: ${{ vars.GCP_REGION }}
+          PROJECT: ${{ vars.GCP_PROJECT_ID }}
+        run: |
+          URL_STABLE=$(gcloud run services describe "$SERVICE" --region="$REGION" --project="$PROJECT" --format='value(status.url)')
+          URL_REVISION="${{ steps.deploy.outputs.url }}"
+          echo "URL_STABLE=$URL_STABLE" >> "$GITHUB_ENV"
+          echo "URL_REVISION=$URL_REVISION" >> "$GITHUB_ENV"
+```
+`gcloud run services describe` returns the stable regional URL from the service's live metadata. Both values are exported into `$GITHUB_ENV` so the next step reads them as plain shell variables.
+
+### Step 2 — Update README with deployment URLs
+Rules for this step:
+1. Replace everything between `<!-- DEPLOYMENT_URL_START -->` and `<!-- DEPLOYMENT_URL_END -->` with a two-line markdown block listing both URLs. If the markers are absent, append a new `## 🚀 Live Deployment` section with the markers and both links.
+2. Uses `perl -i -0pe` for in-place multiline replacement (available on all `ubuntu-latest` runners).
+3. Commits only when `README.md` actually changed (`git diff --quiet` ⇒ exit early); the commit message MUST end with `[skip ci]` to prevent a re-trigger loop.
+4. **Pushes with the `HEAD:<default-branch>` refspec, NEVER a bare `git push`.** `actions/checkout` leaves the workspace in **detached HEAD** (it checks out `github.sha`, not a branch), so a bare `git push` fails with `fatal: You are not currently on a branch`. The refspec form `git push origin HEAD:"$DEFAULT_BRANCH"` pushes the just-made commit straight to the default-branch ref and works from a detached HEAD. Resolve the branch from `${{ github.event.repository.default_branch }}` — never hardcode `main`.
+5. **Branch-protection prerequisite (one-time org setup):** a protected default branch rejects this push unless the `github-actions` app is on the branch rule's **"Allow bypass"** list. Grant that bypass once per org/repo — see docs/guides/devops_setup.md.
+6. Authenticates via the default `GITHUB_TOKEN` (no extra secret — `contents: write` above covers it).
+7. **Author it as a literal `run: |` block — NEVER assemble the script with a `${{ format(...) }}` expression (or any expression-built `run:`).** A `format()` string-literal escapes every single quote by DOUBLING it (`'` → `''`); that doubling survives into the executed bash, so `printf ''\n…''` word-splits the format string and appends a stray `##` line instead of the URL. Interpolate `${{ github.event.repository.default_branch }}` DIRECTLY inside the literal block.
+
+  Reference implementation:
   ```yaml
-        - name: Update README with deployment URL
+        - name: Update README with deployment URLs
           run: |
-            LIVE_URL="${{ steps.deploy.outputs.url }}"
             perl -i -0pe \
-              "s|<!-- DEPLOYMENT_URL_START -->.*?<!-- DEPLOYMENT_URL_END -->|<!-- DEPLOYMENT_URL_START -->\n**Live:** [$LIVE_URL]($LIVE_URL)\n<!-- DEPLOYMENT_URL_END -->|s" \
+              "s|<!-- DEPLOYMENT_URL_START -->.*?<!-- DEPLOYMENT_URL_END -->|<!-- DEPLOYMENT_URL_START -->\n**Stable (corporate-proxy-safe):** [$URL_STABLE]($URL_STABLE)\n**Revision:** [$URL_REVISION]($URL_REVISION)\n<!-- DEPLOYMENT_URL_END -->|s" \
               README.md || true
             if ! grep -q "DEPLOYMENT_URL_START" README.md; then
-              printf '\n## 🚀 Live Deployment\n<!-- DEPLOYMENT_URL_START -->\n**Live:** [%s](%s)\n<!-- DEPLOYMENT_URL_END -->\n' \
-                "$LIVE_URL" "$LIVE_URL" >> README.md
+              printf '\n## 🚀 Live Deployment\n<!-- DEPLOYMENT_URL_START -->\n**Stable (corporate-proxy-safe):** [%s](%s)\n**Revision:** [%s](%s)\n<!-- DEPLOYMENT_URL_END -->\n' \
+                "$URL_STABLE" "$URL_STABLE" "$URL_REVISION" "$URL_REVISION" >> README.md
             fi
             # Nothing changed → nothing to push (and no re-trigger loop).
             if git diff --quiet README.md; then
-              echo "README deployment URL already current; nothing to do."
+              echo "README deployment URLs already current; nothing to do."
               exit 0
             fi
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add README.md
-            git commit -m "docs: update live deployment URL [skip ci]"
+            git commit -m "docs: update live deployment URLs [skip ci]"
             # HEAD:<default-branch> pushes the detached-HEAD commit straight to the branch ref —
-            # this is what avoids "fatal: You are not currently on a branch". Requires the
-            # github-actions app to have an "Allow bypass" on the protected default branch.
+            # avoids "fatal: You are not currently on a branch" from detached HEAD checkout.
             git push origin HEAD:"${{ github.event.repository.default_branch }}"
   ```
