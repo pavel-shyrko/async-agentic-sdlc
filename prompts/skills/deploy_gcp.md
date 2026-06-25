@@ -8,7 +8,7 @@ DEPLOY TARGET: Google Cloud Run (web services) via Workload Identity Federation.
 
 ## Authentication — Workload Identity Federation (NO embedded credentials)
 - Authenticate with `google-github-actions/auth` using `workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}` and `service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}` — NEVER a key JSON, token, or password.
-- `permissions: { id-token: write, contents: write }` — `id-token: write` is required for WIF; `contents: write` is required for the post-deploy README commit (below).
+- `permissions: { id-token: write, contents: write, pull-requests: write }` — `id-token: write` is required for WIF; `contents: write` + `pull-requests: write` are required for the post-deploy README update, which lands via an auto-merged PR (below), not a direct push.
 - Secrets vs variables (the org is pre-provisioned this way — see docs/guides/devops_setup.md): `GCP_WIF_PROVIDER` + `GCP_SERVICE_ACCOUNT` are repository **secrets** (`${{ secrets.* }}`); `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_REGISTRY_NAME` are repository **variables** (`${{ vars.* }}`). Never inline a key, project id, or region.
 
 ## Service naming — derive it from the repository, NEVER hardcode
