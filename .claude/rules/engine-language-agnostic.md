@@ -43,11 +43,18 @@ language it is handling.
 | Failure-origin slice | `_TRACEBACK_MARKERS = ("Traceback",…)` | `failure_origin_markers(env_id)` |
 | Repo-map pruning | `if name == "__pycache__"` | `repo_map_ignore_dirs(env_id)` |
 | Lint no-op guard | `if not _has_eslint_config(repo_root)` | shell self-guard inside env's `lint_cmd` |
+| Dependency-manifest name | `if lang == "python": "requirements.txt"` | `dependency_manifest(env_id)` (per-env scalar; surfaced to the agents as `authoring_contract` prose) |
 
 ## Why
 
 A multi-stack factory must be extensible by adding ONLY a registry entry + Docker image + a
 language-`triggers` skill. Any hardcoded language table in `src/` is an invisible edit the developer
 must remember on each new stack, and silently breaks non-target-language runs in the meantime.
+
+The same registry-driven discipline governs **deployment targets**: `SUPPORTED_DEPLOY_TARGETS`
+(`environments.py`) is the SSOT for *where* an app deploys, consumed via `deploy_target_for_archetype` /
+`deploy_skill_for_target` / `deploy_target_skills`. A deploy target is a deployment classification, not a
+programming language — adding a future cloud is one registry entry + one `prompts/skills/deploy_<cloud>.md`,
+never a hardcoded branch. See [deploy-scaffolding-and-ci-parity](deploy-scaffolding-and-ci-parity.md) §5.
 
 See also: [prompt-language-independence](prompt-language-independence.md) (same constraint for prompts).

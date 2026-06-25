@@ -3,6 +3,7 @@ paths:
   - "src/deployment/agents/devops.py"
   - "prompts/system/devops.md"
   - "prompts/skills/devops_*.md"
+  - "prompts/skills/deploy_*.md"
   - "src/shared/core/environments.py"
   - "src/development/gates.py"
   - "src/deployment/provision/gates.py"
@@ -30,8 +31,39 @@ is null) + a build/release matrix workflow instead.
 
 **Why:** deploying a CLI to a serverless container is a semantic error — a CLI has no long-running server to
 serve. The branch is encoded in the `devops.md` system prompt AND the archetype skills
-(`devops_{rest_api,crud_app,cli_tool}.md`, routed by `triggers:` — see [[skill-routing-frontmatter]]); the
-chosen class is recorded in `DevOpsManifests.archetype`.
+(`devops_{rest_api,crud_app,cli_tool}.md`); the chosen class is recorded in `DevOpsManifests.archetype`.
+
+**The README-URL step updates IN PLACE because the Technical Writer pre-seeds the markers.** The platform
+skills' post-deploy/post-release step injects the live URL between `<!-- DEPLOYMENT_URL_START/END -->` /
+`<!-- RELEASE_URL_START/END -->` markers (appending a new section only if they are absent). Those markers are
+pre-seeded into `README.md` by the **Technical Writer** (the `README_SCAFFOLD` `## Deployment` section,
+`src/shared/core/prompts.py`), and the techwriter prompt preserves the marker-block contents verbatim across
+its per-ticket rewrites — so the URL the workflow commits survives the next ticket's README regeneration. See
+[[agent-contracts]] (the TechWriter `DocumentationUpdate` contract).
+
+**The README-URL step pushes with the `HEAD:<default-branch>` refspec, NEVER a bare `git push`.** The
+generated *deployed* workflow runs in the user's Actions on a workspace `actions/checkout` leaves in
+**detached HEAD** (it checks out `github.sha`, not a branch — and the tag-gated release run has no branch at
+all), so a bare `git push` dies with `fatal: You are not currently on a branch`. Both platform skills
+(`deploy_{gcp,github_release}.md`) therefore commit and push with `git push origin
+HEAD:"${{ github.event.repository.default_branch }}"` — the refspec form sends the detached-HEAD commit
+straight to the default-branch ref (resolved from the repo context, never a hardcoded `main`). The commit
+message carries `[skip ci]` so the push does not re-trigger the workflow. Only `contents: write` is needed
+(no PR, no `pull-requests:` scope). **Branch protection is handled out-of-band:** a protected default branch
+rejects this push unless the `github-actions` app is on the branch rule's **"Allow bypass"** list — a
+one-time per-org/repo grant documented in [docs/guides/devops_setup.md](../../docs/guides/devops_setup.md).
+(This is deliberately distinct from the engine's own E4 scaffold landing in §4, which is an *audited PR* via
+host-side `finalize_pr`: that runs once per build under the engine's own forge creds, whereas this cosmetic
+URL stamp runs inside the user's deployed workflow where no second reviewer identity exists.) Pinned by
+`test_deploy_platform_skills_push_readme_via_head_refspec_not_bare_push`.
+
+**App SHAPE vs deploy TARGET — keep them in separate skills.** The archetype skills define the app's *shape*
+(container/server vs CLI artifact) ONLY; the **platform skills** (`prompts/skills/deploy_{gcp,github_release}.md`)
+own the *deploy mechanics* (WIF auth, image build/push, the Cloud Run deploy step, the public-invoker grant,
+the README-URL step / GitHub Release publish). The DevOps node force-loads BOTH sets — archetype skills +
+the platform skills named by `SUPPORTED_DEPLOY_TARGETS[*].skill` (via `deploy_target_skills()`), assembled in
+`_archetype_guidance()`. Adding a future cloud is ONE registry entry + one `deploy_<cloud>.md`, no code edit.
+Do NOT re-tangle Cloud-Run/WIF mechanics back into an archetype skill.
 
 **How to apply:** keep the archetype branch in the prompt itself, not only the skills (a skill miss must
 still produce a correct shape). Never add a Cloud Run / container step on the CLI path.
@@ -91,6 +123,44 @@ publish. See [[run-layout-and-cli]] (`--release`) and [[pipeline-fsm-loops]] (th
 `app_telemetry` accumulator by reference and merges its spend into it in its **own `finally`**, so even a
 budget `PipelineHalt` mid-self-heal still folds the partial DevOps spend into the application total before the
 batch's `finally` writes `app_finops_report.json`. See [[finops-app-budget]].
+
+## 5. Deployment targets are a registry; web services are publicly invocable by default
+(The registry + the reachability/isolation gate + the README-URL publish below are ADR
+[0026](../../docs/decisions/0026-deploy-target-registry-and-reachability-gates.md), extending ADR 0020.)
+`SUPPORTED_DEPLOY_TARGETS` (`environments.py`) is the SSOT for WHERE an app deploys — mirroring
+`SUPPORTED_ENVIRONMENTS` (the WHAT/runtime SSOT). Each entry carries `archetypes` (which app archetypes it
+serves), `skill` (its platform skill), `runtime_constraints` (the contract the APP CODE must satisfy — bind
+`$PORT`/`0.0.0.0`, **boot with zero required configuration**, statelessness, a health endpoint), and an
+optional `requires_public_invoker` flag. The SA selects a target (injected awareness list
+`{injected_supported_deploy_targets_list}`, like the platform list) and records it in the Blueprint's
+`## Deployment Target`; the TPM propagates the runtime constraints into the relevant tickets'
+architectural-constraints; the building agents satisfy them (zero-config boot is also a global
+`engineering_guide` rule + a TechLead contract HARD gate). A deploy target is a *deployment classification*,
+NOT a programming language — no per-language branching here (honors [[engine-language-agnostic]]).
+
+**Public invocation (the 403 class).** A target with `requires_public_invoker: True` (Cloud Run) deploys a
+public-facing service: its workflow MUST grant unauthenticated invocation, or the live service rejects every
+anonymous request with **HTTP 403**. This is enforced two ways: the `deploy_gcp` platform skill instructs
+`flags: '--allow-unauthenticated'` PLUS an explicit `allUsers` → `roles/run.invoker` binding, AND
+`run_devops_gate(repo_dir, archetype)` deterministically asserts the generated workflow grants public
+invocation — a miss flows into the existing `DEVOPS_MAX_RETRIES` self-heal loop. **The grant lives in IAM,
+outside the Knative service spec**, so the gate is **deploy-mode-aware**: in *image-deploy* mode either
+`--allow-unauthenticated` OR an `allUsers`→`run.invoker` binding satisfies it; but when the workflow deploys a
+`service.yaml` manifest instead (`gcloud run services replace`, or a `metadata:` input on `deploy-cloudrun`),
+the flag is incompatible and silently dropped, so ONLY the explicit IAM binding counts — the gate demands it
+there. (This was a live 403: a generated `metadata:`-mode workflow whose `--allow-unauthenticated` was inert.)
+The gate is archetype-aware: `archetype=None` (or a target without the flag) skips the check, so CLI runs are
+unaffected.
+
+**Service-name collision guard (the overwrite class).** A managed service is keyed by `(name, region,
+project)`, so a **hardcoded** service name lets one app's deploy silently overwrite another's (a new revision
+takes over the live URL) — a real risk in a multi-app factory. The `deploy_gcp` skill forbids static names and
+requires deriving the name from the repository context (`${{ github.event.repository.name }}`, optionally
+branch-suffixed for non-default-branch deploys); `run_devops_gate` deterministically asserts the workflow
+references `github.event.repository.name` (or `github.repository`) for a `requires_public_invoker` target.
+
+**Why a gate, not just the prompt:** prompt adherence is probabilistic; the gate makes reachability +
+isolation green-by-construction, the same philosophy as the `lint_cmd` CI-parity SSOT above.
 
 Related: [[repo-module-map]] (where the symbols live), [[pipeline-fsm-loops]] (the step-3.6 lint loop +
 the post-batch devops phase), [[agent-provider-model-map]] (the `devops` Gemini role),

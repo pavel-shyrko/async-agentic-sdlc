@@ -5,13 +5,17 @@ commands, the network phasing, and the adapter's ``(returncode, stdout, stderr)`
 inspected deterministically.
 """
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import mock
 from unittest.mock import AsyncMock, call
 
 from src.development.gates import (
     run_qa_unit_tests, run_security_scan, run_build_gate, run_format_pass, run_test_compile_gate,
     run_lint_gate, classify_lint_findings, ran_zero_tests,
-    build_failure_is_test_only, build_failure_is_environmental, _has_test_files, _FILE_REF_RE,
+    build_failure_is_test_only, build_failure_is_environmental, lint_failure_is_tooling,
+    missing_dependency_manifest, annotate_missing_manifest,
+    _has_test_files, _FILE_REF_RE,
 )
 from src.shared.core.environments import SUPPORTED_ENVIRONMENTS, SAST_IMAGE, SAST_CMD, all_source_extensions
 
@@ -334,6 +338,33 @@ class BuildFailureClassifierTests(unittest.TestCase):
     def test_no_file_refs_is_false(self) -> None:
         self.assertFalse(build_failure_is_test_only(self._GO, ["go: some toolchain error", ""]))
 
+    # MSBuild emits `path(line,col):` diagnostics (parenthesis form), NOT `path:line:col`. `dotnet build`
+    # compiles the test project too, so a QA-owned test-compile error surfaces in the production build
+    # gate; it MUST be classified test-only (→ QA), never rerouted to the Developer who cannot edit tests.
+    _DOTNET = "dotnet-10-sdk"
+
+    def test_msbuild_test_only_failure_is_true(self) -> None:
+        lines = [
+            "/workspace/tests/JsonToCsv.Tests/ProgramTests.cs(53,10): error CS0182: An attribute argument "
+            "must be a constant expression [/workspace/tests/JsonToCsv.Tests/JsonToCsv.Tests.csproj]",
+            "/workspace/tests/JsonToCsv.Tests/ProgramTests.cs(20,30): error CS0029: Cannot implicitly "
+            "convert type 'void' to 'int' [/workspace/tests/JsonToCsv.Tests/JsonToCsv.Tests.csproj]",
+        ]
+        self.assertTrue(build_failure_is_test_only(self._DOTNET, lines))
+
+    def test_msbuild_production_only_is_false(self) -> None:
+        self.assertFalse(build_failure_is_test_only(
+            self._DOTNET,
+            ["/workspace/src/JsonToCsv.Cli/Program.cs(12,9): error CS0103: The name 'Foo' does not exist"],
+        ))
+
+    def test_msbuild_mixed_prod_and_test_is_false(self) -> None:
+        lines = [
+            "/workspace/src/JsonToCsv.Cli/Program.cs(12,9): error CS0103: The name 'Foo' does not exist",
+            "/workspace/tests/JsonToCsv.Tests/ProgramTests.cs(53,10): error CS0182: attribute argument",
+        ]
+        self.assertFalse(build_failure_is_test_only(self._DOTNET, lines))
+
 
 class EnvironmentalBuildFailureTests(unittest.TestCase):
     """`build_failure_is_environmental` flags feed/DNS/proxy-unreachable failures (NOT code defects)."""
@@ -368,6 +399,51 @@ class EnvironmentalBuildFailureTests(unittest.TestCase):
         # A genuine code defect must fall through to the normal compile-gate reroute.
         self.assertFalse(build_failure_is_environmental(self._DOTNET, ["Program.cs(12,9): error CS0103: The name 'Foo' does not exist"]))
         self.assertFalse(build_failure_is_environmental("go-1.23-cli", ["internal/converter/processor.go:10:2: undefined: Foo"]))
+
+
+class MissingDependencyManifestTests(unittest.TestCase):
+    """`missing_dependency_manifest` flags the silent `pip install -r requirements.txt || true` no-op class
+    (restore exits 0 but installed nothing because the manifest is absent) — registry-keyed, and ONLY when
+    a module-resolution error is ALSO present, so a stdlib-only app / real code defect never false-positives."""
+
+    _MODULE_ERR = ["E   ModuleNotFoundError: No module named 'fastapi'"]
+
+    def test_missing_manifest_plus_import_error_is_flagged(self) -> None:
+        with TemporaryDirectory() as repo:  # no requirements.txt on disk
+            self.assertTrue(missing_dependency_manifest("python-3.12-core", repo, self._MODULE_ERR))
+
+    def test_present_manifest_is_not_flagged(self) -> None:
+        with TemporaryDirectory() as repo:
+            (Path(repo) / "requirements.txt").write_text("fastapi==0.110.0\n", encoding="utf-8")
+            self.assertFalse(missing_dependency_manifest("python-3.12-core", repo, self._MODULE_ERR))
+
+    def test_no_import_error_is_not_flagged(self) -> None:
+        # A legitimately stdlib-only app (no manifest, no import failure) must NOT be flagged.
+        with TemporaryDirectory() as repo:
+            self.assertFalse(missing_dependency_manifest("python-3.12-core", repo, ["1 passed in 0.1s"]))
+
+    def test_unknown_env_is_exempt(self) -> None:
+        with TemporaryDirectory() as repo:
+            self.assertFalse(missing_dependency_manifest("no-such-env", repo, self._MODULE_ERR))
+
+    def test_dotnet_csproj_glob_resolves_present_manifest(self) -> None:
+        # `*.csproj` is matched via rglob, so a nested project file counts as present.
+        with TemporaryDirectory() as repo:
+            proj = Path(repo) / "src" / "App"
+            proj.mkdir(parents=True)
+            (proj / "App.csproj").write_text("<Project/>", encoding="utf-8")
+            self.assertFalse(missing_dependency_manifest(
+                "dotnet-10-sdk", repo, ["error CS: cannot find module 'X'"]))
+
+    def test_annotate_prepends_actionable_banner_only_when_flagged(self) -> None:
+        with TemporaryDirectory() as repo:
+            annotated = annotate_missing_manifest("python-3.12-core", repo, self._MODULE_ERR)
+            self.assertIn("MISSING DEPENDENCY MANIFEST", annotated[0])
+            self.assertIn("requirements.txt", annotated[0])
+            self.assertEqual(annotated[1:], self._MODULE_ERR)  # original lines preserved below the banner
+            # A non-manifest failure is returned unchanged (no banner, no routing change).
+            real_defect = ["E   AssertionError: 1 != 2"]
+            self.assertEqual(annotate_missing_manifest("python-3.12-core", repo, real_defect), real_defect)
 
 
 class DotnetFormatWorkspaceTargetingTests(unittest.TestCase):
@@ -507,14 +583,71 @@ class ClassifyLintFindingsTests(unittest.TestCase):
         prod, test = classify_lint_findings(_ENV, ["ruff 0.3.0", "checking 4 files"])
         self.assertEqual((prod, test), ([], []))
 
+    def test_msbuild_paren_format_splits_prod_and_test(self) -> None:
+        # MSBuild `path(line,col):` diagnostics must bucket like colon-style ones (the same seam that
+        # routes .NET test-compile errors to QA also drives the lint prod/test split).
+        lines = [
+            "/workspace/src/JsonToCsv.Cli/Program.cs(12,9): warning CA1822: Mark as static",
+            "/workspace/tests/JsonToCsv.Tests/ProgramTests.cs(8,1): warning IDE0005: Unnecessary using",
+        ]
+        prod, test = classify_lint_findings("dotnet-10-sdk", lines)
+        self.assertEqual(len(prod), 1)
+        self.assertEqual(len(test), 1)
+        self.assertIn("Program.cs(12,9)", prod[0])
+        self.assertIn("ProgramTests.cs(8,1)", test[0])
+
 
 class FileRefRegexUnchangedTests(unittest.TestCase):
-    """Pin: adding the bare-path classifier must NOT have loosened the shared compile-error regex
-    (`_FILE_REF_RE` still requires `:line`, so a bare path does NOT match it)."""
+    """Pin: the shared compile-error regex matches BOTH the colon suffix (`path:line[:col]`) and the
+    MSBuild parenthesis suffix (`path(line,col):`), but a bare path (no line/col) still does NOT match."""
 
     def test_requires_line_number(self) -> None:
         self.assertIsNotNone(_FILE_REF_RE.match("src/converter.py:10:5: F401 unused"))
         self.assertIsNone(_FILE_REF_RE.match("src/converter.py"))   # bare path is NOT a compile-error ref
+
+    def test_matches_msbuild_paren_suffix(self) -> None:
+        m = _FILE_REF_RE.match(
+            "/workspace/tests/JsonToCsv.Tests/ProgramTests.cs(53,10): error CS0182: bad attribute"
+        )
+        self.assertIsNotNone(m)
+        self.assertTrue(m.group(1).endswith("ProgramTests.cs"))
+
+
+class LintToolingFailureTests(unittest.TestCase):
+    """`lint_failure_is_tooling` flags a lint command that could not RUN (bad flag / unknown subcommand /
+    missing binary) — an engine `lint_cmd` misconfig the agents cannot fix — so the runner fails fast with
+    an environment incident instead of folding it into the budgeted cycle. A real finding is NOT flagged."""
+
+    _ENV = "python-3.12-core"
+
+    def test_ruff_format_bad_flag_is_tooling(self) -> None:
+        # The exact failure observed: `ruff format` rejects `--extend-exclude` (only `ruff check` has it).
+        lines = [
+            "error: unexpected argument '--extend-exclude' found",
+            "tip: to pass '--extend-exclude' as a value, use '-- --extend-exclude'",
+            "Usage: ruff format --check [FILES]...",
+        ]
+        self.assertTrue(lint_failure_is_tooling(self._ENV, lines))
+
+    def test_missing_binary_is_tooling(self) -> None:
+        self.assertTrue(lint_failure_is_tooling(self._ENV, ["sh: 1: ruff: command not found"]))
+
+    def test_unknown_flag_is_tooling(self) -> None:
+        self.assertTrue(lint_failure_is_tooling("go-1.23-cli", ["flag provided but not defined: -foo", "Usage of vet:"]))
+
+    def test_real_lint_finding_is_not_tooling(self) -> None:
+        # A genuine style finding must ride the budgeted cycle, NOT be reclassified as an env fault.
+        lines = [
+            "src/converter.py:10:5: F401 `os` imported but unused",
+            "Found 1 error.",
+        ]
+        self.assertFalse(lint_failure_is_tooling(self._ENV, lines))
+
+    def test_msbuild_style_finding_is_not_tooling(self) -> None:
+        self.assertFalse(lint_failure_is_tooling(
+            "dotnet-10-sdk",
+            ["/workspace/src/App/Program.cs(12,9): warning CA1822: Mark members as static"],
+        ))
 
 
 if __name__ == "__main__":

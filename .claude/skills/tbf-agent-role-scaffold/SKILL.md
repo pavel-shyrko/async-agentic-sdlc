@@ -1,6 +1,7 @@
 ---
-name: agent-role-scaffold
+name: tbf-agent-role-scaffold
 description: Scaffold a new structured (Gemini/instructor) agent role end-to-end across every touch point — config/ROLE_MODELS, system prompt, Pydantic output model, agent node, checkpoint persistence, FSM wiring, tests, and the ADR. Use when the user asks to add a new agent/role to any plane (Nexus control / Development worker / Deployment infra). Operationalizes the agent-role-registration rule; the Developer is the one role this does NOT fit (it is the agentic Claude CLI, not structured).
+disable-model-invocation: true
 ---
 
 # Scaffold a New Structured Agent Role
@@ -46,11 +47,11 @@ context and its structured output model?
    `mock.patch.object(... "run_*_node" ...)` pattern), a node unit test (mock `run_structured_llm`, assert
    verdict stored + telemetry recorded), and `test_prompts.py` pins for new prompt literals. Run via
    [run-tests-via-wsl](../../rules/run-tests-via-wsl.md).
-8. **ADR** — if the role adds a new FSM state or changes routing, write one (run the `adr-generation` skill).
+8. **ADR** — if the role adds a new FSM state or changes routing, write one (run the `/tbf-adr-generation` skill).
 
 ## Step 9 — Propagate the new role everywhere it is enumerated
-A new role is a peer-set member: run `docs-sync` (README Model-Routing roster + `agents/` tree + `prompts/system/`
-list + ARCHITECTURE L1/L2 + component table) and `claude-context-sync` (the `repo-module-map`,
+A new role is a peer-set member: run `/tbf-docs-sync` (README Model-Routing roster + `agents/` tree + `prompts/system/`
+list + ARCHITECTURE L1/L2 + component table) and `/tbf-claude-context-sync` (the `repo-module-map`,
 `agent-provider-model-map`, and `agent-contracts` rules). Confirm `ls src/*/agents/*.py` + `ls prompts/system/`
 match what the docs enumerate — a role present in one enumeration and missing from a sibling is the canonical
 drift miss.

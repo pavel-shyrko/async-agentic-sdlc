@@ -9,6 +9,72 @@ Decision Record (ADR) is linked from the version heading.
 
 ## [Unreleased]
 
+## [v0.25.0] - 2026-06-25 — Deployment & tooling hardening: reachable/isolated services, environment-not-agent failures, autonomous URL publish
+
+ADR: [0026-deploy-target-registry-and-reachability-gates](./docs/decisions/0026-deploy-target-registry-and-reachability-gates.md)
+· [0025-tooling-failures-are-environment-not-agent](./docs/decisions/0025-tooling-failures-are-environment-not-agent.md)
+(both extend [0020](./docs/decisions/0020-deploy-scaffolding-and-lint-gate.md)) ·
+Archive: [docs/releases/iteration_24](./docs/releases/iteration_24/iteration_24_README.md)
+
+Hardens the deploy phase (E4) and the quality gates against failures that surfaced *downstream* of the
+engine's gates — a live service that 403s or clobbers another app, a README publish that can't push, and
+tooling faults misrouted into the agent self-heal loop.
+
+### Added
+- **Deployment-target registry (`SUPPORTED_DEPLOY_TARGETS`, ADR 0026).** A new registry in
+  `src/shared/core/environments.py` — the WHERE-to-deploy SSOT, sibling to `SUPPORTED_ENVIRONMENTS` — keyed
+  by target id, each entry carrying `archetypes`, `skill`, `runtime_constraints`, and an optional
+  `requires_public_invoker` flag. Consumed via `deploy_target_for_archetype` / `deploy_skill_for_target` /
+  `deploy_target_skills`. Adding a future cloud is ONE registry entry + one `prompts/skills/deploy_<cloud>.md`,
+  no engine edit.
+- **Platform-vs-archetype skill split (ADR 0026).** Deploy *mechanics* (WIF auth, image build/push, Cloud Run
+  deploy, public-invoker grant, README-URL publish, GitHub Release publish) moved into platform skills
+  `prompts/skills/deploy_{gcp,github_release}.md`, separate from app *shape* in
+  `prompts/skills/devops_{rest_api,crud_app,cli_tool}.md`; the `devops` node force-loads both sets.
+- **Deterministic reachability + isolation deploy gate (ADR 0026).** `run_devops_gate(repo_dir, archetype)`
+  (`src/deployment/provision/gates.py`) now asserts, for a `requires_public_invoker` target,
+  deploy-mode-aware **public invocation** (`--allow-unauthenticated` or an `allUsers`→`run.invoker` IAM
+  binding — the 403 class) and a **repo-derived service name** (`github.event.repository.name`, never a
+  hardcoded literal — the overwrite class). Misses feed the existing `DEVOPS_MAX_RETRIES` self-heal loop;
+  `archetype=None` skips both (CLI path unaffected).
+- **Honest halt on a Claude CLI provider-quota block.** `ClaudeCliQuotaExhausted` + `detect_claude_quota_block`
+  (`src/shared/utils/subprocess_helpers.py`) recognize a subscription session/usage-limit line (word-boundary
+  markers) and fail fast with a `🚨 PROVIDER QUOTA HALT` — an infrastructure condition distinct from an agent
+  that produced wrong work; covered by a new `tbf-analyze-run` root-cause class.
+- **Usage guide (`docs/USAGE.md`).** The Technical Writer authors a usage guide ONLY on the batch's final
+  ticket (when the app is functionally complete) and folds it into the final release
+  (`src/development/agents/techwriter.py`).
+- **Authoring contracts + dependency manifest in the runtime registry.** Each `SUPPORTED_ENVIRONMENTS` entry
+  gains an `authoring_contract` (language-neutral bullets, chiefly the dependency-manifest convention) + a
+  `dependency_manifest` scalar (exposed via `dependency_manifest(env_id)`), surfaced to the SA/TPM through the
+  platform-awareness injection (`src/shared/core/prompts.py`).
+- **Scaffold boilerplate.** `render_apache_license` + `build_gitignore_baseline_block` (`src/shared/core/boilerplate.py`)
+  emit an Apache-2.0 `LICENSE` and a per-env `.gitignore` baseline (incl. the `.sdlc_deps` dependency-vendor
+  directory).
+- **`/tbf-code-quality` Claude Code skill** (audit a generated app's code/tests), a **PreToolUse `protect-paths`
+  hook** (`.claude/hooks/protect-paths.sh` wired in `.claude/settings.json`) blocking edits to runtime
+  `prompts/system/` and run clones, and a new **`relative-paths-in-docs`** rule.
+
+### Changed
+- **README-URL publish lands via the `HEAD:<default-branch>` refspec, not a bare push (ADR 0026).** The
+  post-deploy/post-release step in the platform skills pushes `git push origin
+  HEAD:"${{ github.event.repository.default_branch }}"` (works from `actions/checkout`'s detached HEAD and a
+  tag-gated run; never hardcodes `main`) with a `[skip ci]` commit. Branch protection is handled by a one-time
+  `github-actions` "Allow bypass" grant (`docs/guides/devops_setup.md` §2.4). `DEPLOYMENT_URL`/`RELEASE_URL`
+  markers are pre-seeded by the Technical Writer so the URL survives later README regeneration.
+
+### Fixed
+- **Tooling failures misclassified as agent defects (ADR 0025).** `_FILE_REF_RE` (`src/development/gates.py`)
+  now parses both the colon (`file:line:col`) and MSBuild parenthesis (`file(line,col):`) diagnostic forms —
+  repairing `build_failure_is_test_only` and `classify_lint_findings` for every MSBuild-format stack via one
+  registry-derived regex. A new `lint_failure_is_tooling` fast-fails a malformed `lint_cmd` (e.g. a `ruff
+  format --extend-exclude` typo) with an `ENVIRONMENT/LINT-TOOLING HALT` incident instead of folding it into
+  the budgeted agent cycle.
+- **Missing dependency manifest mislabelled a code defect.** `missing_dependency_manifest` (registry-driven via
+  `dependency_manifest`) banners a restore-installed-nothing failure with a `🚨 MISSING DEPENDENCY MANIFEST`
+  halt, so an absent `requirements.txt`/`go.mod`/`package.json`/`.csproj` is not rerouted to an agent that
+  cannot fix it.
+
 ## [v0.24.0] - 2026-06-24 — Convergence hardening: behavioral oracle, raw-runner feedback, repo-aware test topology, routing-coherence reconciler
 
 ADR: [0024-routing-coherence-reconciler](./docs/decisions/0024-routing-coherence-reconciler.md)
@@ -215,7 +281,7 @@ Archive: [iteration_20](./docs/releases/iteration_20/iteration_20_README.md)
   `instructor`/Google-GenAI `ValueError` crash on the DevOps prompt's `${{ secrets.* }}` expressions.
 - **Docs & meta-rules synced** — `docs/ARCHITECTURE.md` (the `devops` role + the deploy-scaffolding terminal
   phase + the step-3.6 lint gate); `.claude/rules/{repo-module-map,pipeline-fsm-loops,run-layout-and-cli,config-constant-convention,agent-provider-model-map}.md`
-  and the `analyze-run` skill (lint-gate / CI-strictness and GenAI-Jinja root-cause classes); `docs/BACKLOG.md`
+  and the `tbf-analyze-run` skill (lint-gate / CI-strictness and GenAI-Jinja root-cause classes); `docs/BACKLOG.md`
   (E4 → DONE; mypy/type-checking + node-eslint provisioning tracked as follow-ups).
 
 ## [v0.19.0] - 2026-06-22 — Cyclical Multi-Ticket Orchestration: Drive Every Ticket to `main` (`--auto-execute`, E3)
@@ -286,10 +352,10 @@ Archive: [iteration_18](./docs/releases/iteration_18/iteration_18_README.md)
   knobs, a pre-flight `gh` check, and troubleshooting rows; `docs/ARCHITECTURE.md` C4 + sequence + component
   table now include the PR/merge step and `forge.py`; `.claude/rules/*` record `forge.py`, the knobs, and
   `--auto-merge`.
-- **Governance tooling — auto-sync of Claude's operating context.** New `/claude-context-sync` skill
+- **Governance tooling — auto-sync of Claude's operating context.** New `/tbf-claude-context-sync` skill
   reconciles the *content* of `.claude/rules/*` + `.claude/skills/*` to the code (the complement to
-  `/docs-sync`'s human-doc + enumeration sync), now wired as a step in `/iteration-release` so rules/skills
-  stay current with each release. New `/agent-role-scaffold` skill operationalizes the `agent-role-registration`
+  `/tbf-docs-sync`'s human-doc + enumeration sync), now wired as a step in `/tbf-iteration-release` so rules/skills
+  stay current with each release. New `/tbf-agent-role-scaffold` skill operationalizes the `agent-role-registration`
   checklist for adding a structured agent. New rule `subprocess-and-external-call-safety` binds future engine
   edits to `sanitize_for_argv` + transport-layer timeouts (codifying the two fixes below).
 
@@ -366,7 +432,7 @@ Archive: [iteration_16.1](./docs/releases/iteration_16.1/iteration_16.1_README.m
 - **`docs/` restructured for navigability** (history-preserving `git mv`): `docs/adr/`→`docs/decisions/`,
   `docs/archive/`→`docs/releases/`, `docs/{setup,docker-on-windows}.md`→`docs/guides/`; every cross-link
   rewritten.
-- **`/docs-sync` and `/iteration-release` skills extended** to also synchronize the `docs/ARCHITECTURE.md`
+- **`/tbf-docs-sync` and `/tbf-iteration-release` skills extended** to also synchronize the `docs/ARCHITECTURE.md`
   C4 diagrams + component table when an iteration changes *structure* (a new/removed agent role, FSM route,
   external system, or plane/container).
 
@@ -401,7 +467,7 @@ Archive: [iteration_16](./docs/releases/iteration_16/iteration_16_README.md)
 - **`finish_reason_name` + `NON_RETRYABLE_FINISH_REASONS`** (`src/shared/core/observability.py`): the bare
   classification primitive behind the retry layer's fail-fast decision; `describe_finish_reason` now
   builds its hint on top of it.
-- **Run-diagnostics + scaffolding meta-tooling:** a `/analyze-run` Claude Code skill (evidence-first
+- **Run-diagnostics + scaffolding meta-tooling:** a `/tbf-analyze-run` Claude Code skill (evidence-first
   root-cause analysis of a failed/looping/halted run), a path-scoped `agent-role-registration` rule (the
   full checklist for adding a structured agent role), and `run-layout-and-cli` / `run-tests-via-wsl` rule
   extensions (non-interactive git auth for `--run`; Git-Bash↔WSL path translation).

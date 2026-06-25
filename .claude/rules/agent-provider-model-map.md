@@ -24,7 +24,11 @@ wall-clock-bounded: `instructor_client` is built with a `GEMINI_REQUEST_TIMEOUT`
 instead of hanging the run forever — `with_api_retry` only catches exceptions, never a silent stall.
 
 **Claude Code CLI, via `run_claude_cli`** (agentic, NOT structured): the **Developer** only. It edits
-files directly in the run's `repo/`, re-sending its prompt/transcript each turn (hence cache-heavy).
+files directly in the run's `repo/`, re-sending its prompt/transcript each turn (hence cache-heavy). A
+subscription **session/usage-limit block** is recognized by `detect_claude_quota_block` (the CLI emits one
+"hit your session limit" line, edits nothing, bills 0 tokens) and fails fast with a `🚨 PROVIDER QUOTA HALT`
+(`ClaudeCliQuotaExhausted`) — an infrastructure condition, NOT a wrong-work agent defect; see the
+`tbf-analyze-run` provider-quota class.
 
 **FinOps** (see [token-budget-excludes-cache](token-budget-excludes-cache.md) + [finops-app-budget](finops-app-budget.md)):
 Gemini cost is **estimated** from `MODEL_PRICING_MATRIX`; Claude cost is **authoritative** (reported by the

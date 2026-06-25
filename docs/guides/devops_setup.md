@@ -41,8 +41,14 @@ gcloud config set project $PROJECT_ID
 ```bash
 gcloud services enable iam.googleapis.com \
     iamcredentials.googleapis.com \
-    artifactregistry.googleapis.com
+    artifactregistry.googleapis.com \
+    run.googleapis.com \
+    cloudbuild.googleapis.com
 ```
+
+> **Note:** `run.googleapis.com` is required for Cloud Run deployments. Even with correct IAM
+> bindings, `gcloud run deploy` returns `PERMISSION_DENIED: SERVICE_DISABLED` if this API is not
+> enabled. `cloudbuild.googleapis.com` is often co-required by Cloud Run's internal build pipeline.
 
 ### 1.3 Create the shared Artifact Registry
 
@@ -66,6 +72,16 @@ gcloud iam service-accounts create sa-github-devops \
 gcloud projects add-iam-policy-binding $PROJECT_ID \
     --member="serviceAccount:sa-github-devops@$PROJECT_ID.iam.gserviceaccount.com" \
     --role="roles/artifactregistry.writer"
+
+# Grant Cloud Run deploy rights (required to create/update Cloud Run services)
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+    --member="serviceAccount:sa-github-devops@$PROJECT_ID.iam.gserviceaccount.com" \
+    --role="roles/run.admin"
+
+# Grant permission to act as the runtime service account (required by Cloud Run)
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+    --member="serviceAccount:sa-github-devops@$PROJECT_ID.iam.gserviceaccount.com" \
+    --role="roles/iam.serviceAccountUser"
 ```
 
 ### 1.5 Create the Workload Identity pool and OIDC provider (with an attribute condition)
@@ -156,6 +172,22 @@ GitHub blocks OIDC for new organizations by default. You **must** flip this:
 
 Without it, the generated YAML's `permissions: id-token: write` fails with `Permission Denied`.
 
+### 2.4 Allow `github-actions` to bypass the default-branch protection (post-deploy README stamp)
+
+The deploy/release workflow's final step stamps the live deployment / release URL into `README.md` and
+pushes it to the default branch (`git push origin HEAD:<default-branch>`, the detached-HEAD-safe refspec —
+see the `deploy_*` platform skills). If the default branch is **protected**, that push is rejected unless the
+robot identity is allowed to bypass the rule. Grant it once:
+
+1. `Settings ➔ Branches` (org ruleset or per-repo branch protection rule for the default branch).
+2. Under **"Allow specified actors to bypass required pull requests"** (rulesets) / **"Allow bypass"**, add
+   the **`github-actions`** app (or your service account / token identity).
+
+Without this, the URL-stamp push fails with `protected branch hook declined` (the build/deploy itself still
+succeeds; only the cosmetic README update is skipped). The push uses the default `GITHUB_TOKEN` and carries
+`[skip ci]`, so it never loops. If you prefer not to relax protection, simply drop the README-URL step — the
+live URL is still available from the deploy step's logs and the GitHub Release page.
+
 ---
 
 ## Step 3 — Autonomous operation (zero-human-touch)
@@ -188,13 +220,26 @@ python3 main.py \
 
 ## Engine contract — what the generated workflow references
 
-The DevOps agent ([prompts/skills/devops_*.md](../../prompts/skills/)) must emit a workflow that reads:
+The deploy mechanics live in the registry-driven platform skills
+([prompts/skills/deploy_gcp.md](../../prompts/skills/deploy_gcp.md) for Cloud Run,
+[prompts/skills/deploy_github_release.md](../../prompts/skills/deploy_github_release.md) for a CLI), kept
+separate from the app-shape archetype skills (`prompts/skills/devops_*.md`). The DevOps agent must emit a
+workflow that reads:
 
 - **Secrets:** `${{ secrets.GCP_WIF_PROVIDER }}`, `${{ secrets.GCP_SERVICE_ACCOUNT }}`
 - **Variables:** `${{ vars.GCP_PROJECT_ID }}`, `${{ vars.GCP_REGION }}`, `${{ vars.GCP_REGISTRY_NAME }}`
-- **Permissions:** `id-token: write` + `contents: read` (WIF requires the OIDC token).
+- **Permissions:** `id-token: write` + `contents: write` (WIF needs the OIDC token; `contents: write` covers
+  the post-deploy README-URL commit, pushed via the `HEAD:<default-branch>` refspec — needs the §2.4 bypass
+  on a protected branch).
 - **Auth action:** `google-github-actions/auth` (WIF), then `deploy-cloudrun` (web service) or an
   Artifact-Registry / `gh-release` publish step (CLI tool).
+- **Public invocation (web service):** the deploy step passes `flags: '--allow-unauthenticated'` so the
+  Cloud Run service is reachable anonymously — without it the live service returns **HTTP 403** ("The
+  request was not authenticated") for every request. `run_devops_gate` enforces this at scaffold time.
+  > **Caveat:** if your org enforces the `iam.allowedPolicyMemberDomains` (domain-restricted sharing) org
+  > policy, granting `allUsers` is blocked and the deploy step fails — either exempt the project from that
+  > policy or front the service with an authenticated ingress; this is an org-policy decision, not an
+  > engine bug.
 
 Related: [setup.md](setup.md) (engine bring-up), [ARCHITECTURE.md](../ARCHITECTURE.md),
 [BACKLOG.md](../BACKLOG.md) (E4 epic), [run-layout-and-cli](../../.claude/rules/run-layout-and-cli.md)

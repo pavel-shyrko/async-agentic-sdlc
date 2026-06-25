@@ -826,6 +826,48 @@ class DeadlockGuardTests(unittest.IsolatedAsyncioTestCase):
             # Incident report written by the fast-fail abort.
             self.assertTrue((paths.reports_dir / "incident_report.json").exists())
 
+    async def test_developer_cli_quota_block_halts_fast_without_looping(self) -> None:
+        # A Claude CLI session/usage-limit block is an INFRASTRUCTURE condition, not a code defect: the
+        # FSM must halt on the FIRST Developer call (honest incident) instead of gating the unchanged
+        # tree and burning the retry budget into a misclassified 'production_bug'.
+        with TemporaryDirectory() as td:
+            base = Path(td)
+            paths = WorkspacePaths(logs_dir=base / "logs", reports_dir=base / "reports", repo_dir=base)
+            ctx = GlobalPipelineContext(
+                pr_description="resume", workspace_paths=paths, test_code_snapshot="tests",
+            )
+            ctx.contract = TechLeadContract(
+                files_to_modify=["src/converter.py"], instruction="noop", function_signatures="noop",
+                strict_type_validation_rules="noop", techlead_reasoning="noop",
+                topology_contract=[], environment_id="python-3.12-core",
+            )
+
+            with (
+                mock.patch.object(orchestrator, "check_environment"),
+                mock.patch.object(orchestrator, "reconfigure_logging"),
+                mock.patch.object(orchestrator, "parse_args", return_value=orchestrator.RunConfig(
+                    description=None, base_branch="main", resume=Path("cp.json"), reset_attempts=False)),
+                mock.patch.object(GlobalPipelineContext, "load_checkpoint", return_value=ctx),
+                mock.patch.object(orchestrator, "run_techlead_node", new_callable=AsyncMock),
+                mock.patch.object(orchestrator, "run_qa_agent_node", new_callable=AsyncMock),
+                mock.patch.object(orchestrator, "run_developer_node",
+                                  new=AsyncMock(side_effect=orchestrator.ClaudeCliQuotaExhausted(
+                                      "You've hit your session limit · resets 5:30am (Europe/Warsaw)"))) as developer,
+                mock.patch.object(orchestrator, "run_reviewer_node", new_callable=AsyncMock) as reviewer,
+                mock.patch.object(orchestrator, "run_qa_unit_tests", new_callable=AsyncMock) as qa_gate,
+                mock.patch.object(orchestrator, "finalize_transaction", new_callable=AsyncMock) as finalize,
+            ):
+                with self.assertRaises(orchestrator.PipelineHalt):
+                    await orchestrator.main()
+
+            # Halted on the first Developer call: gates/Reviewer/finalize never ran (no wasted spend/loop).
+            developer.assert_awaited_once()
+            reviewer.assert_not_awaited()
+            qa_gate.assert_not_awaited()
+            finalize.assert_not_called()
+            # An honest incident is written (this is an FSM halt, not an uncaught boundary crash).
+            self.assertTrue((paths.reports_dir / "incident_report.json").exists())
+
 
 class ArbiterRoutingTests(unittest.IsolatedAsyncioTestCase):
     """The Arbiter triages a STUCK cycle: it is gated off on cycle 1, and on a later failure can route
@@ -1207,6 +1249,7 @@ class RunBatchTests(unittest.IsolatedAsyncioTestCase):
         with TemporaryDirectory() as td:
             projects, project, cfg, nexus_dir = self._fixtures(td)
             seen = []
+            final_flags = []
             run_executor = AsyncMock(side_effect=lambda *_a, **_k: _ctx_with_cost("0.10"))
 
             def _prepare(_projects, _project, _cfg, ticket):
@@ -1222,6 +1265,9 @@ class RunBatchTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(seen, ["TASK-01", "TASK-02", "TASK-03"])
             self.assertEqual(run_executor.await_count, 3)
+            # Only the LAST ticket is dispatched as the final one (drives the usage-guide authoring).
+            final_flags = [c.kwargs.get("is_final_ticket") for c in run_executor.await_args_list]
+            self.assertEqual(final_flags, [False, False, True])
             batch = BatchState.load_checkpoint(orchestrator._batch_state_path(nexus_dir))
             self.assertEqual(batch.completed, ["TASK-01", "TASK-02", "TASK-03"])
             self.assertIsNone(batch.failed)
@@ -2715,6 +2761,39 @@ class LintGateLoopTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Retries exhausted", abort_msgs[0])           # budgeted exhaustion, not …
             self.assertNotIn("MISCONFIGURATION", abort_msgs[0])         # … the deadlock-guard halt
             self.assertEqual(lint_gate.await_count, 2)                  # no-progress broke the fast-fail loop early
+
+    async def test_lint_tooling_error_halts_fast_without_rerouting(self) -> None:
+        # A lint command that could not RUN (here: `ruff format` rejecting `--extend-exclude`) is an
+        # engine `lint_cmd` misconfig the agents cannot fix. It must FAIL FAST with an environment
+        # incident — never enter the fast-fail reroute loop and never fold into the budgeted cycle
+        # (where the lint-blind Reviewer approves and the Arbiter halts as "unrecoverable").
+        with TemporaryDirectory() as td:
+            ctx = self._resume_ctx(Path(td))
+            tooling = [
+                "error: unexpected argument '--extend-exclude' found",
+                "Usage: ruff format --check [FILES]...",
+            ]
+            lint_gate = AsyncMock(return_value=(False, tooling))
+            abort_msgs: list[str] = []
+
+            def _capture_abort(_ctx, message, *a, **k):
+                abort_msgs.append(message)
+                raise SystemExit(1)
+
+            with ExitStack() as stack:
+                for cm in self._common_patches(ctx, lint_gate, self._approve_both(ctx)):
+                    stack.enter_context(cm)
+                qa = stack.enter_context(mock.patch.object(orchestrator, "run_qa_agent_node", new_callable=AsyncMock))
+                developer = stack.enter_context(mock.patch.object(orchestrator, "run_developer_node", new_callable=AsyncMock))
+                stack.enter_context(mock.patch.object(orchestrator, "_abort_with_incident", side_effect=_capture_abort))
+                with self.assertRaises(SystemExit):
+                    await orchestrator.main()
+
+            self.assertEqual(len(abort_msgs), 1)
+            self.assertIn("LINT-TOOLING", abort_msgs[0])     # fail-fast environment incident, not a reroute
+            self.assertEqual(lint_gate.await_count, 1)        # failed once → immediate halt, no reroute loop
+            developer.assert_awaited_once()                   # only the cycle-1 dev pass — never rerouted for tooling
+            qa.assert_not_awaited()
 
     async def test_no_progress_lint_break_halts_fast_fail_loop_before_budget(self) -> None:
         # Edge Case C (anti-loop): a PROD lint finding the agent never clears must break the step-3.6

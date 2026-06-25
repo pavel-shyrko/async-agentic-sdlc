@@ -4,11 +4,13 @@ import subprocess  # nosec B404
 from src.shared.core.observability import log, log_token_usage
 from src.shared.core.config import DEVOPS_MODEL
 from src.shared.core.models import DevOpsManifests, GlobalPipelineContext
+from src.shared.core.environments import deploy_target_skills
 from src.shared.core.prompts import get_system_prompt, get_skill, _parse_frontmatter
 from src.shared.utils.llm import run_structured_llm
 
-# The three archetype skills (REST API / CRUD / CLI). All are injected so the agent can self-classify
+# The archetype skills (app SHAPE: REST API / CRUD / CLI). All are injected so the agent can self-classify
 # the finished app and follow the matching branch — the chosen class is recorded in DevOpsManifests.archetype.
+# The deploy-target PLATFORM skills (HOW/where to deploy) are injected alongside, registry-driven (below).
 _DEVOPS_SKILLS = ("devops_rest_api", "devops_crud_app", "devops_cli_tool")
 
 # Files the node writes into the clone (relative to repo root). Dockerfile/.env.example are conditional.
@@ -18,9 +20,14 @@ _ENV_EXAMPLE_PATH = ".env.example"
 
 
 def _archetype_guidance() -> str:
-    """Concatenate the archetype skill bodies (frontmatter stripped) for the system prompt."""
+    """Concatenate the archetype skill bodies (app shape) plus the deploy-target platform skill bodies
+    (HOW to deploy — `deploy_gcp` / `deploy_github_release`), frontmatter stripped, for the system prompt.
+
+    The platform set is registry-driven (`deploy_target_skills`), so adding a future cloud target is one
+    `SUPPORTED_DEPLOY_TARGETS` entry + one `prompts/skills/deploy_<cloud>.md` — no edit here. The agent
+    self-classifies the archetype and uses the matching deploy target's platform guidance."""
     blocks = []
-    for name in _DEVOPS_SKILLS:
+    for name in (*_DEVOPS_SKILLS, *deploy_target_skills()):
         _meta, body = _parse_frontmatter(get_skill(name))
         blocks.append(body.strip())
     return "\n\n".join(blocks)

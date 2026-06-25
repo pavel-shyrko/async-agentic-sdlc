@@ -36,7 +36,7 @@ from src.shared.core.models import (
     TechLeadContract,
     QATestSuite,
     ReviewReport,
-    ArchitectureUpdate,
+    DocumentationUpdate,
     SkillRelevance,
 )
 
@@ -88,8 +88,12 @@ def _fake_structured_llm(*, model, response_model, messages):
             ),
             raw,
         )
-    if response_model is ArchitectureUpdate:
-        return ArchitectureUpdate(updated_architecture_document=_ADR_DOC), raw
+    if response_model is DocumentationUpdate:
+        return DocumentationUpdate(
+            architecture_document=_ADR_DOC,
+            readme="# Calculator\n\nAdds two integers.\n",
+            changelog="# Changelog\n\n## [Unreleased]\n### Added\n- add(a, b).\n",
+        ), raw
     if response_model is SkillRelevance:
         # Per-node/per-skill relevance gate (prompts.py: score > 0.7 ⇒ inject). 0.0 keeps every
         # domain skill OUT of the hermetic run. WITHOUT this branch the call raises, with_api_retry
@@ -268,6 +272,18 @@ class PipelineEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 capture_output=True, text=True, check=True,
             ).stdout.strip()
             self.assertEqual(tracked, "docs/architecture_state.md")
+
+            # Assert — the Technical Writer also owns README.md, the root CHANGELOG.md, and LICENSE.
+            # README/CHANGELOG are LLM-authored (the fake response above); LICENSE is the engine's
+            # deterministic Apache 2.0 text (no LLM field). All ride the same atomic success commit.
+            self.assertIn("Calculator", (repo_dir / "README.md").read_text(encoding="utf-8"))
+            self.assertIn("Changelog", (repo_dir / "CHANGELOG.md").read_text(encoding="utf-8"))
+            self.assertIn("Apache License", (repo_dir / "LICENSE").read_text(encoding="utf-8"))
+            tracked_docs = subprocess.run(
+                ["git", "-C", str(repo_dir), "ls-files", "README.md", "CHANGELOG.md", "LICENSE"],
+                capture_output=True, text=True, check=True,
+            ).stdout.split()
+            self.assertEqual(sorted(tracked_docs), ["CHANGELOG.md", "LICENSE", "README.md"])
 
 
 if __name__ == "__main__":

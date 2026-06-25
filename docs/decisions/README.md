@@ -3,7 +3,7 @@
 The chronological decision log for the engine, in [MADR](https://adr.github.io/madr/) format (Context →
 Decision → Consequences). Each release in [../../CHANGELOG.md](../../CHANGELOG.md) links the ADR that
 drove it; the distilled lessons live in [../../PRACTICUM.md](../../PRACTICUM.md). New ADRs are generated
-with the `/adr-generation` skill (next free sequence number).
+with the `/tbf-adr-generation` skill (next free sequence number).
 
 > Read top-to-bottom for the project's evolution, or jump by theme below. ADRs frequently *extend* earlier
 > ones (e.g. 0016 extends 0001/0003/0006).
@@ -68,3 +68,5 @@ with the `/adr-generation` skill (next free sequence number).
 | ADR | Decision |
 |---|---|
 | [0020](0020-deploy-scaffolding-and-lint-gate.md) | `--scaffold-deploy`: a post-batch `devops` agent generates + merges the app's CI/CD config (archetype-aware Dockerfile + GitHub Actions, Cloud Run via WIF, E4); a HARD engine lint gate (`run_lint_gate`, FSM step 3.6) with a per-env `lint_cmd` SSOT makes the generated strict CI green by construction. |
+| [0025](0025-tooling-failures-are-environment-not-agent.md) | Tooling failures are environment misconfigurations, not agent defects: format-agnostic diagnostic parsing (`_FILE_REF_RE` accepts the MSBuild parenthesis form) + `lint_failure_is_tooling` fast-fails a malformed `lint_cmd` with an environment incident instead of folding it into the budgeted agent cycle. |
+| [0026](0026-deploy-target-registry-and-reachability-gates.md) | Deployment-target registry (`SUPPORTED_DEPLOY_TARGETS`, the WHERE SSOT) + platform-vs-archetype skill split; `run_devops_gate` deterministic reachability (public-invoker/403) + isolation (repo-derived service name) gates; README-URL publish via the `HEAD:<default-branch>` refspec + one-time `github-actions` bypass. |

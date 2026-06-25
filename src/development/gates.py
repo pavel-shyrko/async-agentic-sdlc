@@ -1,9 +1,11 @@
 import os
 import re
+from pathlib import Path
 
 from src.shared.core.observability import log
 from src.shared.core.environments import (
     SUPPORTED_ENVIRONMENTS, SAST_IMAGE, SAST_CMD, is_test_file, all_source_extensions,
+    dependency_manifest,
 )
 from src.shared.core.docker_adapter import execute_in_sandbox, run_in_image
 
@@ -11,8 +13,15 @@ from src.shared.core.docker_adapter import execute_in_sandbox, run_in_image
 # list — so adding a language to the env registry extends these parsers with NO edit here (the engine
 # stays language-agnostic). Sorted longest-first by the helper, so e.g. `tsx` is tried before `ts`.
 _SOURCE_EXT_ALT = "|".join(re.escape(ext.lstrip(".")) for ext in all_source_extensions())
-# Compiler/diagnostic lines reference a source file as `path/to/file.ext:line[:col]:`.
-_FILE_REF_RE = re.compile(rf"^\s*([\w./\\-]+\.(?:{_SOURCE_EXT_ALT})):\d+")
+# Compiler/diagnostic lines reference a source file with the line/col either COLON-style
+# (`path/to/file.ext:line[:col]:` — ruff/gcc/go/eslint) OR MSBuild PARENTHESIS-style
+# (`path/to/file.ext(line,col):` — Roslyn/`dotnet build`, `tsc --pretty false`). Both suffix forms are
+# accepted so the parser stays language-agnostic: a stack whose compiler uses the parenthesis form
+# (.NET) is classified by the SAME registry-derived regex with NO per-language branch. Without the
+# parenthesis alternative, `build_failure_is_test_only`/`classify_lint_findings` silently fail to parse
+# every MSBuild diagnostic (referenced==[] → "not test-only"), misrouting QA-owned test-compile errors
+# to the Developer (who cannot edit tests) until the cycle budget is exhausted.
+_FILE_REF_RE = re.compile(rf"^\s*([\w./\\-]+\.(?:{_SOURCE_EXT_ALT}))(?::\d+|\(\d+,\d+\))")
 # A linter line that is ONLY a relative path with no `:line:col` (e.g. `gofmt -l` output). Kept as a
 # SEPARATE pattern so the compile-error regex above is never loosened (which would risk mis-parsing the
 # build gate's output). Used only by the lint-finding classifier.
@@ -58,15 +67,115 @@ _ENV_BUILD_FAILURE_MARKERS = (
     # restore failure as environmental and mask real code/config defects as false NU1301 network halts.
     # Match only the underlying tool's genuine network signatures above.
 )
+# Word-boundary matching, NOT naive substring. The short alnum error-code tokens (Node's `enotfound`/
+# `eai_again`/`etimedout`/`econnreset`, NuGet's `nu1301`, …) collide as substrings of ordinary diagnostic
+# words — e.g. `enotfound` ⊂ python `ModulENOTFOUNDError`, which would tag EVERY missing-module failure as
+# a phantom network error. `\b…\b` requires the marker to stand alone as a token (spaces in multi-word
+# phrases are already boundaries; `re.escape` keeps regex metachars literal), so a real `ENOTFOUND` from a
+# DNS failure still matches while `ModuleNotFoundError` does not. Stays language-agnostic: one shared
+# network-signature set matched uniformly across every stack, no per-language branch.
+_ENV_BUILD_FAILURE_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(m) for m in _ENV_BUILD_FAILURE_MARKERS) + r")\b"
+)
 
 
 def build_failure_is_environmental(environment_id: str, log_lines: list[str]) -> bool:
     """True iff the build/restore output bears a network/feed-unreachable signature (and is therefore
     NOT a code defect). Used by the runner to fail FAST with a clear environment incident instead of
     rerouting the Developer to "fix" an unreachable package feed. Conservative: requires an explicit
-    network/restore marker, so genuine compiler errors fall through to the normal compile-gate reroute."""
+    network/restore marker on a WORD BOUNDARY, so genuine compiler errors (and substrings like
+    `ModuleNotFoundError` ⊃ `enotfound`) fall through to the normal compile-gate reroute."""
     blob = "\n".join(log_lines).lower()
-    return any(marker in blob for marker in _ENV_BUILD_FAILURE_MARKERS)
+    return _ENV_BUILD_FAILURE_RE.search(blob) is not None
+
+
+# Cross-language MODULE-RESOLUTION failure signatures — a dependency import could not be resolved. ONE
+# shared set matched uniformly across every stack (no per-language dict), mirroring _ENV_BUILD_FAILURE_MARKERS.
+# Kept to specific multi-word phrases (not short codes), so plain substring matching carries no collision risk.
+_MODULE_RESOLUTION_MARKERS = (
+    "no module named",          # python: ModuleNotFoundError: No module named 'x'
+    "cannot find module",       # node: Error: Cannot find module 'x'
+    "could not find module",
+    "unresolved import",
+    "cannot find package",      # go: cannot find package "x"
+)
+_MODULE_RESOLUTION_RE = re.compile("|".join(re.escape(m) for m in _MODULE_RESOLUTION_MARKERS))
+
+
+def missing_dependency_manifest(environment_id: str, repo_root: str, log_lines: list[str]) -> bool:
+    """True iff a gate failed on a module-resolution error AND the env's registry-declared dependency
+    manifest is ABSENT from the repo — i.e. the dependencies were never declared where the toolchain
+    restores them (the silent ``pip install -r requirements.txt 2>/dev/null || true`` no-op class: the
+    restore exits 0 but installs nothing, so the failure surfaces two phases later as a module-not-found
+    error mistaken for a code defect and misrouted to the Reviewer).
+
+    Registry-driven (``dependency_manifest``) so no language is hardcoded. Requires BOTH conditions, so a
+    genuine code defect, a network failure, OR a legitimately stdlib-only app (no third-party deps, hence
+    no manifest needed and no import error) all fall through as False — never a false positive.
+    """
+    manifest = dependency_manifest(environment_id)
+    if not manifest:
+        return False
+    blob = "\n".join(log_lines).lower()
+    if not _MODULE_RESOLUTION_RE.search(blob):
+        return False
+    return not any(Path(repo_root).rglob(manifest))
+
+
+def annotate_missing_manifest(environment_id: str, repo_root: str, log_lines: list[str]) -> list[str]:
+    """Prepend an explicit, actionable banner to a FAILED gate's output when the failure is the
+    missing-dependency-manifest class (``missing_dependency_manifest``). The banner makes the diagnosis
+    self-evident wherever the feedback lands — the Developer (who owns production deps) sees exactly what
+    to create, instead of the Reviewer/Arbiter mislabelling a missing `requirements.txt` as a code defect
+    and halting `unrecoverable`. A no-op for any other failure, so it never alters normal routing."""
+    if not missing_dependency_manifest(environment_id, repo_root, log_lines):
+        return log_lines
+    manifest = dependency_manifest(environment_id)
+    log.warning(f"🔶 Gate failure is a MISSING DEPENDENCY MANIFEST [{environment_id}]: `{manifest}` is "
+                "absent — dependencies were declared nowhere the toolchain restores from.")
+    return [
+        f"🚨 MISSING DEPENDENCY MANIFEST: `{manifest}` is absent from the repository, so the toolchain "
+        f"restored NO dependencies and the import above could not be resolved. This is NOT a code defect "
+        f"in the modules — declare EVERY third-party dependency in `{manifest}` at the repo root (the "
+        f"file the build/test toolchain restores from), then the import will resolve.",
+    ] + log_lines
+
+
+# Signatures of a lint/format TOOL that could not RUN AT ALL — a bad flag, an unknown subcommand, or a
+# missing binary. These mean the engine's own `lint_cmd` is misconfigured (e.g. `ruff format` does not
+# accept `--extend-exclude`), NOT that the code has a style defect: no Developer/QA edit can clear them.
+# The runner must fail FAST with an environment incident rather than fold the gate failure into the
+# budgeted cycle, where the lint-BLIND Reviewer approves the code and the Arbiter then halts with a
+# misleading "unrecoverable" verdict (the exact shape that masked a malformed lint_cmd). Kept to strong
+# CLI-invocation signatures so a genuine lint FINDING (which names a `file:line` and a rule code) is never
+# misread as a tool error. Language-agnostic: one shared set across ruff/eslint/go vet/dotnet — no branch.
+_LINT_TOOL_ERROR_MARKERS = (
+    "unexpected argument",
+    "unrecognized option",
+    "unrecognized arguments",
+    "unrecognized subcommand",
+    "unknown flag",
+    "unknown option",
+    "invalid choice",
+    "no such option",
+    "flag provided but not defined",
+    "usage:",
+    "command not found",
+)
+_LINT_TOOL_ERROR_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(m) for m in _LINT_TOOL_ERROR_MARKERS) + r")"
+)
+
+
+def lint_failure_is_tooling(environment_id: str, log_lines: list[str]) -> bool:
+    """True iff the lint-gate output bears a CLI-invocation-error signature — the linter/formatter could
+    not execute (bad flag, unknown subcommand, missing binary), so the failure is an environment/registry
+    misconfig (a wrong ``lint_cmd``), NOT an agent-fixable style finding. Used by the runner to fail FAST
+    with an environment incident instead of rerouting agents who cannot fix the engine's own command.
+    Conservative — a real finding (``file:line: RULE message``) carries none of these markers — and
+    symmetric with ``build_failure_is_environmental`` (a tooling failure the agents cannot repair)."""
+    blob = "\n".join(log_lines).lower()
+    return _LINT_TOOL_ERROR_RE.search(blob) is not None
 
 
 def classify_lint_findings(environment_id: str, log_lines: list[str]) -> tuple[list[str], list[str]]:
@@ -184,6 +293,8 @@ async def run_qa_unit_tests(environment_id: str, repo_root: str) -> tuple[bool, 
             "a compiled/executed target (e.g. the test project is missing from the solution or not "
             "registered in the build). Register the test project so the contracted tests actually run.",
         ] + log_lines
+    if returncode != 0:
+        log_lines = annotate_missing_manifest(environment_id, repo_root, log_lines)
     return returncode == 0, log_lines
 
 
@@ -216,6 +327,8 @@ async def run_build_gate(environment_id: str, repo_root: str) -> tuple[bool, lis
     returncode, stdout, stderr = await execute_in_sandbox(environment_id, build_cmd, repo_root, network="none")
     log_lines = (stdout + "\n" + stderr).strip().splitlines()
     log.debug(f"Build gate completed with exit code: {returncode}")
+    if returncode != 0:
+        log_lines = annotate_missing_manifest(environment_id, repo_root, log_lines)
     return returncode == 0, log_lines
 
 
@@ -252,6 +365,8 @@ async def run_test_compile_gate(environment_id: str, repo_root: str) -> tuple[bo
     returncode, stdout, stderr = await execute_in_sandbox(environment_id, test_compile_cmd, repo_root, network="none")
     log_lines = (stdout + "\n" + stderr).strip().splitlines()
     log.debug(f"QA test-compile gate completed with exit code: {returncode}")
+    if returncode != 0:
+        log_lines = annotate_missing_manifest(environment_id, repo_root, log_lines)
     return returncode == 0, log_lines
 
 

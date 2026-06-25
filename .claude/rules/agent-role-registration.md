@@ -49,4 +49,4 @@ exception (agentic Claude CLI). See [agent-provider-model-map](agent-provider-mo
    existing `mock.patch.object(orchestrator, "run_*_node", ...)` pattern), a node unit test
    (mock `run_structured_llm`, assert verdict stored + telemetry recorded), and `test_prompts.py` pins
    for any new prompt literals. Run via [run-tests-via-wsl](run-tests-via-wsl.md).
-8. **ADR** — if the role introduces a new FSM state or changes routing, write one (`/adr-generation`).
+8. **ADR** — if the role introduces a new FSM state or changes routing, write one (`/tbf-adr-generation`).

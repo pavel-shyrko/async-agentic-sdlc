@@ -9,6 +9,26 @@ import subprocess  # nosec B404
 from src.shared.core.config import CLAUDE_CLI_BIN
 from src.shared.core.observability import log
 
+
+# ==========================================
+# CONTROL-FLOW SIGNALS
+# ==========================================
+class ClaudeCliQuotaExhausted(Exception):
+    """The Claude Developer CLI hit the subscription's session/usage limit and produced no work.
+
+    Raised by ``run_claude_cli`` when the CLI's quota-block message is detected in its output. This is
+    an INFRASTRUCTURE/provider condition (the limit resets on a clock), NOT an agent code defect: the
+    CLI prints a single "You've hit your session limit · resets <time>" line and exits non-zero WITHOUT
+    editing a file or emitting a usage envelope. The FSM catches this and fails fast with an honest
+    incident, instead of running the gates on the unchanged tree and burning the whole retry budget on a
+    misclassified Developer 'production_bug' (the failure mode this guard fixes). Carries the
+    human-readable limit/reset line so the incident can tell the operator when to re-run.
+    """
+
+    def __init__(self, reset_hint: str = ""):
+        super().__init__(reset_hint)
+        self.reset_hint = reset_hint
+
 # ==========================================
 # ARGV SANITIZATION
 # ==========================================
@@ -97,6 +117,34 @@ async def stream_claude_stdout(stream: asyncio.StreamReader, raw_buffer: list, o
         summary = _humanize_stream_event(decoded)
         if summary:
             log.info(f"   [Developer Agent] {summary}")
+
+
+# A Claude subscription session/usage-limit block. The CLI surfaces it as a single assistant line
+# (e.g. "You've hit your session limit · resets 5:30am (Europe/Warsaw)") then exits non-zero without
+# touching a file — distinct from a stalled call (silence, caught by the idle watchdog) and from real
+# work. Two alternations keep it targeted (a verb adjacent to "<kind> limit") so it does not fire on an
+# agent merely discussing rate limits in code/output: "hit/reached/exceeded … session/usage/rate limit"
+# OR "session/usage/rate limit … reset/reached".
+_CLAUDE_QUOTA_RE = re.compile(
+    r"(?:hit|reached|exceeded)[^\n]{0,40}\b(?:session|usage|rate)\s+limit\b"
+    r"|\b(?:session|usage|rate)\s+limit\b[^\n]{0,40}(?:reset|reached)",
+    re.IGNORECASE,
+)
+
+
+def detect_claude_quota_block(raw_lines: list[str]) -> str | None:
+    """Scan captured Claude CLI stdout lines for a provider quota / session-limit block.
+
+    Returns the human-readable limit/reset line (for the incident) when the quota signature is present
+    in any line, else ``None``. The raw lines are ``--output-format stream-json`` events, so the limit
+    text lives inside an assistant JSON envelope; on a match we humanize that envelope to recover the
+    clean sentence, falling back to a trimmed raw snippet. See ``ClaudeCliQuotaExhausted``.
+    """
+    for line in raw_lines:
+        if not _CLAUDE_QUOTA_RE.search(line):
+            continue
+        return _humanize_stream_event(line) or " ".join(line.split())[:200]
+    return None
 
 # ==========================================
 # CLAUDE CLI INVOCATION (sandbox-contained)
@@ -206,6 +254,10 @@ async def run_claude_cli(
         stalled/rate-limited API call produces silence; catches it well before the hard cap).
       - ``timeout`` (seconds) — hard wall-clock backstop on the whole session.
     ``None`` disables the corresponding guard.
+
+    Raises ``ClaudeCliQuotaExhausted`` (instead of returning) when the CLI exits on a Claude
+    subscription session/usage-limit block — an infrastructure condition the FSM must halt on, not a
+    Developer code defect.
     """
     _assert_within_root(files, allowed_root)
     cmd = [CLAUDE_CLI_BIN, "-p", prompt, "--output-format", "stream-json", "--verbose"]
@@ -265,5 +317,13 @@ async def run_claude_cli(
     if state["killed"]:
         log.error(f"🚨 Developer CLI killed: {state['killed']}.")
         return 124, None
+    # Provider quota / session-limit block: the CLI exits non-zero having written nothing and emitted no
+    # usage envelope. Surface it as an infrastructure condition (raise) so the FSM fails fast with an
+    # honest "re-run after reset" incident, rather than gating the unchanged tree and looping the retry
+    # budget into a misclassified Developer 'production_bug'.
+    quota_hint = detect_claude_quota_block(stdout_buffer)
+    if quota_hint:
+        log.error(f"🚨 Developer CLI blocked by Claude provider quota/session limit: {quota_hint}")
+        raise ClaudeCliQuotaExhausted(quota_hint)
     usage = parse_claude_usage("\n".join(stdout_buffer))
     return proc.returncode, usage

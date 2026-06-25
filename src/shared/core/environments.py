@@ -39,15 +39,40 @@
 #   comment_prefixes  OPTIONAL leading strings that mark a comment line in this stack's source files
 #                (e.g. "#", "//", "<!--"), used by the documentation-guardrail scanner to check for a
 #                top-of-file architectural justification. all_comment_prefixes() unions them across stacks.
+#   authoring_contract  the conventions the AGENTS must satisfy for this runtime — language-neutral bullets
+#                headlined by the dependency-manifest convention (WHICH file setup_cmd restores from, so the
+#                authoring side can't drift from the restore side). Surfaced to the SA/TPM via the injected
+#                platform list (the runtime-axis twin of SUPPORTED_DEPLOY_TARGETS.runtime_constraints): the
+#                SA records it in the Blueprint's `## Runtime Contract`, the TPM propagates it onto TASK-01.
+#                The matching builder-level rules live in the `triggers:`-gated language `_core` skill.
+#   dependency_manifest  the manifest FILENAME (or glob) setup_cmd restores from — the engine SSOT for the
+#                missing-manifest gate (gates.restore_produced_no_manifest), kept in lockstep with the
+#                authoring_contract prose (a test asserts the basename appears in a bullet). Registry-driven
+#                so no gate hardcodes a language's manifest name. `None`/absent → that env is gate-exempt.
 
 # SAST is generic across all stacks — one Semgrep image (SAST_IMAGE/SAST_CMD), never per-language.
 
 from pathlib import Path
 
+# Engine-universal "vendored dependencies" dir (SSOT name). A stack whose package manager would otherwise
+# install into an EPHEMERAL location installs into THIS dir under /workspace instead. The motivating case is
+# python: pip, run as the sandbox's non-root --user, defaults to a `--user` install under $HOME=/tmp, which
+# is a per-container `--tmpfs` — so packages restored in the network-ON restore container VANISH before the
+# separate network-OFF execute container runs, and every third-party import (`ModuleNotFoundError: No module
+# named 'click'`) fails. Installing into /workspace/<this> fixes it: the repo bind mount PERSISTS across the
+# restore→execute containers and is per-run isolated (no cross-project leakage, unlike the shared cache
+# volume). NOT a per-language concept — any stack with the same ephemeral-install problem reuses it (today
+# only python; go/node/dotnet already persist via the cache volume or an in-workspace node_modules). It is a
+# DOTDIR, so the repo-map walker and pytest skip it for free; the build/lint/SAST gates and git staging
+# exclude it explicitly (they walk the tree regardless of a leading dot).
+DEPENDENCY_VENDOR_DIR = ".sdlc_deps"
+
 SUPPORTED_ENVIRONMENTS = {
     "python-3.12-core": {
         "image": "sdlc-sandbox/python:latest",
-        "build_cmd": "python -m compileall -q .",
+        # `-x` excludes the vendored-deps dir so compileall doesn't waste time (or surface spurious
+        # warnings) compiling third-party packages installed under it by `setup_cmd`.
+        "build_cmd": rf"python -m compileall -q -x '(^|/)\{DEPENDENCY_VENDOR_DIR}(/|$)' .",
         # `python -m pytest` (not the bare `pytest` console script) so the sandbox cwd (/workspace) is
         # on sys.path[0] — lets QA's topology imports (`from src.converter import …`) resolve against
         # the repo-root `src` package (PEP 420 namespace; no __init__.py needed). The bare script would
@@ -56,19 +81,30 @@ SUPPORTED_ENVIRONMENTS = {
         # Compile-only check of the QA-generated tests (imports/collects, runs NOTHING) — surfaces
         # ImportError/SyntaxError before the Reviewer. Drives the pre-Reviewer QA test-compile gate.
         "test_compile_cmd": "python -m pytest --collect-only -q",
-        "setup_cmd": "pip install -r requirements.txt 2>/dev/null || true",
         # lint_cmd: the HARD lint gate (run_lint_gate). `ruff check` catches lint rules format_cmd's
         # autofix could not apply (e.g. F841 unused-local — an *unsafe* fix ruff won't auto-apply), and
         # `ruff format --check` catches formatter drift. --no-cache on the check so ruff never leaves a
         # `.ruff_cache/` in the tree for a later `git add -A` to commit. SSOT shared with the generated CI.
-        "lint_cmd": "ruff check --no-cache . && ruff format --check .",
+        # `ruff check` accepts --extend-exclude (adds to config excludes); `ruff format` does NOT — it only
+        # has --exclude (passing --extend-exclude makes it exit 2 with "unexpected argument", which a lint
+        # gate reads as a permanent style failure the agents can never clear). Use the flag each subcommand
+        # actually supports.
+        "lint_cmd": f"ruff check --no-cache --extend-exclude={DEPENDENCY_VENDOR_DIR} . && ruff format --check --exclude={DEPENDENCY_VENDOR_DIR} .",
         # format_cmd: deterministic cleanup pass — strips unused imports, autofixes safe lint, AND applies
         # the formatter (ruff format) so the lint gate's `ruff format --check` passes without rerouting the
         # (expensive) Developer for pure formatting. --exit-zero keeps a residual unfixable finding from
         # logging a spurious non-fatal warning; the pass is cleanup, not a gate. --no-cache: one-shot pass,
         # so skip the cache — otherwise ruff writes a `.ruff_cache/` into the repo that `git add -A` commits.
-        "format_cmd": "ruff check --fix --exit-zero --quiet --no-cache . ; ruff format --quiet .",
-        "sandbox_env": {"HOME": "/tmp", "XDG_CACHE_HOME": "/tmp/.cache", "PYTHONDONTWRITEBYTECODE": "1"},  # nosec B108 — in-container tmpfs paths
+        "format_cmd": f"ruff check --fix --exit-zero --quiet --no-cache --extend-exclude={DEPENDENCY_VENDOR_DIR} . ; ruff format --quiet --exclude={DEPENDENCY_VENDOR_DIR} .",
+        # setup_cmd installs the project's requirements into the vendored-deps dir (--target) instead of the
+        # default `--user` site, because under the sandbox's non-root --user pip lands in $HOME=/tmp — a
+        # per-container tmpfs that is WIPED before the separate network-OFF execute container, so every
+        # third-party import failed (see DEPENDENCY_VENDOR_DIR). /workspace persists across those containers.
+        # PYTHONPATH (sandbox_env, below) puts the --target dir on sys.path so `python -m pytest`/`compileall`
+        # can import the restored packages. `2>/dev/null || true`: a "target already exists" warning on a
+        # later gate's re-restore is benign; never fail the restore on it.
+        "setup_cmd": f"pip install --target=/workspace/{DEPENDENCY_VENDOR_DIR} -r requirements.txt 2>/dev/null || true",
+        "sandbox_env": {"HOME": "/tmp", "XDG_CACHE_HOME": "/tmp/.cache", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": f"/workspace/{DEPENDENCY_VENDOR_DIR}"},  # nosec B108 — in-container tmpfs paths
         # Persistent download cache (survives the separate restore/build/test containers + across runs);
         # mounted RW only on the network-ON restore phase. Overrides the tmpfs pip cache.
         "cache_volume": {"name": "sdlc-cache-python", "mount": "/cache", "env": {"PIP_CACHE_DIR": "/cache/pip"}},
@@ -79,6 +115,10 @@ SUPPORTED_ENVIRONMENTS = {
         "failure_origin_markers": ("Traceback (most recent call", "ImportError", "ModuleNotFoundError", "cannot import name"),
         "repo_map_ignore_dirs": ("__pycache__",),
         "comment_prefixes": ("#", '"""', "'''"),
+        "dependency_manifest": "requirements.txt",
+        "authoring_contract": (
+            "Dependency manifest: declare EVERY third-party runtime AND test dependency, version-pinned, one per line, in `requirements.txt` at the repository root. The toolchain restores from `requirements.txt` ONLY (`pip install -r requirements.txt`) — a `pyproject.toml` alone is NOT installed, so any dependency present only in `[project].dependencies` will be missing at build/test time and raise a module-not-found error. If the project also keeps a `pyproject.toml`, mirror its dependencies into `requirements.txt`; the two must not drift.",
+        ),
         "language_id": "python",
         "description": "Python 3.12 core runtime (pytest; Semgrep SAST).",
     },
@@ -111,6 +151,10 @@ SUPPORTED_ENVIRONMENTS = {
         "failure_origin_markers": ("panic:", "--- FAIL", "build failed", "cannot find package"),
         "repo_map_ignore_dirs": ("vendor", "bin"),
         "comment_prefixes": ("//", "/*", "*"),
+        "dependency_manifest": "go.mod",
+        "authoring_contract": (
+            "Dependency manifest: declare all module dependencies in `go.mod` (with a consistent `go.sum`); the toolchain restores via `go mod download`. Run `go mod tidy` so the manifest matches the imports — a dependency imported but absent from `go.mod` breaks the offline build.",
+        ),
         "language_id": "go",
         "description": "Go 1.23 CLI runtime, full compile toolchain (go test; Semgrep SAST).",
     },
@@ -140,6 +184,10 @@ SUPPORTED_ENVIRONMENTS = {
         "failure_origin_markers": ("Error:", "Cannot find module", "ReferenceError", "SyntaxError", "TypeError:"),
         "repo_map_ignore_dirs": ("node_modules", "dist", "build", "out", "coverage"),
         "comment_prefixes": ("//", "/*", "*"),
+        "dependency_manifest": "package.json",
+        "authoring_contract": (
+            "Dependency manifest: declare all dependencies and devDependencies (including the test runner) in `package.json`, with a committed `package-lock.json`; the toolchain restores via `npm ci` (falling back to `npm install`). The `test` script MUST be present, or the test gate has nothing to run.",
+        ),
         "language_id": "node",
         "description": "Node.js 20 / JS / React (node, npm — frontend build & tests; Semgrep SAST).",
     },
@@ -183,10 +231,90 @@ SUPPORTED_ENVIRONMENTS = {
         "failure_origin_markers": ("error CS", "error MSB", "Stack trace:", "Unhandled exception"),
         "repo_map_ignore_dirs": ("bin", "obj", "artifacts"),
         "comment_prefixes": ("//", "/*", "*", "<!--"),
+        "dependency_manifest": "*.csproj",
+        "authoring_contract": (
+            "Dependency manifest: declare all out-of-framework dependencies as `<PackageReference>` in each `.csproj`; the toolchain restores via `dotnet restore` over the root solution. Do NOT pin framework-provided packages (NU1510). Register every project — including the test project — in the root solution, or restore/build skips it.",
+        ),
         "language_id": "dotnet",
         "description": ".NET 10 SDK (full toolchain — dotnet build & dotnet test; Semgrep SAST).",
     },
 }
+
+# ==========================================================================================
+# DEPLOYMENT TARGETS — single source of truth for WHERE a finished app deploys, mirroring
+# SUPPORTED_ENVIRONMENTS (the WHAT/runtime SSOT). The SA selects a target the way it selects an
+# environment_id; the DevOps agent loads the target's platform skill to generate the deploy config;
+# and the building agents (TechLead/Dev/QA) build the app to satisfy the target's runtime_constraints.
+#
+# A deploy target is a DEPLOYMENT classification, NOT a programming language — there is no per-language
+# branching here (honors engine-language-agnostic). Adding a future cloud is ONE entry + one
+# prompts/skills/deploy_<cloud>.md, with no engine edit (the DevOps node loads the skill named here).
+#
+#   description          one-line summary for the injected awareness list (SA/TPM see this).
+#   archetypes           the DevOpsManifests.archetype values this target serves (web service vs CLI).
+#   skill                the devops platform skill that teaches deploying to this target.
+#   runtime_constraints  the contract the APP CODE must satisfy to run on this target — language-neutral
+#                        bullets surfaced to the building agents (e.g. bind $PORT, zero-config boot).
+# ==========================================================================================
+SUPPORTED_DEPLOY_TARGETS = {
+    "gcp-cloud-run": {
+        "description": "Google Cloud Run (serverless containers, deployed via Workload Identity Federation) — for long-running web services (REST API / CRUD).",
+        "archetypes": ("rest_api", "crud_app"),
+        "skill": "deploy_gcp",
+        # The deployed service is public-facing: its deploy workflow MUST grant unauthenticated invocation,
+        # else Cloud Run rejects every anonymous request with HTTP 403. The deploy gate enforces this for any
+        # target carrying this flag (registry-driven — a future private-by-default target simply omits it).
+        "requires_public_invoker": True,
+        "runtime_constraints": (
+            "Listen on the port given by the PORT environment variable (the platform injects it; default 8080) and bind 0.0.0.0 — never localhost.",
+            "Boot with ZERO required configuration: every environment-sourced setting MUST have a safe in-code default. Environment variables OVERRIDE behavior; they never ENABLE startup.",
+            "Be stateless: persist nothing to local disk between requests (the container filesystem is ephemeral and per-instance).",
+            "Expose a lightweight health endpoint for liveness/readiness probes.",
+        ),
+    },
+    "github-release": {
+        "description": "GitHub Releases (build and publish a versioned artifact on a tag) — for CLI tools / libraries with no long-running server.",
+        "archetypes": ("cli_tool",),
+        "skill": "deploy_github_release",
+        "runtime_constraints": (
+            "Ship a self-contained, runnable/installable artifact; do not assume a hosted runtime or platform-injected environment.",
+        ),
+    },
+}
+
+
+def deploy_target_for_archetype(archetype: str | None) -> str | None:
+    """The deploy-target id serving a DevOpsManifests archetype (e.g. ``rest_api`` -> ``gcp-cloud-run``).
+
+    Registry-derived; ``None`` for an unknown/blank archetype. The DevOps phase uses this to resolve the
+    target when the Blueprint did not state one explicitly (today exactly one cloud target serves the web
+    archetypes, so the mapping is unambiguous). First registry match wins.
+    """
+    if not archetype:
+        return None
+    for target_id, spec in SUPPORTED_DEPLOY_TARGETS.items():
+        if archetype in spec["archetypes"]:
+            return target_id
+    return None
+
+
+def deploy_skill_for_target(target_id: str | None) -> str | None:
+    """The devops platform skill teaching a target id (``gcp-cloud-run`` -> ``deploy_gcp``); ``None`` if unknown."""
+    spec = SUPPORTED_DEPLOY_TARGETS.get(target_id or "")
+    return spec["skill"] if spec else None
+
+
+def deploy_target_skills() -> tuple[str, ...]:
+    """Every platform skill named by the deploy-target registry, deduped in registry order.
+
+    The SSOT the DevOps node loads (alongside the archetype skills) so adding a future cloud target is one
+    registry entry + one ``prompts/skills/deploy_<cloud>.md`` — no edit to the agent code.
+    """
+    seen: dict[str, None] = {}
+    for spec in SUPPORTED_DEPLOY_TARGETS.values():
+        seen[spec["skill"]] = None
+    return tuple(seen)
+
 
 # Generic SAST — ONE scanner for every language (replaces per-stack bandit/gosec/npm-audit). Runs in
 # its own image over /workspace; scanning does not execute the code. The image VENDORS its rules
@@ -194,7 +322,10 @@ SUPPORTED_ENVIRONMENTS = {
 # call semgrep.dev and fail behind a corporate TLS proxy. `--metrics off` suppresses the telemetry
 # call; `--error` makes findings a non-zero (gate-failing) exit. Keep tag in sync with the build script.
 SAST_IMAGE = "sdlc-sandbox/semgrep:latest"
-SAST_CMD = "semgrep scan --error --metrics off --config /opt/semgrep-rules /workspace"
+# --exclude skips the engine's vendored-deps dir so SAST never scans (or flags findings in) third-party
+# packages a gate restored into /workspace/<DEPENDENCY_VENDOR_DIR>. Generic flag + engine-universal dir name
+# — no per-language coupling.
+SAST_CMD = f"semgrep scan --error --metrics off --exclude={DEPENDENCY_VENDOR_DIR} --config /opt/semgrep-rules /workspace"
 
 
 # ==========================================================================================
@@ -365,6 +496,17 @@ def env_language(environment_id: str) -> str:
     if env is None:
         raise ValueError(f"Unsupported environment_id '{environment_id}'.")
     return env["language_id"]
+
+
+def dependency_manifest(environment_id: str | None) -> str | None:
+    """The dependency-manifest filename (or glob) the env's ``setup_cmd`` restores from — the registry SSOT.
+
+    Registry-driven so the engine never hardcodes a language's manifest name (honors
+    engine-language-agnostic). ``None`` for an unknown env or one that declares no manifest, which the
+    missing-manifest gate (``gates.restore_produced_no_manifest``) treats as EXEMPT.
+    """
+    spec = SUPPORTED_ENVIRONMENTS.get(environment_id or "") or {}
+    return spec.get("dependency_manifest")
 
 
 def all_source_extensions() -> tuple[str, ...]:

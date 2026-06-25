@@ -11,11 +11,16 @@ os.environ.setdefault("GEMINI_API_KEY", "test-key")
 
 from src.shared.core.environments import (
     SUPPORTED_ENVIRONMENTS,
+    SUPPORTED_DEPLOY_TARGETS,
     QA_LANGUAGE_PROFILES,
     GITIGNORE_TEMPLATES,
     get_gitignore_template,
     all_source_extensions,
     extension_language_map,
+    deploy_target_for_archetype,
+    deploy_skill_for_target,
+    deploy_target_skills,
+    dependency_manifest,
 )
 
 
@@ -96,6 +101,89 @@ class PythonTestCmdTests(unittest.TestCase):
         self.assertEqual(test_cmd, "python -m pytest")
         # The bare console script would not put cwd on sys.path — guard against a regression to it.
         self.assertTrue(test_cmd.startswith("python -m "))
+
+
+class AuthoringContractTests(unittest.TestCase):
+    """Every env declares an `authoring_contract` (prose the SA/TPM surface to the building agents) AND a
+    `dependency_manifest` scalar (the engine SSOT the missing-manifest gate keys off). The two must not
+    drift — the scalar's basename token must appear in a contract bullet — so the restore command and the
+    authoring side can never silently disagree (the requirements.txt vs pyproject.toml halt class)."""
+
+    def test_every_env_has_authoring_contract_and_manifest(self) -> None:
+        for env_id, spec in SUPPORTED_ENVIRONMENTS.items():
+            self.assertTrue(spec.get("authoring_contract"), env_id)        # non-empty bullet tuple
+            self.assertTrue(spec.get("dependency_manifest"), env_id)       # non-empty manifest scalar
+
+    def test_manifest_scalar_appears_in_contract_prose(self) -> None:
+        # Drift guard: the engine SSOT (scalar) and the agent SSOT (prose) name the SAME manifest.
+        for env_id, spec in SUPPORTED_ENVIRONMENTS.items():
+            manifest = spec["dependency_manifest"]
+            token = manifest.lstrip("*")  # `*.csproj` → `.csproj`
+            blob = "\n".join(spec["authoring_contract"])
+            self.assertIn(token, blob, f"{env_id}: manifest {manifest!r} not named in its authoring_contract")
+
+    def test_python_manifest_is_requirements_txt_and_setup_cmd_restores_it(self) -> None:
+        # Couples the restore SSOT to the authoring SSOT — the exact bug: the restore reads requirements.txt
+        # while the agents authored only a pyproject.toml.
+        self.assertEqual(dependency_manifest("python-3.12-core"), "requirements.txt")
+        self.assertIn("requirements.txt", SUPPORTED_ENVIRONMENTS["python-3.12-core"]["setup_cmd"])
+
+    def test_dependency_manifest_accessor_is_registry_driven(self) -> None:
+        self.assertEqual(dependency_manifest("go-1.23-cli"), "go.mod")
+        self.assertEqual(dependency_manifest("node-20-web"), "package.json")
+        self.assertEqual(dependency_manifest("dotnet-10-sdk"), "*.csproj")
+        # Unknown env / None → None (the missing-manifest gate then treats it as exempt, never a false fail).
+        self.assertIsNone(dependency_manifest("no-such-env"))
+        self.assertIsNone(dependency_manifest(None))
+
+
+class DeployTargetRegistryTests(unittest.TestCase):
+    """SUPPORTED_DEPLOY_TARGETS is the SSOT for WHERE an app deploys, mirroring SUPPORTED_ENVIRONMENTS.
+    Pin its shape + the archetype→target / target→skill derivations so a new cloud is a registry entry
+    + a deploy_<cloud>.md skill alone — no engine edit (engine stays deploy-target-agnostic)."""
+
+    def test_every_target_has_the_required_shape(self) -> None:
+        for target_id, spec in SUPPORTED_DEPLOY_TARGETS.items():
+            self.assertTrue(spec.get("description"), target_id)
+            self.assertTrue(spec.get("archetypes"), target_id)          # non-empty archetype tuple
+            self.assertTrue(spec.get("skill"), target_id)               # names a platform skill
+            self.assertTrue(spec.get("runtime_constraints"), target_id)  # non-empty constraint bullets
+
+    def test_archetype_to_target_derivation(self) -> None:
+        # Web archetypes resolve to the one cloud target; the CLI archetype to the release target.
+        self.assertEqual(deploy_target_for_archetype("rest_api"), "gcp-cloud-run")
+        self.assertEqual(deploy_target_for_archetype("crud_app"), "gcp-cloud-run")
+        self.assertEqual(deploy_target_for_archetype("cli_tool"), "github-release")
+        # Unknown / blank archetype → no target (the gate then skips the public-invoker check).
+        self.assertIsNone(deploy_target_for_archetype("no-such-archetype"))
+        self.assertIsNone(deploy_target_for_archetype(None))
+
+    def test_archetype_partition_is_unambiguous(self) -> None:
+        # No archetype is served by two targets (deploy_target_for_archetype's first-match is then exact).
+        seen: dict[str, str] = {}
+        for target_id, spec in SUPPORTED_DEPLOY_TARGETS.items():
+            for arch in spec["archetypes"]:
+                self.assertNotIn(arch, seen, f"{arch} served by both {seen.get(arch)} and {target_id}")
+                seen[arch] = target_id
+
+    def test_target_to_skill_and_skill_set(self) -> None:
+        self.assertEqual(deploy_skill_for_target("gcp-cloud-run"), "deploy_gcp")
+        self.assertEqual(deploy_skill_for_target("github-release"), "deploy_github_release")
+        self.assertIsNone(deploy_skill_for_target("no-such-target"))
+        self.assertIsNone(deploy_skill_for_target(None))
+        # The skill set the DevOps node force-loads = every target's skill, deduped.
+        self.assertEqual(set(deploy_target_skills()), {"deploy_gcp", "deploy_github_release"})
+
+    def test_only_public_cloud_targets_require_invoker(self) -> None:
+        # Cloud Run is public-facing (the 403-class fix); the GitHub-release target is not.
+        self.assertTrue(SUPPORTED_DEPLOY_TARGETS["gcp-cloud-run"].get("requires_public_invoker"))
+        self.assertFalse(SUPPORTED_DEPLOY_TARGETS["github-release"].get("requires_public_invoker"))
+
+    def test_platform_skill_files_exist(self) -> None:
+        # Every skill named in the registry must resolve to a real prompts/skills/<name>.md file.
+        from src.shared.core.prompts import get_skill
+        for name in deploy_target_skills():
+            self.assertTrue(get_skill(name).strip(), name)
 
 
 @unittest.skipIf(shutil.which("git") is None, "git not available")

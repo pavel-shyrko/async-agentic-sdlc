@@ -111,6 +111,23 @@ solution → `dotnet test` discovers ZERO tests and exits green with no coverage
   (`*Tests.cs`), which is QA-owned. Get the test `.csproj` in on the first pass so the QA gate has a
   project to compile into.
 
+## Package References (MANDATORY — never pin a framework-provided package: NU1510)
+A package that ships INSIDE the target framework (`System.Text.Json`, `System.Net.Http`, `System.Memory`,
+`System.Threading.Tasks.*`, `System.Collections.Immutable`, …) is supplied implicitly by the .NET 10
+runtime. Do NOT add an explicit `<PackageReference>` for it: on .NET ≥9 `dotnet restore` raises **`NU1510`**
+("PackageReference … will not be pruned … likely unnecessary"), and with `<TreatWarningsAsErrors>true</…>`
+(this stack treats warnings as defects) that warning is promoted to a **hard restore failure** that wastes a
+compile-gate reroute. Rely on the implicit framework reference and just `using` the types. An explicit
+reference is legitimate ONLY when you genuinely need a version NEWER than the framework supplies — and then
+you must opt in deliberately with `<NoWarn>NU1510</NoWarn>` on that reference. `PackageReference` is for
+OUT-OF-framework packages (e.g. `System.CommandLine`, `Microsoft.NET.Test.Sdk`, `xunit`).
+- **TechLead**: do NOT list framework-provided packages in `core_libraries` — listing one makes the
+  Developer add a redundant `<PackageReference>` it is told is MANDATORY, and that NU1510-fails the build.
+  Constrain `core_libraries` to genuine out-of-framework dependencies.
+- **Developer**: even if the contract names a framework-provided package, do NOT emit a `<PackageReference>`
+  for it — `using` the types directly. The implicit framework reference covers it; an explicit one breaks
+  restore.
+
 ## Security
 - `dotnet list package --vulnerable --include-transitive` runs before review — zero tolerance for
   flagged vulnerable packages.

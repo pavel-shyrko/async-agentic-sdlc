@@ -1,5 +1,5 @@
 ---
-name: adr-generation
+name: tbf-adr-generation
 description: Generate an Architecture Decision Record (MADR format) documenting a systemic or architectural change. Use when the user asks to write/record an ADR, document an architectural decision, or after changes to FSM states, routing logic, new integrations, structural refactors, or dependency-injection shifts. Aborts if no core architectural change occurred.
 ---
 

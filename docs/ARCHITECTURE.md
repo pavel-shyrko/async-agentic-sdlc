@@ -348,22 +348,24 @@ for the full module map and [agent-contracts](../.claude/rules/agent-contracts.m
 | Development | Gates | `src/development/gates.py` | Build / unit-test / **lint** (`run_lint_gate` + `classify_lint_findings`) / SAST in the sandbox. |
 | Deployment | DevOps | `src/deployment/agents/devops.py` | Generate `DevOpsManifests` (archetype-aware Dockerfile + GitHub Actions deploy workflow, WIF) for the finished app (`--scaffold-deploy`, E4). |
 | Deployment | Deploy-scaffold | `src/deployment/provision/scaffold.py` `run_devops_scaffold` | Post-batch terminal phase: clone `main` → DevOps node → `run_devops_gate` (`provision/gates.py`) → merge `chore/devops-scaffold` via the forge flow. |
+| Deployment | Deploy gate | `src/deployment/provision/gates.py` `run_devops_gate` | Static-lint the manifests (YAML + Dockerfile directives); for a `requires_public_invoker` target deterministically assert public invocation (no HTTP 403) + a repo-derived service name (no overwrite) — ADR 0026. |
 | Shared | Models | `src/shared/core/models.py` | `GlobalPipelineContext`, `TechLeadContract`, `ReviewReport`, `ArbiterVerdict`, `BatchState` (E3 batch checkpoint + E5 `app_telemetry`/`budget_marker`/`nexus_merged` + E6 `released_tag`), `DevOpsManifests` (E4 deploy config), `PipelineTelemetry` (per-agent tokens/cost/**plane**/**time** + `by_plane()`/`merge()`/`finops_report()`). |
 | Shared | Config | `src/shared/core/config.py` | `ROLE_MODELS`, `AGENT_PLANE` (label→plane), the app-wide money budget (`PIPELINE_APP_BUDGET_USD` + floor), `RELEASE_VERSION_BUMP` (E6 tag bump), pricing, FSM constants. |
 | Shared | Observability | `src/shared/core/observability.py` | Logging, per-role/**plane**/**time** FinOps telemetry (`log_token_usage` reads per-call time from the `run_structured_llm` ContextVar), money-only `log_finops_summary`, finish-reason diagnostics. |
 | Shared | Run layout | `src/shared/core/runs.py` | `Projects` store + `allocate_run_dir` (run-layout SSOT). |
 | Shared | Docker adapter | `src/shared/core/docker_adapter.py` | Least-privilege `run_in_image` / `execute_in_sandbox`. |
-| Shared | Environments | `src/shared/core/environments.py` | `SUPPORTED_ENVIRONMENTS` (image + build/test/**lint** cmds + gitignore); `lint_cmd` is the SSOT shared with the generated CI. |
+| Shared | Environments | `src/shared/core/environments.py` | `SUPPORTED_ENVIRONMENTS` (image + build/test/**lint** cmds + `authoring_contract`/`dependency_manifest`); `lint_cmd` is the SSOT shared with the generated CI. ALSO `SUPPORTED_DEPLOY_TARGETS` (the WHERE-to-deploy SSOT — `archetypes`/`skill`/`runtime_constraints`/`requires_public_invoker`) + `deploy_target_for_archetype`/`deploy_skill_for_target`/`deploy_target_skills` (ADR 0026). |
 | Shared | Prompts | `src/shared/core/prompts.py` | `get_system_prompt*`, `build_agent_context` (skill routing). |
 | Shared | LLM / retry | `src/shared/utils/{llm,api_retry}.py` | `run_structured_llm` (relocates Jinja-marker system messages to a user turn for GenAI); backoff + non-retryable/RECITATION handling. |
 | Shared | PR forge | `src/shared/utils/forge.py` | Provider-agnostic `open_pr`/`approve_pr`/`merge_pr` (`gh`-backed, `--auto-merge` loop closure) + `list_remote_tags`/`push_tag` (E6 `--release` annotated-tag push, boundary-safe `_run_git`). |
 
 ---
 
-*Diagrams reflect the engine as of the autonomous release-tagging iteration ([CHANGELOG](../CHANGELOG.md)
-v0.23.0 — `--release` pushes a repo-derived `v*` tag as the build's final step, ADR
-[0023](decisions/0023-autonomous-release-tagging.md); over the application-wide FinOps budget of v0.22.0, ADR
-[0022](decisions/0022-application-wide-finops-budget.md)), plus the unreleased routing-coherence hardening
-(ADR [0024](decisions/0024-routing-coherence-reconciler.md): code-enforced feedback-channel coherence +
-authoritative Arbiter routes). For the "why" behind each decision see [decisions/](decisions/README.md); for
-what's still open see [BACKLOG.md](BACKLOG.md).*
+*Diagrams reflect the engine as of the deployment & tooling hardening iteration ([CHANGELOG](../CHANGELOG.md)
+v0.25.0 — a deployment-target registry + a deterministic reachability/isolation deploy gate + autonomous
+README-URL publish, ADR [0026](decisions/0026-deploy-target-registry-and-reachability-gates.md); and
+tooling-failures-are-environment-not-agent, ADR [0025](decisions/0025-tooling-failures-are-environment-not-agent.md)),
+over the routing-coherence hardening of v0.24.0 (ADR [0024](decisions/0024-routing-coherence-reconciler.md))
+and the autonomous release-tagging of v0.23.0 (ADR [0023](decisions/0023-autonomous-release-tagging.md)). For
+the "why" behind each decision see [decisions/](decisions/README.md); for what's still open see
+[BACKLOG.md](BACKLOG.md).*

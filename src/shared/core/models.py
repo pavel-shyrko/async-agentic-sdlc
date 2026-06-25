@@ -304,9 +304,19 @@ class PipelineTelemetry(BaseModel):
 class SkillRelevance(BaseModel):
     score: float = Field(description="Semantic relevance score between 0.0 and 1.0")
 
-class ArchitectureUpdate(BaseModel):
-    updated_architecture_document: str = Field(
+class DocumentationUpdate(BaseModel):
+    architecture_document: str = Field(
         description="The absolute, complete, updated content of docs/architecture_state.md markdown file, integrating new components, design decisions, and active constraints from the completed task."
+    )
+    readme: str = Field(
+        description="The absolute, complete, updated content of README.md — the human-facing project README, built incrementally from the previous README plus this ticket's delta. Preserve the deployment/release URL marker blocks verbatim."
+    )
+    changelog: str = Field(
+        description="The absolute, complete, updated content of the root CHANGELOG.md (Keep a Changelog format), adding one entry under [Unreleased] for the completed ticket and preserving all prior history."
+    )
+    usage_guide: str = Field(
+        default="",
+        description="The complete end-user usage guide for the finished, compiled/deployed application (docs/USAGE.md). Populate this ONLY on the final iteration (when the FINAL ITERATION input is true); leave it empty ('') on every earlier ticket.",
     )
 
 class QATestSuite(BaseModel):
@@ -425,6 +435,7 @@ class GlobalPipelineContext(BaseModel):
     techlead_brief: str = ""
     base_branch: str = "main"
     ticket: str = ""
+    idea: str = ""                   # Original --idea string from project.json; propagated to agents.
     # Bound by the orchestrator via `WorkspacePaths.for_run` once the git-anchored session
     # exists; None until then. Every node accesses it only within a live run.
     workspace_paths: WorkspacePaths | None = None
@@ -442,6 +453,10 @@ class GlobalPipelineContext(BaseModel):
     contract_amendments: int = 0
     current_attempt: int = 1
     repository_map: str = ""
+    # True only for the LAST ticket of an --auto-execute batch (set fresh by run_executor each call, never
+    # trusted from the checkpoint). Signals the TechWriter to author the end-user usage guide for the
+    # finished/deployable application (docs/USAGE.md). Single-ticket paths leave it False.
+    is_final_ticket: bool = False
     # E4 deploy-scaffolding output (set only on a --scaffold-deploy run); persisted for checkpoint parity.
     devops_manifests: DevOpsManifests | None = None
     telemetry: PipelineTelemetry = Field(default_factory=PipelineTelemetry)

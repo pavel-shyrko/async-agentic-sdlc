@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from src.shared.core.models import (
     PipelineTelemetry,
-    ArchitectureUpdate,
+    DocumentationUpdate,
     TechLeadContract,
     TopologyNode,
     BehaviorExample,
@@ -25,17 +25,30 @@ from src.shared.core.models import (
 )
 
 
-class ArchitectureUpdateModelTests(unittest.TestCase):
-    """The TechWriter's structured output round-trips its single cumulative-document field."""
+class DocumentationUpdateModelTests(unittest.TestCase):
+    """The TechWriter's structured output round-trips its three cumulative-document fields."""
 
-    def test_round_trips_document_field(self) -> None:
-        doc = "# Architecture State\n\n## Invariants\n- Streaming: row-by-row only.\n"
-        update = ArchitectureUpdate(updated_architecture_document=doc)
-        self.assertEqual(update.updated_architecture_document, doc)
+    def test_round_trips_document_fields(self) -> None:
+        adr = "# Architecture State\n\n## Invariants\n- Streaming: row-by-row only.\n"
+        readme = "# My Project\n\nDoes a thing.\n"
+        changelog = "# Changelog\n\n## [Unreleased]\n### Added\n- Initial.\n"
+        update = DocumentationUpdate(
+            architecture_document=adr, readme=readme, changelog=changelog, usage_guide="# Usage\n",
+        )
+        self.assertEqual(update.architecture_document, adr)
+        self.assertEqual(update.readme, readme)
+        self.assertEqual(update.changelog, changelog)
+        self.assertEqual(update.usage_guide, "# Usage\n")
 
-    def test_document_field_is_required(self) -> None:
+    def test_usage_guide_defaults_to_empty(self) -> None:
+        # usage_guide is authored only on the final ticket; it must be optional (default "") so every
+        # earlier ticket's structured response validates without it.
+        update = DocumentationUpdate(architecture_document="# a", readme="# b", changelog="# c")
+        self.assertEqual(update.usage_guide, "")
+
+    def test_core_doc_fields_are_required(self) -> None:
         with self.assertRaises(ValidationError):
-            ArchitectureUpdate()
+            DocumentationUpdate(architecture_document="# only adr")
 
 
 class QATestSuiteFenceCleaningTests(unittest.TestCase):

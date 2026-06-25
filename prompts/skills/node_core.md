@@ -28,6 +28,8 @@ LANGUAGE TARGET: Node.js (TypeScript/JavaScript) — production-code rules for t
   `index.ts` barrel is OPTIONAL glue you may add when it improves imports.
 - Manage dependencies and scripts in `package.json` (the `test` script + runner devDependency must
   exist for the QA gate). Create glue/entry files the build needs without waiting for the contract.
+- Commit a `package-lock.json` so the toolchain restores deterministically with `npm ci` (it falls
+  back to `npm install` if the lockfile is absent, but the lockfile is preferred).
 
 ## Security
 - `npm audit --audit-level=high` runs before review — zero tolerance for flagged vulnerabilities.

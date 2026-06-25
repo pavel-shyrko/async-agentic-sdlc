@@ -2,10 +2,10 @@
 
 Two parts:
 
-- **Part I — Capability Roadmap (Epics `E1`–`E7`)**: the forward-looking work to close the autonomy loop
+- **Part I — Capability Roadmap (Epics `E1`–`E10`)**: the forward-looking work to close the autonomy loop
   (idea → working, merged code in `main` → deployable). Larger than a single fix; each has its own
   Goal / Current state / Design / Dependencies / Risks / Acceptance.
-- **Part II — Defects & Refinements (`#4`–`#28`)**: granular fixes surfaced across pipeline runs, grouped by
+- **Part II — Defects & Refinements (`#4`–`#37`)**: granular fixes surfaced across pipeline runs, grouped by
   theme. Resolved items have been removed — their fixes live in the code, tests, and `CHANGELOG.md`; only
   outstanding work remains. **Original item numbers are preserved** so existing cross-references (from
   `.claude/rules/*` and ADRs) stay valid. The `E#` epic namespace is deliberately separate from the `#NN`
@@ -44,6 +44,21 @@ Two parts:
 > Updated 2026-06-24: logged **E7** (distribute the factory itself as an installable CLI + factory
 > self-release CI pipeline) — any user can `pip install git+<url>` and get a `tbf` binary; every `v*` tag
 > on this repo triggers a GitHub Actions workflow that publishes a new GitHub Release.
+>
+> Updated 2026-06-25: logged **E8** + **E9** (code-coverage of the *generated* application) — a Cyberthon
+> finals criterion, split into two epics. **E8 (measure + report)** is the active plan: a registry-driven
+> per-env `coverage_cmd` + `coverage_percent_pattern`, parsed in the functional-test gate and surfaced in the
+> run / app FinOps report (report-only, no gating). **E9 (hard coverage gate)** — a `COVERAGE_FLOOR` threshold
+> that fails the gate and reroutes to QA — is **deferred**, to roll out only after E8's numbers are trustworthy
+> across stacks. E9 depends on E8.
+>
+> Updated 2026-06-25: logged **E10** (user-selectable build quality tier — `--quality fast/balanced/optimal/premium`
+> flag; SA/TPM emit a `complexity_tier` per ticket; engine maps `quality_preset × complexity_tier → (model, effort)`
+> at dispatch time). Addresses Cyberthone dim 7.3 (A/B evidence in-run, no second run needed) and #28 (per-role
+> reasoning-effort routing — E10 is the product surface #28 is the mechanism). Added **#31** (deployment
+> reachability gap — `--scaffold-deploy` generates CI/CD config but no live URL is proven for judges), **#33**
+> (only Python sandbox images are production-ready; other stacks are stub entries), **#34** (deployment failure
+> recovery path not demoed for dim 4.2).
 
 ---
 
@@ -66,6 +81,12 @@ E1 ✅ Nexus auto-dispatches Executor (one ticket)   — DONE (v0.17.0 / ADR 001
                       └─► E5 ✅ Application-wide FinOps budget (one money ceiling, remaining threaded per ticket)  — DONE (v0.22.0 / ADR 0022)
 
 E7 ⬜ Distribute the factory as an installable CLI + factory self-release CI pipeline   — OPEN
+
+E8 ⬜ Code-coverage of the generated app — measure + report (report-only, no gating)   — OPEN
+      └─► E9 ⬜ Hard coverage gate (COVERAGE_FLOOR threshold → fail gate + reroute to QA)   — OPEN
+
+E10 ⬜ User-selectable build quality tier (--quality flag; SA/TPM-driven complexity_tier → model routing)   — OPEN
+       depends on: #28 (per-role reasoning-effort routing — the mechanism E10 exposes as a product surface)
 ```
 
 E3 depends on E2 for a hard structural reason (see E3): each ticket clones `main` **fresh**, so TASK-02 only
@@ -530,6 +551,141 @@ layer cache.)
 - The README (or `docs/guides/install.md`) contains the complete user prerequisite checklist including
   both API keys, Docker, `scripts/build_sandbox_images.sh`, and usage examples.
 
+## E8. [⬜ OPEN] Code-coverage of the generated application — measure + report (report-only)
+
+**Goal:** know — and surface — the test coverage of every application the pipeline generates. This is a
+Cyberthon **finals pass/fail criterion**, so the engine must MEASURE coverage in the functional-test gate and
+REPORT it (no gating — enforcing a floor is the separate epic **E9**). Coverage knowledge must stay
+**language-agnostic** (see [engine-language-agnostic](../.claude/rules/engine-language-agnostic.md)): the
+command + the extraction regex live in the env registry, never as an `if lang == …` branch in the gate.
+
+**Current state:**
+- `run_qa_unit_tests` ([gates.py:196](../src/development/gates.py#L196)) runs the env's `test_cmd`
+  (network-OFF) and returns `(ok, log_lines)`. Pass/fail is the runner's exit code; there is an orphan-test
+  backstop (`ran_zero_tests`) but **no coverage measurement** anywhere.
+- No env declares a coverage command; the python sandbox image installs `pytest ruff` only
+  ([docker/python.Dockerfile:18](../docker/python.Dockerfile#L18)) — no `pytest-cov`.
+- The FinOps/run reports (`finops_report.json` / `app_finops_report.json`) carry money/tokens/time only;
+  there is no quality-metric surface for coverage.
+
+**Design (registry-driven, optional-per-env, graceful no-op when absent):**
+
+1. **Registry** ([environments.py](../src/shared/core/environments.py)) — add two OPTIONAL fields per env:
+   - `coverage_cmd` — the test command WITH coverage. It SUPERSEDES `test_cmd` in the gate when present (it
+     runs the same tests + measures), so exit code stays the pass/fail authority and the
+     `empty_test_markers`/`ran_test_markers` backstop still matches (e.g. `pytest --cov` still prints
+     "N passed").
+   - `coverage_percent_pattern` — a regex capturing the TOTAL % from that runner's output.
+
+   Add helpers `coverage_cmd(env_id)` and `parse_coverage_percent(env_id, output) -> float | None` (generic;
+   uses the per-env regex; `None` when the env declares no coverage or the regex misses). Absent `coverage_cmd`
+   ⇒ the gate behaves exactly as today (no measurement) — same opt-in shape as `lint_cmd`.
+
+   Per-stack values (ship python + go first; node/dotnet land as a later registry+image add, no engine edit):
+   | env | `coverage_cmd` | total-% source |
+   |---|---|---|
+   | python | `python -m pytest --cov=. --cov-report=term-missing` | `TOTAL … (\d+)%` line |
+   | go | `go test -coverprofile=/tmp/cov.out ./... && go tool cover -func=/tmp/cov.out` | `total: (statements) NN.N%` |
+   | node | `npm test -- --coverage --coverageReporters=text-summary` (jest) | `Lines : NN.N%` (best-effort; vitest needs `@vitest/coverage`) |
+   | dotnet | `dotnet test --collect:"XPlat Code Coverage"` | cobertura XML, not stdout — needs an XML parse step; defer |
+
+2. **Images** — `docker/python.Dockerfile`: add `pytest-cov` to the `pip install` line; rebuild via
+   `scripts/build_sandbox_images.sh`. Go coverage is built into the toolchain (no image change).
+
+3. **Gate** ([gates.py](../src/development/gates.py) `run_qa_unit_tests`) — when `coverage_cmd(env_id)` is set,
+   execute it instead of `test_cmd`; parse the % via `parse_coverage_percent`. Change the return to
+   `(ok, log_lines, coverage_pct: float | None)` (the one signature ripple — its single caller + tests update).
+
+4. **Surface** — store `coverage_pct` on `GlobalPipelineContext` (new field; auto-persists in
+   `checkpoint.json` via the existing `model_dump_json` round-trip) and write it into the per-run report;
+   `run_batch` collects each ticket's coverage into `BatchState` so `app_finops_report.json` carries a
+   per-ticket coverage list (the artifact the judges read). **Keep it OUT of `PipelineTelemetry`** — that
+   SSOT is money/tokens/time (the money-only breaker, [finops-app-budget](../.claude/rules/finops-app-budget.md));
+   coverage is a per-ticket quality metric, not a cost, and must not be merged/summed across tickets.
+
+5. **Tests** ([tests/](../tests), WSL) — `parse_coverage_percent` per stack against sample runner output; the
+   `coverage_cmd` helper; the gate 3-tuple (mock `execute_in_sandbox`); the FSM unpack + ctx field.
+
+6. **Docs/rules** — `/tbf-docs-sync` + `/tbf-claude-context-sync` for the new registry fields, the report key, and
+   the image change; add the coverage fields to the `engine-language-agnostic` examples table.
+
+**Open questions to confirm before building:**
+- **Stacks at launch:** Python + Go first; node/dotnet land later as a registry+image add (no-op until then) —
+  confirm this is acceptable for the finals submission.
+- **Where the judges read the number:** per-ticket in `app_finops_report.json` + the audit log — or a dedicated
+  `coverage_report.json` artifact? (Affects the surfacing in step 4.)
+
+**Dependencies:** none — extends the existing functional-test gate.
+
+**Acceptance:** an `--idea --auto-execute` run records a coverage % per ticket in the run report and the app
+FinOps report, with zero gating; a stack without a `coverage_cmd` is a clean no-op; coverage stays
+registry-driven (no language branch in the engine).
+
+## E9. [⬜ OPEN] Hard coverage gate (`COVERAGE_FLOOR` threshold)
+
+**Goal:** turn the E8 coverage measurement into an enforceable quality gate — a ticket whose coverage is below
+a configured floor FAILS and is rerouted for more tests, so a merged app meets a minimum coverage bar.
+
+**Design:** add an env-overridable `COVERAGE_FLOOR`
+([config-constant-convention](../.claude/rules/config-constant-convention.md), likely a `--coverage-floor` CLI
+flag). When the E8-parsed % is below the floor, FAIL the functional-test gate and route the deficit to QA (the
+test-owner channel; see [pipeline-fsm-loops](../.claude/rules/pipeline-fsm-loops.md)), bounded by a new reroute
+cap (e.g. `COVERAGE_GATE_MAX_REROUTES`, mirroring `LINT_GATE_MAX_REROUTES`) so a hard coverage target can't loop
+the FSM to the breaker.
+
+**Dependencies:** **E8** (needs the measured % + the registry/gate/report seams it adds).
+
+**Risks / open questions:** reroute-loop blowups (needs the cap + a no-progress break); a floor higher than the
+agents can reach starves the budget; **CI-parity** — once coverage gates, the generated CI should run the same
+`coverage_cmd` + floor (engine-green ⇒ CI-green,
+[deploy-scaffolding-and-ci-parity](../.claude/rules/deploy-scaffolding-and-ci-parity.md)). Roll out only after
+E8 proves the numbers are stable across stacks.
+
+**Acceptance:** with `COVERAGE_FLOOR` set, a ticket below the floor fails the gate and reroutes to QA (bounded
+by the reroute cap, no FSM loop to the breaker); at/above the floor it passes; the floor is off by default so
+E8's report-only behavior is unchanged when unset.
+
+## E10. [⬜ OPEN] User-selectable build quality tier — dynamic model routing based on task complexity
+
+**Goal:** let the operator choose a quality/cost trade-off at invocation time via a `--quality` flag (or
+`PIPELINE_QUALITY_TIER` env var). The SA and TPM assess the complexity of each ticket and emit a
+`complexity_tier` (`low/medium/high`). The engine maps `quality_preset × complexity_tier → (model, effort)`
+and overrides `ROLE_MODELS` at dispatch time — no hardcoded per-role flat assignment.
+
+**Presets:**
+
+| Preset | Flag | Philosophy | Model selection |
+|--------|------|------------|-----------------|
+| `fast` | `--quality fast` | Minimize cost + time | smallest model, minimal effort for all roles |
+| `balanced` | `--quality balanced` | Satisfactory quality, reasonable cost | mid-tier models; simple tickets → small, complex → mid |
+| `optimal` | *(default)* | SA/TPM-driven: model matches ticket complexity | SA/TPM classify `complexity_tier`; Architect/Reviewer stay large |
+| `premium` | `--quality premium` | Maximum quality, cost unconstrained | largest model + high effort for all reasoning roles |
+
+**Key design insight:** in `optimal` mode the TPM emits a `complexity_tier` per ticket (new field on
+`TaskTicket`). `run_batch` / `prepare_ticket_run` resolves `QUALITY_MODEL_MATRIX[preset][complexity_tier][role]`
+before calling `run_executor` for each ticket — same threading pattern as `budget_usd_ceiling`. Simple CRUD
+tickets → Flash + low effort; complex algorithmic tickets → Pro/Opus + high effort. The planning agents
+determine what "skill level" the execution team needs.
+
+**Why this matters for dim 7.3 (A/B evidence):** a single `optimal` run on a mixed-complexity project
+automatically produces per-ticket model routing evidence: "TASK-01 (low) → Flash $0.03 | TASK-03 (high) → Pro
+$0.28". No second run needed — the comparison is implicit in the run report.
+
+**Design sketch:**
+1. `TaskTicket` — add `complexity_tier: Literal["low", "medium", "high"] = "medium"` (default preserves behavior).
+2. `tpm.md` prompt — instruct TPM to assess per-ticket complexity (lines of code, file count, algorithmic depth,
+   integration surface) and populate the field.
+3. `QUALITY_MODEL_MATRIX` (`config.py`) — nested dict `preset → complexity → role → (model, effort)`.
+4. `run_batch` / `prepare_ticket_run` — resolve and thread the overrides before `run_executor`. Add `--quality`
+   to `parse_args`; default `optimal`.
+5. `PipelineTelemetry` / FinOps — record `model_tier` and `quality_preset` per agent call for the report.
+
+**Dependencies:** #28 (per-role reasoning-effort routing — E10 is the product surface, #28 is the mechanism).
+
+**Acceptance:** `--quality fast` and `--quality premium` produce visibly different `finops_report.json` cost
+breakdowns for the same idea; `optimal` shows different models for low vs. high complexity tickets; quality
+preset and per-ticket model choice are recorded in the report and printed in console output.
+
 ---
 
 # Part II — Defects & Refinements
@@ -722,3 +878,97 @@ and zero-finding coverage parity — prove with a before/after on a repo with a 
 win via the `by_phase` telemetry (`qa+sast`). Distinct from #28 (model routing).
 **Acceptance:** the `qa+sast` infra phase drops materially with no loss of true-positive coverage; the scan
 still runs fully offline and fails on a planted finding.
+
+### CLI ergonomics
+
+## 30. [P3] `--idea` accepts only a raw string — no way to pass a long idea from a file
+**Symptom:** `--idea` is parsed as a single CLI string; ideas longer than a few sentences are awkward to
+pass (quoting, shell escaping) and cannot be stored in version control as a first-class artifact.
+**Fix direction:** in `parse_args()` (`src/nexus/runner.py`), resolve `cfg.idea` through a one-liner
+`resolve_idea(raw: str) -> str` helper immediately after parsing: if `raw` is an existing file path,
+read and strip its UTF-8 contents; otherwise return the string unchanged. All downstream consumers
+(`run_nexus`, `projects.create`, `GlobalPipelineContext`, `techwriter.py`) already receive a plain string
+and need no changes. Update the `--idea` help text to document the dual mode.
+**Scope:** one file (`src/nexus/runner.py`), ~10 lines. No new dependencies.
+
+### Hackathon readiness (Cyberthone 2026)
+
+## 31. [P1] Deployment reachability gap: `--scaffold-deploy` generates CI/CD config but no live service URL is proven
+**Symptom:** `--scaffold-deploy` commits a `Dockerfile` + GHA workflow to the generated app repo and merges it,
+but nothing boots a running service. Judges scoring criterion 3.5 ("service reachable") may deduct if they
+expect a live URL at demo time.
+**Cause:** E4 chose mechanism **(a) generate CI/CD config** (lowest infra risk) and deferred **(b) build+push
+image** and **(c) live cloud deploy**. The demo proves the workflow was generated and merged, but cannot show
+`curl https://<app>.run.app/health` returning 200 without a pre-configured GCP project.
+**Fix direction:**
+- **Option A (recommended, ~30 min, no engine change):** pre-wire a GCP project with the WIF setup
+  (`docs/guides/devops_setup.md`) on the demo org, run `--auto-execute --scaffold-deploy --release` on the demo
+  app, let the tag-triggered GHA deploy to Cloud Run, screenshot the live URL.
+- **Option B (future E4 extension):** extend `run_devops_scaffold` to `docker build && docker push` and
+  optionally `gcloud run deploy` as an inlined post-merge step. Requires cloud credentials in the engine
+  run environment; out of scope for the hackathon.
+
+**Update (public-invoker sub-defect RESOLVED):** a live E4+E6 run *did* deploy to Cloud Run but returned **HTTP
+403** on every request — the generated workflow never granted public invocation. Fixed: the `deploy_gcp` platform
+skill now instructs `flags: '--allow-unauthenticated'` and `run_devops_gate(repo_dir, archetype)` asserts the
+workflow grants public invocation (registry flag `SUPPORTED_DEPLOY_TARGETS['gcp-cloud-run'].requires_public_invoker`).
+The broader "prove a live URL at demo time" gap (Options A/B) remains.
+
+## 33. [P1] Only Python sandbox images are production-ready; other stacks are stub registry entries
+**Symptom:** judges may ask to demo on Go, Node, or .NET. Only `python-3.12-core` has a validated Docker image
+and QA profile; other stacks have `SUPPORTED_ENVIRONMENTS` entries but the images have not been exercised
+through a full `--auto-execute` run.
+**Cause:** Docker images are built via `scripts/build_sandbox_images.sh`; non-Python Dockerfiles exist but have
+not been validated through the full gate chain (build → test → lint → SAST → Reviewer).
+**Fix direction:** before the hackathon, run `bash scripts/build_sandbox_images.sh` and execute one full
+`--auto-execute` run for at least one non-Python stack (Go or Node) to validate the image + `QA_LANGUAGE_PROFILES`
++ gate chain. At minimum, restrict the live demo to the Python stack and communicate that constraint proactively.
+
+## 34. [P2] Deployment failure recovery path not scripted for live demo injection (dim 4.2)
+**Symptom:** the resilience demo proves lint-gate auto-recovery and test-failure QA regen. It does not prove
+recovery from a *deployment* failure (e.g. bad Dockerfile, invalid GHA YAML). Judges scoring 4.2 may inject
+this as the second required failure type.
+**Cause:** E4's `run_devops_scaffold` has a 1-retry self-heal loop (`DEVOPS_MAX_RETRIES`) and `run_devops_gate`
+static-lints the manifests, but this path is not exercised in any existing demo run.
+**Fix direction:** prepare a scripted failure injection — deliberately pass a malformed `Dockerfile` trigger to
+the DevOps agent (or corrupt the generated one before the static lint), run `--scaffold-deploy`, and show
+`run_devops_gate` failure → DevOps agent rewrite → second attempt succeeds. No engine change needed; this is a
+demo preparation step. Document the scenario in `docs/hackathon/`.
+
+## 35. [P2] `deploy_target_id` is prose-threaded, not a validated structured field
+**Symptom:** the SA selects a deployment target and writes it into the Blueprint's `## Deployment Target`
+section as prose; the TPM re-reads it from markdown and the DevOps phase otherwise derives the target from the
+archetype (`deploy_target_for_archetype`). There is no validated structured value crossing the
+SA→TPM→TechLead→DevOps boundary — exactly the same class of gap as #20 (the discarded `environment_id`).
+**Cause:** to avoid an ADR-scale model change, the deploy target was threaded as awareness + a registry-derived
+default rather than a first-class field. A Blueprint that names a target not in `SUPPORTED_DEPLOY_TARGETS`, or
+an archetype↔target mismatch, is not caught at deserialization.
+**Fix direction:** add a validated `deploy_target_id` field to `Blueprint`/`TaskTicket`/`DevOpsManifests` with a
+shared `_validate_deploy_target_id` validator (mirroring `_validate_environment_id`), persist it across the
+Nexus boundary (paired with the #20 fix), and have `run_devops_scaffold` pass the threaded value to
+`run_devops_gate` instead of deriving from archetype. ADR-worthy; bundle with #20.
+
+## 36. [P1] No cross-ticket integration check — an orphaned component is caught only by TPM prompt text
+**Symptom:** a component built in one ticket (e.g. a middleware in `TASK-02`) can be left unwired into the
+composition root if no ticket scopes both the component and the entry-point file — it becomes dead code and its
+behavior silently never runs in production. A live run shipped exactly this (a request-limit middleware that was
+never `add_middleware`'d). Now mitigated by TPM NON-NEGOTIABLE rule #7 (integration completeness), but that is
+prompt-trusted, not code-enforced.
+**Cause:** `files_to_modify` is the only execution-time scope gate; nothing verifies that every non-entry,
+non-baseline file produced across the plan is actually *consumed* by some ticket.
+**Fix direction:** a cross-ticket **topology orphan-check** over the union of every ticket's
+`topology_contract` graph (the neutral dependency graph the TechLead already emits): assert every non-entry,
+non-baseline `file_path` appears as a `depends_on` target somewhere, or is the entry point. Language-neutral
+(operates on the existing neutral graph); the code-enforced SSOT that makes rule #7 deterministic.
+
+## 37. [P3] DevOps cannot introspect required runtime env vars — relies on app having safe defaults
+**Symptom:** the DevOps agent emits `.env.example` and `ENV` lines from the blueprint/repo map, but cannot read
+the app's actual config object to learn which environment variables it requires. If an app had a required,
+no-default env-backed setting, the generated Dockerfile/`.env.example` would omit it and the container would
+crash on boot. Currently dissolved by the "boot with zero required configuration" rule (engineering_guide +
+TechLead HARD gate #6) — every config field must have a safe default, so DevOps never needs to inject anything
+to make the app boot.
+**Fix direction (only if the zero-config invariant is ever relaxed):** have the DevOps phase introspect the
+merged app's config surface and emit `--set-env-vars` / `ENV` for any discovered required setting. Lower
+priority and inherently language-aware (config-class parsing), so it is the *fallback*, not the primary fix —
+the safe-defaults invariant is the clean solution.

@@ -1,5 +1,5 @@
 ---
-name: docs-sync
+name: tbf-docs-sync
 description: Factually synchronize CHANGELOG.md (Keep a Changelog format), README.md, and docs/ARCHITECTURE.md after code changes. Use when the user asks to update the changelog or README, sync docs to recent commits/diff, or reflect new CLI flags, env vars, directory structure, execution commands, agent roles, FSM routes, planes/containers, budget/FinOps or cost-reporting changes, or new run-store report artifacts. Focuses strictly on "what" changed.
 ---
 
@@ -30,7 +30,7 @@ Update factual project-state tracking after code changes. Focus strictly on "Wha
      - **`prompts/system/` role-prompt list** — the structure tree enumerates the per-role prompt files (`po, sa, tpm, techlead, developer, qa, reviewer, techwriter, …`). A new role's `prompts/system/<role>.md` MUST be added here — this is a SEPARATE enumeration from the `agents/` list and drifts independently (a role can be in one and missing from the other).
      - **ADR sequence range** — strings like `0000–0016` / `(MADR) 0000–NNNN`; the upper bound must equal the highest `docs/decisions/NNNN-*.md` on disk. This range appears in MORE THAN ONE file (README ×N + `docs/decisions/README.md`) — bump every occurrence.
      - **Doc version / iteration stamps** — footer/byline strings like `as of … v0.16.0` or `reflects the Arbiter iteration` (in `docs/ARCHITECTURE.md` and any other stamped doc) must bump to this release's version/name.
-     - **CLI arguments / execution commands** and **Developer Meta-Tools** (the `.claude/skills/` list — add a new `/skill`).
+     - **CLI arguments / execution commands** and **Developer Meta-Tools** (the `.claude/skills/` list — add a new `/tbf-<skill>`).
    - Apply targeted diff patches to the relevant sections to reflect the current state.
 4. **Architecture Diagram Sync** (`docs/ARCHITECTURE.md`):
    - This is the C4 model (L1 System Context / L2 Containers / L3 Executor FSM) + the end-to-end

@@ -139,7 +139,8 @@ async def run_devops_scaffold(projects: Projects, project, cfg: RunConfig, nexus
                 environment_ids=environment_ids, ci_commands=ci_commands, gate_feedback=gate_feedback,
             )
             enforce_financial_circuit_breaker(ctx, budget_usd)  # E5: halt if this phase breaches the remaining budget
-            problems = run_devops_gate(ws.repo_dir)
+            archetype = ctx.devops_manifests.archetype if ctx.devops_manifests else None
+            problems = run_devops_gate(ws.repo_dir, archetype=archetype)
             if not problems:
                 break
             gate_feedback = "\n".join(f"- {p}" for p in problems)

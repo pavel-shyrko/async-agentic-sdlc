@@ -21,18 +21,18 @@ from src.shared.core.config import (
 )
 from src.shared.core.models import GlobalPipelineContext, WorkspacePaths, RUNS_BASE, BatchState, PipelineTelemetry
 from src.shared.core.runs import Projects
-from src.shared.core.environments import is_test_file, get_qa_profile, failure_origin_markers, all_comment_prefixes
+from src.shared.core.environments import is_test_file, get_qa_profile, failure_origin_markers, all_comment_prefixes, DEPENDENCY_VENDOR_DIR
 from src.shared.core.prompts import generate_repo_map
 from src.shared.utils.git_helpers import get_git_root, get_pipeline_snapshot_files
 from src.shared.utils.redaction import redact
-from src.shared.utils.subprocess_helpers import sanitize_for_argv
+from src.shared.utils.subprocess_helpers import sanitize_for_argv, ClaudeCliQuotaExhausted
 from src.development.agents.techlead import run_techlead_node
 from src.development.agents.qa import run_qa_agent_node
 from src.development.agents.developer import run_developer_node
 from src.development.agents.reviewer import run_reviewer_node
 from src.development.agents.arbiter import run_arbiter_node
 from src.development.agents.techwriter import run_techwriter_node
-from src.development.gates import run_qa_unit_tests, run_security_scan, run_build_gate, run_test_compile_gate, build_failure_is_test_only, build_failure_is_environmental, run_lint_gate, classify_lint_findings, run_format_pass
+from src.development.gates import run_qa_unit_tests, run_security_scan, run_build_gate, run_test_compile_gate, build_failure_is_test_only, build_failure_is_environmental, run_lint_gate, classify_lint_findings, lint_failure_is_tooling, run_format_pass
 
 # ==========================================
 # CONTROL-FLOW SIGNALS
@@ -259,6 +259,17 @@ async def bootstrap_session(cfg: RunConfig, run_dir: Path, branch: str | None = 
         ["git", "-C", str(repo_dir), "fetch", "--depth", "1", "origin", f"{cfg.base_branch}:{cfg.base_branch}"],
         "git fetch base branch", timeout=GIT_NETWORK_TIMEOUT,
     )
+
+    # Keep the engine's vendored-deps dir out of every `git add -A` (the agents stage the whole tree each
+    # cycle). A gate's restore installs third-party packages into /workspace/<DEPENDENCY_VENDOR_DIR>; without
+    # this they would be committed + pushed into the PR. `.git/info/exclude` is the per-clone, never-committed
+    # gitignore — language-agnostic (one engine constant), and it also makes ruff/semgrep skip the dir for
+    # free (both honor git ignore files), independent of any agent-authored `.gitignore`.
+    exclude_path = repo_dir / ".git" / "info" / "exclude"
+    exclude_path.parent.mkdir(parents=True, exist_ok=True)
+    with exclude_path.open("a", encoding="utf-8") as fh:
+        fh.write(f"\n{DEPENDENCY_VENDOR_DIR}/\n")
+
     log.info(f"   [GIT] Shallow-cloned {redact(cfg.repo)} -> {repo_dir} (branch: {branch})")
 
     return WorkspacePaths.for_run(run_dir, repo_dir)
@@ -541,6 +552,17 @@ LINT_GATE_MAX_REROUTES = int(os.environ.get("PIPELINE_LINT_MAX_REROUTES", "2"))
 _LINT_FEEDBACK_PREAMBLE = (
     "[LINT GATE FAILURE] The project's style/lint checker rejected the code. Fix ONLY these specific "
     "style/lint violations — do not change behaviour, signatures, or logic. The exact findings:\n"
+)
+
+# Terminal halt when the Developer's Claude CLI is blocked by the subscription session/usage limit. NOT
+# a code defect — the CLI wrote nothing and the limit resets on a clock, so the only remedy is to wait
+# and resume. Surfaced as an honest incident here instead of looping the retry budget on an unchanged
+# tree (the misclassified-as-'production_bug' failure this guards against). `{detail}` is the CLI's own
+# limit/reset line, so the operator sees exactly when to re-run.
+_DEV_QUOTA_HALT_HEADER = (
+    "\n🚨 PROVIDER QUOTA HALT: the Developer's Claude CLI hit the subscription session/usage limit and "
+    "produced no work — this is an infrastructure block, not a code defect. Resume the batch after the "
+    "limit resets: {detail}"
 )
 
 # ==========================================
@@ -1001,7 +1023,8 @@ async def run_batch(projects: Projects, project, cfg: RunConfig, nexus_run_dir: 
             log.info(f"🤖 Batch: dispatching '{ticket}' ({len(batch.completed) + 1}/{len(tickets)}) "
                      f"| ${remaining:.4f} of the app budget remaining.")
             try:
-                ctx = await run_executor(cfg, run_dir, budget_usd_ceiling=remaining)
+                ctx = await run_executor(cfg, run_dir, budget_usd_ceiling=remaining,
+                                         is_final_ticket=(ticket == tickets[-1]))
             except PipelineHalt:
                 # Recover the halted ticket's spend (incident dump is freshest; checkpoint is the fallback)
                 # so the application total — and the app report below — still reflect the money it burned.
@@ -1062,6 +1085,7 @@ def prepare_ticket_run(projects: Projects, project, cfg: RunConfig, ticket_id: s
     cfg.repo = cfg.repo or project.repo
     cfg.base_branch = project.base_branch
     cfg.ticket = ticket_id
+    cfg.idea = cfg.idea or project.idea
     ticket_file = _resolve_ticket_file(projects, project.slug, ticket_id)
     if ticket_file is None:
         return None
@@ -1194,7 +1218,8 @@ async def _timed_phase(telemetry, phase: str, coro):
 
 
 async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | None = None,
-                       budget_usd_ceiling: Decimal | None = None) -> GlobalPipelineContext:
+                       budget_usd_ceiling: Decimal | None = None,
+                       is_final_ticket: bool = False) -> GlobalPipelineContext:
     """Execute ONE ticket end-to-end in a prepared run dir: bootstrap (or resume) → TechLead → the FSM
     self-heal cycle → atomic success commit. Returns the final ``GlobalPipelineContext`` on full success (so
     the E3 batch can fold this ticket's telemetry into the application-wide total); a halt writes an incident
@@ -1235,6 +1260,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
             pr_description=cfg.description or "",
             base_branch=cfg.base_branch,
             ticket=cfg.ticket or "",
+            idea=cfg.idea or "",
             workspace_paths=paths,
         )
         ctx.telemetry.record_phase("git:clone", time.perf_counter() - _clone_t0)
@@ -1259,6 +1285,10 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
                 log.info(f"   [CONTEXT] Blueprint routed into TechLead input ({len(bp_content)} chars).")
 
         log.debug(f"Initialized global context for run {run_dir} with PR: {cfg.description}")
+
+    # Set fresh every call (never trusted from the checkpoint): the TechWriter authors the end-user usage
+    # guide only on the batch's final ticket, when the application is functionally complete + deployable.
+    ctx.is_final_ticket = is_final_ticket
 
     checkpoint_file = ctx.workspace_paths.reports_dir / "checkpoint.json"
 
@@ -1344,7 +1374,10 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
             guardrail_halt = False
             guardrail_msg: str | None = None
             for guardrail_retries in range(GUARDRAIL_MAX_REROUTES + 1):
-                await run_developer_node(ctx, dev_feedback, dev_focus_files)
+                try:
+                    await run_developer_node(ctx, dev_feedback, dev_focus_files)
+                except ClaudeCliQuotaExhausted as exc:
+                    _abort_with_incident(ctx, _DEV_QUOTA_HALT_HEADER.format(detail=exc.reset_hint))
                 # Snapshot the real working-tree production delta (git-tracked, full content) for the Reviewer.
                 build_production_snapshot(ctx)
                 # Refresh the repo map now that the Developer has materialized the contract files. The
@@ -1502,8 +1535,11 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
         #     — production → Developer, test → QA — with NO functional-retry consumed. `lint_success` folds
         #     into all_gates_passed below, so anything still red after LINT_GATE_MAX_REROUTES rides the
         #     budgeted cycle (the classified findings are re-applied to the channels AFTER the Reviewer's
-        #     routing). Deliberately NOT in the deadlock guard: a lint nit is always agent-fixable in
-        #     principle, never an environment misconfiguration.
+        #     routing). A genuine lint NIT is always agent-fixable in principle, so it is NOT in the
+        #     deadlock guard and rides the budgeted cycle. The ONE exception is a lint TOOL-invocation
+        #     error (lint_failure_is_tooling: bad flag / unknown subcommand / missing binary) — the linter
+        #     could not run at all, an engine `lint_cmd` misconfig the agents cannot fix — which fails fast
+        #     with an environment incident below, like build_failure_is_environmental.
         lint_success = True
         lint_prod_feedback = ""
         lint_test_feedback = ""
@@ -1521,6 +1557,21 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
             )
             if lint_ok:
                 break
+            # A lint TOOL-invocation error (bad flag / unknown subcommand / missing binary) means the
+            # linter itself could not run — the engine's `lint_cmd`/`format_cmd` is misconfigured, NOT a
+            # code defect. No Developer/QA edit can clear it, so fail FAST with an environment incident
+            # (mirroring build_failure_is_environmental) instead of folding it into the budgeted cycle,
+            # where the lint-blind Reviewer would approve and the Arbiter halt as "unrecoverable".
+            if lint_failure_is_tooling(ctx.contract.environment_id, lint_lines):
+                ctx.error_trace = _cap_text("\n".join(lint_lines))
+                _abort_with_incident(
+                    ctx,
+                    "\n🚨 ENVIRONMENT/LINT-TOOLING HALT: the lint gate could not execute — a CLI-invocation "
+                    "error (bad flag / unknown subcommand / missing binary), NOT a code defect. This is an "
+                    f"engine/registry `lint_cmd` misconfiguration for environment "
+                    f"'{ctx.contract.environment_id}'; the Developer/QA are NOT rerouted. Fix the "
+                    "environment's lint_cmd/format_cmd in src/shared/core/environments.py.",
+                )
             lint_prod_findings, lint_test_findings = classify_lint_findings(
                 ctx.contract.environment_id, lint_lines
             )
@@ -1539,7 +1590,10 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
             )
             if lint_prod_findings:
                 ctx.error_trace = _cap_text(_LINT_FEEDBACK_PREAMBLE + "\n".join(lint_prod_findings))
-                await run_developer_node(ctx, ctx.error_trace, None)
+                try:
+                    await run_developer_node(ctx, ctx.error_trace, None)
+                except ClaudeCliQuotaExhausted as exc:
+                    _abort_with_incident(ctx, _DEV_QUOTA_HALT_HEADER.format(detail=exc.reset_hint))
                 build_production_snapshot(ctx)
                 ctx.repository_map = generate_repo_map(ctx.workspace_paths.repo_dir)
             if lint_test_findings:

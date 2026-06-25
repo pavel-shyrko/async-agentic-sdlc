@@ -50,28 +50,74 @@ class GetSystemPromptTests(unittest.TestCase):
         self.assertNotIn("`TASK-00` is RESERVED", result)
         self.assertNotIn("BUSINESS TICKETS START AT `TASK-01`", result)
 
-    def test_tpm_delegates_gitignore_and_license_to_engine(self) -> None:
-        # The .gitignore/LICENSE are no longer reproduced by the TPM (reproducing canonical boilerplate
-        # tripped Gemini's recitation filter) — the engine appends them at materialisation via
-        # boilerplate.build_baseline_block. So no gitignore template is injected and the prompt forbids
-        # the model from writing those two files' content itself.
+    def test_tpm_delegates_gitignore_to_engine(self) -> None:
+        # The .gitignore is no longer reproduced by the TPM (reproducing canonical boilerplate tripped
+        # Gemini's recitation filter) — the engine appends it at materialisation via
+        # boilerplate.build_gitignore_baseline_block. So no gitignore template is injected and the prompt
+        # forbids the model from writing that file's content itself.
         result = get_system_prompt_with_platforms("tpm")
         self.assertNotIn("{injected_gitignore_templates}", result)
         self.assertNotIn("```gitignore", result)           # no canonical gitignore blocks injected
         self.assertIn("ENGINE-PROVIDED", result)
         self.assertIn("Repository Baseline Files (engine-provided", result)
 
-    def test_tpm_injects_readme_scaffold_and_env_commands(self) -> None:
-        # README must follow the GitHub-aligned scaffold and pull accurate per-env commands; the
-        # placeholders are filled and the old loose 3-bullet structure no longer drives it alone.
+    def test_tpm_does_not_own_readme_license_changelog(self) -> None:
+        # README/LICENSE/CHANGELOG ownership moved to the Technical Writer. The TPM no longer injects the
+        # README scaffold or per-env commands, and explicitly forbids contracting those docs into any ticket.
         result = get_system_prompt_with_platforms("tpm")
+        self.assertNotIn("{injected_readme_scaffold}", result)
+        self.assertNotIn("{injected_env_commands}", result)
+        self.assertNotIn("## Getting Started", result)          # the README scaffold is no longer here
+        self.assertIn("DOCUMENTATION IS NOT YOUR CONCERN", result)
+        self.assertIn("owned by the **Technical Writer**", result)
+
+    def test_techwriter_injects_readme_scaffold_and_env_commands(self) -> None:
+        # The Technical Writer now authors the README from the GitHub-aligned scaffold + accurate per-env
+        # commands (ownership moved off the TPM); both placeholders are filled for the techwriter prompt.
+        result = get_system_prompt_with_platforms("techwriter")
         self.assertNotIn("{injected_readme_scaffold}", result)
         self.assertNotIn("{injected_env_commands}", result)
         self.assertIn("## Getting Started", result)             # scaffold section injected
         self.assertIn("## Running Tests", result)
-        self.assertIn("accurately reflect the essence", result)  # the project-fidelity hard gate
         self.assertIn("go build ./...", result)                 # real go env command injected
         self.assertIn("python -m pytest", result)               # real python env command injected
+
+    def test_techwriter_owns_docs_set_and_preserves_url_markers(self) -> None:
+        # The techwriter prompt owns README/CHANGELOG/ADR, keeps the deploy/release URL markers verbatim
+        # (so the CI-injected live URL survives a per-ticket rewrite), and does NOT author LICENSE text.
+        result = get_system_prompt_with_platforms("techwriter")
+        self.assertIn("DocumentationUpdate", result)
+        self.assertIn("Keep a Changelog", result)
+        self.assertIn("DEPLOYMENT_URL_START", result)
+        self.assertIn("RELEASE_URL_START", result)
+        self.assertIn("never author license text", result)
+
+    def test_techwriter_authors_usage_guide_on_final_iteration_and_links_docs(self) -> None:
+        # On the last task the techwriter writes the end-user usage guide for the deployed app, and the
+        # README keeps links to the changelog, architecture doc, and usage guide.
+        result = get_system_prompt_with_platforms("techwriter")
+        self.assertIn("FINAL ITERATION", result)
+        self.assertIn("docs/USAGE.md", result)
+        self.assertIn("usage_guide", result)
+        self.assertIn("## Documentation", result)               # README links section
+        self.assertIn("docs/architecture_state.md", result)
+
+    def test_readme_scaffold_carries_markers_and_doc_links(self) -> None:
+        # The scaffold must pre-seed both URL marker pairs (so the DevOps deploy/release workflow injects
+        # the live URL IN PLACE — deploy_gcp.md / deploy_github_release.md, not a duplicated section) AND a
+        # Documentation section linking the changelog, architecture doc, and usage guide.
+        from src.shared.core.prompts import README_SCAFFOLD
+        for marker in (
+            "<!-- DEPLOYMENT_URL_START -->", "<!-- DEPLOYMENT_URL_END -->",
+            "<!-- RELEASE_URL_START -->", "<!-- RELEASE_URL_END -->",
+        ):
+            self.assertIn(marker, README_SCAFFOLD)
+        self.assertIn("## Documentation", README_SCAFFOLD)
+        self.assertIn("(CHANGELOG.md)", README_SCAFFOLD)
+        self.assertIn("(docs/architecture_state.md)", README_SCAFFOLD)
+        # The Usage Guide link is added by the techwriter ONLY from the final iteration (prompt-driven),
+        # so it must NOT be a dead link hard-coded into the static scaffold for every intermediate ticket.
+        self.assertNotIn("(docs/USAGE.md)", README_SCAFFOLD)
 
     def test_tpm_test_project_scaffold_is_build_glue_not_a_test_case(self) -> None:
         # The test-PROJECT scaffold (dir + build manifest) is Developer-owned build glue allocated to the
@@ -205,6 +251,68 @@ class GetSystemPromptTests(unittest.TestCase):
         # overrides a Reviewer misroute, so it must match the root_cause_class exactly.
         result = get_system_prompt("arbiter")
         self.assertIn("AUTHORITATIVE", result)
+
+    def test_sa_selects_and_records_deployment_target(self) -> None:
+        # The SA picks a deployment target (like environment_id) and records it + its runtime constraints
+        # in a `## Deployment Target` Blueprint section; the available-targets list is injected.
+        result = get_system_prompt_with_platforms("sa")
+        self.assertNotIn("{injected_supported_deploy_targets_list}", result)   # placeholder filled
+        self.assertIn("gcp-cloud-run", result)                                  # the registry target rendered
+        self.assertIn("## Deployment Target", result)
+        self.assertIn("DEPLOYMENT TARGET", result)
+        # Existing pinned literal must survive the edit.
+        self.assertIn("HONOR THE USER'S MANDATED STACK", result)
+
+    def test_tpm_propagates_deployment_target_constraints(self) -> None:
+        # The TPM carries the target's runtime constraints into tickets (the executor never sees the
+        # Blueprint) and must NOT spin up a separate deployment ticket; the targets list is injected.
+        result = get_system_prompt_with_platforms("tpm")
+        self.assertNotIn("{injected_supported_deploy_targets_list}", result)
+        self.assertIn("DEPLOYMENT TARGET", result)
+        self.assertIn("deployment-target runtime constraints", result)
+        self.assertIn("there is NO standalone `TASK-00`", result)               # existing pin survives
+
+    def test_sa_records_runtime_contract_from_injected_platforms(self) -> None:
+        # The injected platform list now carries each env's authoring_contract (the dependency-manifest
+        # convention), and the SA must record the selected one in a `## Runtime Contract` Blueprint section.
+        result = get_system_prompt_with_platforms("sa")
+        self.assertNotIn("{injected_supported_platforms_list}", result)   # placeholder filled
+        self.assertIn("## Runtime Contract", result)
+        self.assertIn("requirements.txt", result)                        # python authoring_contract rendered
+        self.assertIn("HONOR THE USER'S MANDATED STACK", result)         # existing pin survives
+
+    def test_tpm_propagates_runtime_contract(self) -> None:
+        # The TPM carries the runtime authoring contract (chiefly the dependency manifest) into TASK-01,
+        # and the platform list (with authoring contracts) is injected.
+        result = get_system_prompt_with_platforms("tpm")
+        self.assertNotIn("{injected_supported_platforms_list}", result)
+        self.assertIn("RUNTIME CONTRACT", result)
+        self.assertIn("requirements.txt", result)
+        self.assertIn("there is NO standalone `TASK-00`", result)        # existing pin survives
+
+    def test_tpm_forbids_orphaned_components(self) -> None:
+        # Rule #7: a built component (e.g. middleware) must be wired into the composition root by some
+        # ticket — the gap that left a request-limit middleware dead in a real run.
+        result = get_system_prompt("tpm")
+        self.assertIn("NO ORPHANED COMPONENTS", result)
+        self.assertIn("COMPOSITION ROOT", result)
+        self.assertIn("INTEGRATION SITE", result)
+
+    def test_techlead_requires_config_defaults(self) -> None:
+        # HARD gate #6: an environment-backed config field with no default crashes a freshly-deployed
+        # container (the zero-config-boot fix).
+        result = get_system_prompt("techlead")
+        self.assertIn("CONFIGURATION BOOTABILITY", result)
+        self.assertIn("SAFE DEFAULT", result)
+
+    def test_engineering_guide_pins_zero_config_boot_and_cloud_runtime(self) -> None:
+        # The web-service runtime contract (bind $PORT/0.0.0.0, zero-config boot, stateless, health) is a
+        # global engineering rule the building agents inherit.
+        guide = get_skill("engineering_guide")
+        self.assertIn("Configuration & Bootability", guide)
+        self.assertIn("zero required configuration", guide)
+        self.assertIn("Cloud runtime contract", guide)
+        self.assertIn("PORT", guide)
 
     def test_loads_template_with_placeholders(self) -> None:
         raw = get_system_prompt("developer")
@@ -576,16 +684,65 @@ class DevOpsPromptTests(unittest.TestCase):
     def test_secrets_vs_variables_split_matches_devops_setup_guide(self) -> None:
         # Contract (docs/guides/devops_setup.md): WIF_PROVIDER/SERVICE_ACCOUNT are SECRETS;
         # PROJECT_ID/REGION/REGISTRY_NAME are VARIABLES. The generated workflow must reference them
-        # accordingly or the deploy can't resolve. Pin both the rest_api skill and the system prompt.
-        rest = get_skill("devops_rest_api")
-        self.assertIn("secrets.GCP_WIF_PROVIDER", rest)
-        self.assertIn("vars.GCP_PROJECT_ID", rest)
-        self.assertIn("vars.GCP_REGION", rest)
-        self.assertNotIn("secrets.GCP_PROJECT_ID", rest)   # the bug this fixes
-        self.assertNotIn("secrets.GCP_REGION", rest)
+        # accordingly or the deploy can't resolve. The split now lives in the deploy_gcp PLATFORM skill
+        # (extracted from the archetype skills); pin it there and in the system prompt.
+        gcp = get_skill("deploy_gcp")
+        self.assertIn("secrets.GCP_WIF_PROVIDER", gcp)
+        self.assertIn("vars.GCP_PROJECT_ID", gcp)
+        self.assertIn("vars.GCP_REGION", gcp)
+        self.assertNotIn("secrets.GCP_PROJECT_ID", gcp)   # the bug this fixes
+        self.assertNotIn("secrets.GCP_REGION", gcp)
         prompt = get_system_prompt("devops")
         self.assertIn("${{ secrets.* }}", prompt)
         self.assertIn("${{ vars.* }}", prompt)
+
+    def test_deploy_gcp_skill_grants_public_invocation(self) -> None:
+        # The 403-class fix: the GCP platform skill must instruct the public-invoker grant — both the
+        # `--allow-unauthenticated` flag AND the mode-independent explicit IAM binding (the authoritative
+        # grant that survives a manifest/`services replace` deploy where the flag is inert).
+        gcp = get_skill("deploy_gcp")
+        self.assertIn("--allow-unauthenticated", gcp)
+        self.assertIn("403", gcp)
+        self.assertIn("add-iam-policy-binding", gcp)
+        self.assertIn("roles/run.invoker", gcp)
+
+    def test_deploy_gcp_skill_derives_service_name_from_repo(self) -> None:
+        # Overwrite-collision fix: the service name must come from the repository context, never a hardcoded
+        # literal — else one app's deploy silently takes over another's Cloud Run service (same name+region).
+        gcp = get_skill("deploy_gcp")
+        self.assertIn("github.event.repository.name", gcp)
+        self.assertNotIn("fastapi-echo-service", gcp)   # no hardcoded example name leaks into the guidance
+
+    def test_deploy_platform_skills_push_readme_via_head_refspec_not_bare_push(self) -> None:
+        # Detached-HEAD fix: `actions/checkout` checks out `github.sha` (and a tag-gated release run has no
+        # branch at all), so a BARE `git push` dies with "fatal: You are not currently on a branch". The
+        # post-deploy/post-release README-URL step must push with the `HEAD:<default-branch>` refspec — which
+        # works from a detached HEAD — resolving the branch from the repo context, never a hardcoded `main`.
+        # Branch protection is handled out-of-band by a one-time `github-actions` "Allow bypass" grant
+        # (docs/guides/devops_setup.md). Verified for BOTH platform skills, so it holds for every archetype
+        # (CLI → github_release; REST/CRUD → gcp).
+        for skill_id in ("deploy_gcp", "deploy_github_release"):
+            body = get_skill(skill_id)
+            self.assertIn('git push origin HEAD:"${{ github.event.repository.default_branch }}"', body, skill_id)
+            self.assertIn("[skip ci]", body, skill_id)              # no re-trigger loop
+            self.assertNotIn("git push origin main", body, skill_id)  # never hardcode the default branch
+            self.assertNotIn("gh pr create", body, skill_id)        # bypass path: a direct push, not a PR
+
+    def test_platform_skills_target_devops_node(self) -> None:
+        # The extracted deploy-target platform skills follow the skill format and load on the devops node.
+        from src.shared.core.prompts import _parse_frontmatter, _SKILLS_DIR
+        for skill_id in ("deploy_gcp", "deploy_github_release"):
+            meta, body = _parse_frontmatter((_SKILLS_DIR / f"{skill_id}.md").read_text(encoding="utf-8"))
+            self.assertEqual(meta.get("type"), "domain", skill_id)
+            self.assertEqual(meta.get("nodes"), ["devops"], skill_id)
+            self.assertTrue(body.strip(), skill_id)
+
+    def test_devops_prompt_separates_app_shape_from_deploy_target(self) -> None:
+        # The system prompt must keep the public-invoker invariant + the shape/target split (so a skill
+        # miss still yields a reachable, correctly-shaped service).
+        prompt = get_system_prompt("devops")
+        self.assertIn("publicly invocable by default", prompt)
+        self.assertIn("app SHAPE", prompt)
 
     def test_devops_prompt_mandates_canonical_commands_no_invented_linters(self) -> None:
         # The lint-gate epic's CI SSOT: the generated CI must run the project's canonical commands and

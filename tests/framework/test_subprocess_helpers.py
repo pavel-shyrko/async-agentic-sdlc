@@ -13,11 +13,19 @@ from unittest.mock import AsyncMock, MagicMock
 
 from src.shared.utils import subprocess_helpers
 from src.shared.utils.subprocess_helpers import (
+    ClaudeCliQuotaExhausted,
     _assert_within_root,
+    detect_claude_quota_block,
     parse_claude_usage,
     run_claude_cli,
     sanitize_for_argv,
     stream_subprocess_output,
+)
+
+# A real Claude CLI session-limit block, as a stream-json assistant event line.
+_QUOTA_EVENT = (
+    '{"type":"assistant","message":{"content":[{"type":"text",'
+    '"text":"You\'ve hit your session limit \\u00b7 resets 5:30am (Europe/Warsaw)"}]}}'
 )
 
 
@@ -177,6 +185,21 @@ class RunClaudeCliTests(_MutedLogMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual((rc, usage), (124, None))
 
     @mock.patch("src.shared.utils.subprocess_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    async def test_quota_block_raises_instead_of_returning(self, mock_exec: AsyncMock) -> None:
+        # Arrange — the CLI emits a session-limit line then exits non-zero with no usage envelope.
+        target = os.path.join(_ROOT, "feature.py")
+        proc = MagicMock()
+        proc.stdout = _stream_lines([_QUOTA_EVENT.encode() + b"\n"])
+        proc.stderr = _empty_stream()
+        proc.wait = AsyncMock(return_value=1)
+        proc.returncode = 1
+        mock_exec.return_value = proc
+        # Act / Assert — surfaced as an infrastructure halt signal carrying the reset hint, NOT (1, None).
+        with self.assertRaises(ClaudeCliQuotaExhausted) as ctx:
+            await run_claude_cli("do it", [target], _ROOT)
+        self.assertIn("resets 5:30am", ctx.exception.reset_hint)
+
+    @mock.patch("src.shared.utils.subprocess_helpers.asyncio.create_subprocess_exec", new_callable=AsyncMock)
     async def test_idle_watchdog_kills_on_silence(self, mock_exec: AsyncMock) -> None:
         # Arrange — one event then silence; the inactivity watchdog must kill even with NO hard timeout.
         target = os.path.join(_ROOT, "feature.py")
@@ -193,6 +216,35 @@ class RunClaudeCliTests(_MutedLogMixin, unittest.IsolatedAsyncioTestCase):
         proc.kill.assert_called_once()
         proc.wait.assert_awaited_once()
         self.assertEqual((rc, usage), (124, None))
+
+
+class DetectClaudeQuotaBlockTests(unittest.TestCase):
+    """The quota detector matches a session/usage-limit block and ignores unrelated output."""
+
+    def test_detects_session_limit_event_and_humanizes_it(self) -> None:
+        # Act — the limit text lives inside a stream-json assistant envelope.
+        hint = detect_claude_quota_block([
+            '{"type":"system","subtype":"init"}',
+            _QUOTA_EVENT,
+        ])
+        # Assert — returns the clean humanized sentence, not the raw JSON.
+        self.assertIsNotNone(hint)
+        self.assertIn("session limit", hint)
+        self.assertIn("resets 5:30am", hint)
+        self.assertNotIn('{"type"', hint)
+
+    def test_detects_usage_limit_reached_phrasing(self) -> None:
+        self.assertIsNotNone(detect_claude_quota_block(["Claude usage limit reached. Try again later."]))
+
+    def test_normal_output_is_not_a_false_positive(self) -> None:
+        # Assert — ordinary assistant work (incl. mentioning "limit" without the quota shape) is ignored.
+        self.assertIsNone(detect_claude_quota_block([
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"Implemented the depth limit check."}]}}',
+            '{"type":"result","subtype":"success","total_cost_usd":0.1}',
+        ]))
+
+    def test_empty_buffer_returns_none(self) -> None:
+        self.assertIsNone(detect_claude_quota_block([]))
 
 
 class ParseClaudeUsageTests(_MutedLogMixin, unittest.TestCase):
@@ -273,6 +325,21 @@ def _empty_stream() -> MagicMock:
     """A StreamReader stand-in that immediately reports EOF."""
     reader = MagicMock()
     reader.readline = AsyncMock(return_value=b"")
+    return reader
+
+
+def _stream_lines(lines: list) -> MagicMock:
+    """A StreamReader stand-in that yields each line in ``lines`` then reports EOF."""
+    it = iter(lines)
+
+    async def _readline(*_a, **_k):
+        try:
+            return next(it)
+        except StopIteration:
+            return b""
+
+    reader = MagicMock()
+    reader.readline = _readline
     return reader
 
 

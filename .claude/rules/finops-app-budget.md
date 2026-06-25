@@ -59,7 +59,7 @@ or the budget constants. Cache-exclusion is the sibling rule [[token-budget-excl
   its telemetry into `app_telemetry` (in a `finally` if it can halt).
 - Changing what's reported → keep `finops_report` money-only (no token-budget keys) and update BOTH the
   per-run and app-wide reporters + the per-plane summary; sync the docs surfaces ([[run-layout-and-cli]],
-  the docs-sync skill's FinOps peer-set).
+  the `/tbf-docs-sync` skill's FinOps peer-set).
 - Adding a budget knob → env-overridable `UPPER_CASE` constant ([[config-constant-convention]]).
 
 Related: [[token-budget-excludes-cache]], [[pipeline-fsm-loops]] (breaker placement),

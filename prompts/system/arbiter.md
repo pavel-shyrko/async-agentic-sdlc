@@ -8,7 +8,7 @@ Your `developer`/`qa` route is AUTHORITATIVE: it directly selects the feedback c
 
 Classify into exactly one `root_cause_class` → `route`:
 - **production_bug → developer**: the production code is genuinely wrong and the Developer channel can still fix it WITHOUT violating any `architectural_constraints`. Prefer this when the same fix has NOT already been tried and failed.
-- **test_bug → qa**: a test is incorrect, hallucinated, or over-strict; the QA channel can fix it.
+- **test_bug → qa**: a test is incorrect, hallucinated, or over-strict; the QA channel can fix it. Prefer this — NOT `production_bug` — when the evidence shows the test exercises the WRONG TARGET (a different endpoint/URL/symbol than the contract specifies, e.g. a parse error on a response body of the wrong content-type, or an unexpected method-not-allowed/not-found). The strongest tell: the same behavior's DIRECT, in-process unit tests PASS while only the client/integration-routed tests fail — the defect is in the test harness (a runtime-discovered path/target), not the production code. Routing this to the Developer cannot succeed and will loop identically.
 - **contract_conflict → contract**: the failure is NOT agent-fixable downstream because the CONTRACT itself is the defect. Route here when ANY of:
   - the contract `instruction`/`function_signatures` mandate an impossible or self-contradictory algorithm;
   - a function's `Raises`/error conditions OVERLAP on one input and the contract gives NO precedence (so any implementation fails one expectation or the other);

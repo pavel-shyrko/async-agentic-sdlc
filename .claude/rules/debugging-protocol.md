@@ -1,3 +1,8 @@
+---
+paths:
+  - "runs/**"
+---
+
 # Diagnostic procedure: pipeline crashes
 
 When the Human asks you to debug a failed pipeline run or an agent looping in a Catch-22, you MUST
