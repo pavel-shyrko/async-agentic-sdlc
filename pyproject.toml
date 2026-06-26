@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "token-burners-factory"
-version = "0.25.0"                        # bump in lockstep with the pushed v* release tag
+version = "0.26.0"                        # bump in lockstep with the pushed v* release tag
 description = "Agentic SDLC pipeline — idea in, working reviewed app on main, deployable"
 readme = "README.md"
 requires-python = ">=3.12"

@@ -9,6 +9,51 @@ Decision Record (ADR) is linked from the version heading.
 
 ## [Unreleased]
 
+## [v0.26.0] - 2026-06-26 — Installable `tbf` CLI, factory self-release (E7), and arbiter production-code oracle
+
+ADR: [0027-installable-cli-and-factory-self-release](./docs/decisions/0027-installable-cli-and-factory-self-release.md) ·
+Archive: [docs/releases/iteration_25](./docs/releases/iteration_25/iteration_25_README.md)
+
+Makes the factory a distributable Python package and self-validating release artefact, hardens arbiter
+routing with a SHA-256 production-code oracle, and delivers targeted prompt quality improvements for
+.NET, QA, and DevOps lint tooling.
+
+### Added
+- **Installable `tbf` CLI (`pyproject.toml`, E7).** `[project.scripts] tbf = "src.nexus.runner:_cli_main"`.
+  `_cli_main()` wraps `main()` and maps `PipelineHalt` to `sys.exit(1)`. Package data includes
+  `src*` and `prompts**/*.md` so the installed command carries all system prompts and skills.
+  New guide: `docs/guides/install.md` (operator short-path, no source clone required for the CLI itself).
+- **Factory self-release workflow** (`.github/workflows/release-factory.yml`). A `push: tags: v*`
+  workflow builds `wheel + sdist` (`python -m build`) and publishes a GitHub Release via
+  `softprops/action-gh-release@v2` with auto-generated release notes. The factory now exercises its own
+  release pattern on every `v*` tag.
+- **SHA-256 production-code oracle** (`GlobalPipelineContext.production_code_hash` /
+  `prev_production_code_hash`, `src/shared/core/models.py`). The arbiter receives a
+  `production_code_changed` boolean; a no-change cycle where QA errors persist routes as `production_bug`
+  instead of spinning QA.
+- **`initial_budget_usd` persistence** (`BatchState.initial_budget_usd`). Original `--budget` ceiling
+  stored on first invocation; `--resume` without `--budget` restores it automatically.
+- **DevOps environment-specific CI lint tooling** (`src/deployment/agents/devops.py`,
+  `src/shared/core/environments.py`). The devops agent context now includes the environment's lint
+  command so generated CI workflows use the correct toolchain per runtime.
+- **`gcloud` command-validity gate** (`src/deployment/provision/gates.py`). Detects malformed `gcloud`
+  invocations before they reach the CI runner; Cloud Run Gen2 URL extraction also fixed.
+- **`prompts/skills/dotnet_qa.md`** (new): QA skill for .NET — BCL exception patterns, middleware
+  callbacks, integration test constraints.
+- **QA pre-write scan** (`prompts/skills/engineering_guide.md`, `prompts/system/qa.md`): mandatory
+  domain-trap check before generating tests.
+
+### Changed
+- **Nexus control-plane tier** (`src/shared/core/config.py`): PO/SA/TPM switched from
+  `GEMINI_3_5_FLASH` to `GEMINI_2_5_FLASH` — stabler under demand spikes, lower cost.
+- **`.NET skill expansions`** (`prompts/skills/dotnet_core.md`): BCL exception handling, middleware
+  conventions, mandatory JSON serialization attributes, integration test constraints.
+
+### Fixed
+- **Missing language variant in archetype guidance** (`prompts/skills/engineering_guide.md`): handles
+  Nexus blueprints that omit the language variant field, eliminating a fallback-gap that produced
+  vague diagnostic messages.
+
 ## [v0.25.0] - 2026-06-25 — Deployment & tooling hardening: reachable/isolated services, environment-not-agent failures, autonomous URL publish
 
 ADR: [0026-deploy-target-registry-and-reachability-gates](./docs/decisions/0026-deploy-target-registry-and-reachability-gates.md)
