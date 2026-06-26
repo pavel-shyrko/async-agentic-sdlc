@@ -728,6 +728,17 @@ class DevOpsPromptTests(unittest.TestCase):
             self.assertNotIn("git push origin main", body, skill_id)  # never hardcode the default branch
             self.assertNotIn("gh pr create", body, skill_id)        # bypass path: a direct push, not a PR
 
+    def test_deploy_platform_skills_forbid_format_built_readme_step(self) -> None:
+        # The live defect: the README-URL step was assembled via `${{ format(...) }}`, whose string literal
+        # doubles every single quote ('→''); the doubling leaked into the executed bash and broke the printf
+        # fallback (a stray `##` instead of the URL). Both platform skills must forbid the format() idiom and
+        # mandate a literal `run: |` block. Verified for BOTH (CLI → github_release; REST/CRUD → gcp).
+        for skill_id in ("deploy_gcp", "deploy_github_release"):
+            body = get_skill(skill_id)
+            self.assertIn("format(", body, skill_id)        # the anti-pattern is named...
+            self.assertIn("NEVER", body, skill_id)          # ...and forbidden
+            self.assertIn("run: |", body, skill_id)         # literal block mandated
+
     def test_platform_skills_target_devops_node(self) -> None:
         # The extracted deploy-target platform skills follow the skill format and load on the devops node.
         from src.shared.core.prompts import _parse_frontmatter, _SKILLS_DIR

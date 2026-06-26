@@ -54,6 +54,31 @@ Restart, open the **Ubuntu** terminal, and create a user when prompted.
 > stalls the Developer agent. Every tool (`node`, `npm`, `claude`, `python`) must resolve to a path under
 > `~/`. You verify this in Steps 3 and 6.
 
+### Why the filesystem location matters for the factory
+
+I/O throughput in `~/` (native ext4 inside the VHDX) is **20–50× faster** than in `/mnt/c/`
+(Windows NTFS). Even with 64 GB RAM and 12 CPU cores the pipeline stalls completely when run from
+`/mnt/c/` — here is why:
+
+**`~/` (ext4, native)** — every read/write goes directly to your NVMe at full speed. The Linux
+kernel talks to ext4 without any translation layer.
+
+**`/mnt/c/` (NTFS via 9P protocol)** — every syscall (open, read, write, stat) crosses the
+virtualised **Plan 9 (9P)** network mount, gets translated POSIX→NTFS, and passes through Windows
+Defender. Parallel small-file I/O — exactly what the factory produces (logs, state files, JSON
+contracts between agents, `venv` packages) — turns this overhead into a complete I/O bottleneck.
+
+| Operation | `~/` ext4 | `/mnt/c/` NTFS |
+|---|---|---|
+| Parallel read/write of small files (logs, JSON artifacts) | Native SSD speed | Severely throttled by 9P overhead |
+| `venv` creation + `pip install` | 5–10 s | Several minutes (hundreds of small files) |
+| Parallel Docker test containers (QA agent) | Runs smoothly | I/O hangs or timeouts |
+| `git status` on a large repo | Instant | Noticeable delay (seconds) |
+
+**Working from Windows tools (VS Code / Cursor):** you do not need to give up the Windows UI.
+Open a WSL terminal, `cd` into your `~/` project, and run `code .` — VS Code installs a lightweight
+server inside Linux and all file operations stay on ext4 while the editor runs on Windows.
+
 **All remaining steps run inside the WSL2 Ubuntu terminal.**
 
 ## 1. Docker Engine

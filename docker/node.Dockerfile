@@ -1,6 +1,6 @@
-# Sandbox image for the node-20-web environment. `npm test` / `npm` are built into the base; SAST is
+# Sandbox image for the node-22-web environment. `npm test` / `npm` are built into the base; SAST is
 # the generic Semgrep image. Writable HOME/npm cache for the non-root --user run.
-FROM node:20-alpine
+FROM node:22-alpine
 
 # Corporate root CA (see go.Dockerfile): trust it BEFORE any npm restore. Safe no-op when no cert is
 # staged (dir present via certs/.gitkeep).

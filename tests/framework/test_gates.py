@@ -380,7 +380,7 @@ class EnvironmentalBuildFailureTests(unittest.TestCase):
         self.assertTrue(build_failure_is_environmental(self._DOTNET, lines))
 
     def test_dns_and_npm_errno_are_environmental(self) -> None:
-        self.assertTrue(build_failure_is_environmental("node-20-web", ["npm error code EAI_AGAIN", "getaddrinfo EAI_AGAIN registry.npmjs.org"]))
+        self.assertTrue(build_failure_is_environmental("node-22-web", ["npm error code EAI_AGAIN", "getaddrinfo EAI_AGAIN registry.npmjs.org"]))
         self.assertTrue(build_failure_is_environmental("go-1.23-cli", ["dial tcp: lookup proxy.golang.org: Temporary failure in name resolution"]))
 
     def test_restore_banner_without_network_signature_is_not_environmental(self) -> None:
@@ -532,15 +532,15 @@ class RunLintGateTests(unittest.IsolatedAsyncioTestCase):
         # longer special-cases "node" host-side, so the gate always restores then runs the command, which
         # itself exits 0 when no config is present.
         mock_sandbox.side_effect = [(0, "restored", ""), (0, "no eslint config at repo root — lint gate no-op pass", "")]
-        node_lint = SUPPORTED_ENVIRONMENTS["node-20-web"]["lint_cmd"]
-        ok, log_lines = await run_lint_gate(environment_id="node-20-web", repo_root=_REPO)
+        node_lint = SUPPORTED_ENVIRONMENTS["node-22-web"]["lint_cmd"]
+        ok, log_lines = await run_lint_gate(environment_id="node-22-web", repo_root=_REPO)
         self.assertTrue(ok)
-        self.assertEqual(mock_sandbox.await_args_list[-1], call("node-20-web", node_lint, _REPO, network="none"))
+        self.assertEqual(mock_sandbox.await_args_list[-1], call("node-22-web", node_lint, _REPO, network="none"))
 
     def test_node_lint_cmd_self_guards_for_missing_eslint_config(self) -> None:
         # The eslint-config precondition lives in the REGISTRY command, not gates.py — the engine carries
         # no language. Verify the guard tokens + the safe exit-0 fallback are in the command itself.
-        node_lint = SUPPORTED_ENVIRONMENTS["node-20-web"]["lint_cmd"]
+        node_lint = SUPPORTED_ENVIRONMENTS["node-22-web"]["lint_cmd"]
         self.assertIn("eslint.config.js", node_lint)
         self.assertIn("eslintConfig", node_lint)
         self.assertIn("npx --no-install eslint .", node_lint)
@@ -575,7 +575,7 @@ class ClassifyLintFindingsTests(unittest.TestCase):
             "src/app.ts:0:0",
             "  3:7  error  'x' is assigned a value but never used  no-unused-vars",
         ]
-        prod, test = classify_lint_findings("node-20-web", lines)
+        prod, test = classify_lint_findings("node-22-web", lines)
         self.assertEqual(len(prod), 2)   # header + its detail line both bucketed to prod
         self.assertEqual(test, [])
 

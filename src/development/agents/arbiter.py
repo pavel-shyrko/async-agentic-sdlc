@@ -23,9 +23,14 @@ async def run_arbiter_node(
         f"=== FILE: {p} ===\n{c}" for p, c in ctx.production_code_snapshot.items()
     ) or "No production code captured."
     review = ctx.review_report.model_dump_json(indent=2) if ctx.review_report else "None"
+    production_code_changed = (
+        not ctx.prev_production_code_hash
+        or ctx.production_code_hash != ctx.prev_production_code_hash
+    )
 
     user_content = (
         "A pipeline cycle FAILED again after a prior fix attempt. Classify the root cause and route it.\n\n"
+        f"=== PRODUCTION CODE CHANGED THIS CYCLE ===\n{production_code_changed}\n\n"
         f"=== ARCHITECT CONTRACT ===\n{ctx.contract.model_dump_json(indent=2)}\n\n"
         f"=== REVIEWER REPORT (this cycle) ===\n{review}\n\n"
         f"=== PRIOR DEVELOPER FIX INSTRUCTION (last cycle) ===\n{prev_dev_trace or 'None'}\n\n"

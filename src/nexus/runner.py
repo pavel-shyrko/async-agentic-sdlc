@@ -3,6 +3,7 @@ import re
 import sys
 import json
 import time
+import hashlib
 import uuid
 import argparse
 import asyncio
@@ -531,6 +532,9 @@ def build_production_snapshot(ctx: GlobalPipelineContext) -> None:
             snapshot[rel] = "<BINARY OR NON-UTF8 FILE EXCLUDED>"
 
     ctx.production_code_snapshot = snapshot
+    ctx.production_code_hash = hashlib.sha256(
+        json.dumps(sorted(snapshot.items())).encode()
+    ).hexdigest()
 
     log.info(f"   [SNAPSHOT] Captured {len(snapshot)} production file(s): {sorted(snapshot)}")
 
@@ -980,7 +984,9 @@ async def run_batch(projects: Projects, project, cfg: RunConfig, nexus_run_dir: 
     """
     batch = _load_or_init_batch(nexus_run_dir, project, tickets)
     batch_path = _batch_state_path(nexus_run_dir)
-    app_budget = cfg.budget_usd if cfg.budget_usd is not None else PIPELINE_APP_BUDGET_USD
+    if batch.initial_budget_usd is None and cfg.budget_usd is not None:
+        batch.initial_budget_usd = cfg.budget_usd
+    app_budget = cfg.budget_usd if cfg.budget_usd is not None else (batch.initial_budget_usd or PIPELINE_APP_BUDGET_USD)
 
     # Fold the Nexus planning spend into the application total ONCE (guarded so a --resume never double-counts).
     if not batch.nexus_merged:
@@ -1773,6 +1779,9 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
                     ctx.qa_error_trace = lint_test_feedback
                     regenerate_tests = True   # ensure QA actually re-runs next cycle to fix the test lint
 
+        # Persist the production-code hash so the next cycle's Arbiter can detect a no-change cycle
+        # (production_code_hash == prev_production_code_hash → Developer made no net edit this cycle).
+        ctx.prev_production_code_hash = ctx.production_code_hash
         # Advance the persisted attempt counter so a resumed run cannot exceed the
         # original retry budget. The counter is bumped before saving so the next
         # process picks up exactly where this one left off.

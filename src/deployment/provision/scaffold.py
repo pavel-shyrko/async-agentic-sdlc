@@ -73,7 +73,7 @@ def _env_ci_commands(environment_ids: str) -> str:
         if not spec:
             continue
         lines = [f"- environment_id: {env_id}"]
-        for key in ("setup_cmd", "build_cmd", "test_cmd", "lint_cmd"):
+        for key in ("setup_cmd", "build_cmd", "test_cmd", "lint_cmd", "ci_lint_setup_cmd"):
             if spec.get(key):
                 lines.append(f"    {key}: {spec[key]}")
         blocks.append("\n".join(lines))

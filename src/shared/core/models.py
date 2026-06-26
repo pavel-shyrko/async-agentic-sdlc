@@ -442,6 +442,12 @@ class GlobalPipelineContext(BaseModel):
     contract: TechLeadContract | None = None
     production_code_snapshot: dict[str, str] = Field(default_factory=dict)
     production_code_diff: str = ""
+    # SHA-256 of the current cycle's production_code_snapshot (recomputed by build_production_snapshot).
+    # prev_production_code_hash captures the snapshot hash at the end of the previous cycle so the Arbiter
+    # can detect whether the Developer made any net change this cycle — a no-change cycle where the same
+    # test is still failing is a production_bug, not a test_bug, regardless of QA compile errors.
+    production_code_hash: str = ""
+    prev_production_code_hash: str = ""
     test_code_snapshot: str = ""
     error_trace: str = ""           # Developer channel: production-code fix instructions only.
     qa_error_trace: str = ""        # QA channel: test-suite fix instructions only (isolated from Dev).
@@ -499,9 +505,10 @@ class BatchState(BaseModel):
     failed: str | None = None          # the ticket that halted the batch (cleared on its later success)
     # E5 — application-wide FinOps. app_telemetry is the merged Nexus + every ticket + DevOps total, so the
     # running spend (app_telemetry.total_cost_usd), per-role/per-plane breakdown, and time survive --resume.
-    # The budget CEILING is deliberately NOT stored here — it is re-resolved per invocation (env / --budget),
-    # so re-passing a larger --budget on a resume "adds money" and continues a budget-halted batch.
+    # initial_budget_usd is the ceiling from the FIRST invocation — persisted so --resume without --budget
+    # preserves the original budget. An explicit --budget on --resume still overrides it (re-budgeting works).
     app_telemetry: PipelineTelemetry = Field(default_factory=PipelineTelemetry)
+    initial_budget_usd: Decimal | None = None
     nexus_merged: bool = False         # guards against folding the Nexus planning telemetry in twice on resume
     budget_marker: str | None = None   # set on a clean budget-exhaustion stop; cleared when a resume continues
     released_tag: str | None = None    # E6: the v* tag pushed after the batch completed (--release); idempotent resume guard

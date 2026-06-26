@@ -10,7 +10,7 @@ DEPLOY TARGET: Google Cloud Run — follow the GCP platform guidance (`deploy_gc
 
 ## Dockerfile (the container shape)
 - Multi-stage build: a build stage that installs/compiles dependencies, then a slim runtime stage that copies only the artifact + runtime deps.
-- Run as a NON-root user (create one and `USER` it before the entry point).
+- Run as a NON-root user. Before creating a new user, check whether the base image already ships a non-root user with UID 1000 (many official runtime images do — e.g. the `app` user in .NET `aspnet`, the `node` user in Node.js). If such a user already exists, reuse it (`USER <existing-user>`) rather than calling `useradd -u 1000`, which will fail with "UID 1000 is not unique" (exit 4). Only `useradd` a fresh user when the base image has no pre-existing non-root user.
 - The container MUST listen on the port from the `PORT` environment variable (Cloud Run injects it; default 8080). Bind to `0.0.0.0`, not localhost.
 - End with an explicit `CMD`/`ENTRYPOINT` that starts the HTTP server.
 

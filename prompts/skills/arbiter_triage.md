@@ -34,3 +34,12 @@ rubric in the system prompt, never override its definitions.
 ## Never trade one red gate for another
 - A "fix" that would make the current gate pass by breaking a different gate or violating a stated
   `architectural_constraints` is not a valid `developer`/`qa` route — it is a `contract_conflict`.
+
+## Code-unchanged cycles — default to production_bug
+- If `PRODUCTION CODE CHANGED THIS CYCLE` is `False`, the Developer either did not run or made no net
+  change to production files this cycle. If the GATE OUTPUT shows a failing test that also appears in the
+  PRIOR QA FIX INSTRUCTION (i.e. the same test was already failing last cycle), the test is catching a
+  real production defect that has never been fixed — classify `production_bug | developer`
+  unconditionally. A QA compile error that occurred in the same cycle does NOT override this: the compile
+  was a test-authoring defect (independently fixable); the runtime failure persists because the
+  production code is wrong, not because the test is wrong.

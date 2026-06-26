@@ -44,6 +44,7 @@ RUN mkdir -p /opt/nuget-fallback /warm \
       '    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />' \
       '    <PackageReference Include="System.Text.Json" Version="9.0.0" />' \
       '    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.0" />' \
+      '    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.0" />' \
       '  </ItemGroup>' \
       '</Project>' > /warm/warm.csproj \
  && NUGET_PACKAGES=/opt/nuget-fallback dotnet restore /warm/warm.csproj \

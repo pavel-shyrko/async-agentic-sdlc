@@ -22,15 +22,17 @@ or the budget constants. Cache-exclusion is the sibling rule [[token-budget-excl
    Never re-introduce a token ceiling — `PIPELINE_BUDGET_TOKENS` is report-only. The breaker takes the
    effective ceiling as a **parameter**; it must not read a module constant directly.
 
-2. **One ceiling, threaded as the remaining budget.** The ceiling is `cfg.budget_usd or PIPELINE_APP_BUDGET_USD`,
-   resolved in `run_batch` and passed to each `run_executor(budget_usd_ceiling=remaining)` where
+2. **One ceiling, threaded as the remaining budget.** The ceiling is resolved in `run_batch` as
+   `cfg.budget_usd if cfg.budget_usd is not None else (batch.initial_budget_usd or PIPELINE_APP_BUDGET_USD)`
+   and passed to each `run_executor(budget_usd_ceiling=remaining)` where
    `remaining = app_budget − batch.app_telemetry.total_cost_usd`. Single-ticket paths default `None →
    PIPELINE_APP_BUDGET_USD`. A new spend phase (e.g. another post-batch agent) MUST be threaded the same way.
 
-3. **The ceiling is NEVER persisted.** `BatchState` stores only the *spend* (`app_telemetry`), the
-   `nexus_merged` guard, and the `budget_marker`. Re-resolving the ceiling every invocation is what makes
-   **re-budgeting** work: `--resume <project> --budget <larger>` continues a batch that stopped on
-   exhaustion. Persisting the ceiling (or deriving `remaining` from a stored ceiling) silently breaks this.
+3. **The initial ceiling IS persisted as a fallback; explicit `--budget` always wins.**
+   `BatchState.initial_budget_usd` stores the ceiling from the first invocation (set once, never overwritten)
+   so `--resume` without `--budget` preserves the original budget. An explicit `--budget` on `--resume`
+   overrides it, so re-budgeting (`--resume --budget <larger>`) still works. `BatchState` also stores the
+   *spend* (`app_telemetry`), the `nexus_merged` guard, and the `budget_marker`.
 
 4. **Halt-safe app report.** `run_batch` writes `app_finops_report.json` + saves `BatchState` in a
    **`finally`**, so the cumulative figure survives ANY exit — clean finish, a ticket/DevOps `PipelineHalt`,

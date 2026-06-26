@@ -4,7 +4,7 @@ import subprocess  # nosec B404
 from src.shared.core.observability import log, log_token_usage
 from src.shared.core.config import DEVOPS_MODEL
 from src.shared.core.models import DevOpsManifests, GlobalPipelineContext
-from src.shared.core.environments import deploy_target_skills
+from src.shared.core.environments import SUPPORTED_ENVIRONMENTS, deploy_target_skills
 from src.shared.core.prompts import get_system_prompt, get_skill, _parse_frontmatter
 from src.shared.utils.llm import run_structured_llm
 
@@ -19,17 +19,32 @@ _DOCKERFILE_PATH = "Dockerfile"
 _ENV_EXAMPLE_PATH = ".env.example"
 
 
-def _archetype_guidance() -> str:
+def _archetype_guidance(environment_ids: str = "") -> str:
     """Concatenate the archetype skill bodies (app shape) plus the deploy-target platform skill bodies
     (HOW to deploy — `deploy_gcp` / `deploy_github_release`), frontmatter stripped, for the system prompt.
 
     The platform set is registry-driven (`deploy_target_skills`), so adding a future cloud target is one
     `SUPPORTED_DEPLOY_TARGETS` entry + one `prompts/skills/deploy_<cloud>.md` — no edit here. The agent
-    self-classifies the archetype and uses the matching deploy target's platform guidance."""
+    self-classifies the archetype and uses the matching deploy target's platform guidance.
+
+    Language-specific devops skills (`devops_{language_id}.md`) are loaded by convention from the registry:
+    for each environment the finished app ran on, the `language_id` field of its registry entry is used to
+    construct the skill name. Skills for unknown languages are silently skipped (no `devops_<lang>.md` yet)."""
     blocks = []
     for name in (*_DEVOPS_SKILLS, *deploy_target_skills()):
         _meta, body = _parse_frontmatter(get_skill(name))
         blocks.append(body.strip())
+    seen_langs: set[str] = set()
+    for env_id in [e.strip() for e in environment_ids.split(",") if e.strip()]:
+        lang = SUPPORTED_ENVIRONMENTS.get(env_id, {}).get("language_id")
+        if not lang or lang in seen_langs:
+            continue
+        seen_langs.add(lang)
+        try:
+            _meta, body = _parse_frontmatter(get_skill(f"devops_{lang}"))
+            blocks.append(body.strip())
+        except Exception:  # nosec B110 — missing skill for a language variant is a valid skip
+            pass
     return "\n\n".join(blocks)
 
 
@@ -57,7 +72,7 @@ async def run_devops_node(
     log.info(f"🔷 [ROLE] DevOps Agent | [MODEL] {DEVOPS_MODEL}")
 
     repo_dir = ctx.workspace_paths.repo_dir
-    system_prompt = f"{get_system_prompt('devops')}\n\n=== ARCHETYPE GUIDANCE ===\n{_archetype_guidance()}"
+    system_prompt = f"{get_system_prompt('devops')}\n\n=== ARCHETYPE GUIDANCE ===\n{_archetype_guidance(environment_ids)}"
 
     user_content = (
         f"=== APPLICATION BLUEPRINT ===\n{blueprint_text}\n\n"

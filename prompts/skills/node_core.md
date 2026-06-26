@@ -7,7 +7,7 @@ nodes: [techlead, developer, reviewer]
 LANGUAGE TARGET: Node.js (TypeScript/JavaScript) — production-code rules for the Node tech stack.
 
 ## Runtime & Sandbox
-- Target Node.js 20, executed in the isolated Docker sandbox (`node:20-alpine`).
+- Target Node.js 22, executed in the isolated Docker sandbox (`node:22-alpine`).
 - Prefer TypeScript with `strict` mode on. The build (`tsc` / bundler) MUST pass with no type errors.
 
 ## Types & Guards

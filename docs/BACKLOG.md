@@ -5,7 +5,7 @@ Two parts:
 - **Part I — Capability Roadmap (Epics `E1`–`E10`)**: the forward-looking work to close the autonomy loop
   (idea → working, merged code in `main` → deployable). Larger than a single fix; each has its own
   Goal / Current state / Design / Dependencies / Risks / Acceptance.
-- **Part II — Defects & Refinements (`#4`–`#37`)**: granular fixes surfaced across pipeline runs, grouped by
+- **Part II — Defects & Refinements (`#4`–`#38`)**: granular fixes surfaced across pipeline runs, grouped by
   theme. Resolved items have been removed — their fixes live in the code, tests, and `CHANGELOG.md`; only
   outstanding work remains. **Original item numbers are preserved** so existing cross-references (from
   `.claude/rules/*` and ADRs) stay valid. The `E#` epic namespace is deliberately separate from the `#NN`
@@ -960,6 +960,33 @@ non-baseline file produced across the plan is actually *consumed* by some ticket
 `topology_contract` graph (the neutral dependency graph the TechLead already emits): assert every non-entry,
 non-baseline `file_path` appears as a `depends_on` target somewhere, or is the entry point. Language-neutral
 (operates on the existing neutral graph); the code-enforced SSOT that makes rule #7 deterministic.
+
+## 38. [P2] No structured logging of factory invocation parameters and resolved secrets
+
+**Symptom:** when the factory starts, the full set of effective CLI arguments (idea, repo URL, ticket,
+flags such as `--auto-execute`, `--scaffold-deploy`, `--release`, `--budget`) and the resolved identity
+of each external credential (`GEMINI_API_KEY`, `GITHUB_TOKEN`, `GITHUB_REVIEWER_TOKEN`) are NOT logged
+to `logs/sdlc_audit.log` or the console. Debugging a failed/halted run requires reconstructing intent
+from checkpoint fields or re-reading shell history — neither is reliable. Secret rotation bugs (wrong key
+active, key expired, reviewer token absent) are invisible until an API call fails mid-run.
+
+**Fix direction:**
+1. In `main()` / `bootstrap_session`, after `cfg` is fully resolved, emit a structured `INFO` line to the
+   audit log with the effective invocation parameters: all boolean flags, `--budget`, `--quality`, the
+   target repo (with credentials stripped — remove any PAT embedded in the URL), and the ticket/project.
+2. Log a per-credential presence + masked identity entry for each secret: whether it is set, its first 4
+   and last 4 characters (e.g. `GITHUB_TOKEN=ghp_****…****ab12`), and its source (`env`, `.env file`,
+   absent). Never log the raw value.
+3. Keep the log line machine-parseable (JSON or key=value pairs) so `/tbf-analyze-run` can surface the
+   invocation context without manual grep.
+
+**Guardrails:** secrets must be masked before any write to disk or console; the masked log entry is the
+SSOT — never write the raw key anywhere. Use the existing `sanitize_for_argv` boundary convention
+([subprocess-and-external-call-safety](../.claude/rules/subprocess-and-external-call-safety.md)) to
+strip credentials from the repo URL before logging.
+
+**Scope:** `src/nexus/runner.py` (invocation log, ~20 lines); `src/shared/core/config.py` (masked-secret
+helper); no prompt changes.
 
 ## 37. [P3] DevOps cannot introspect required runtime env vars — relies on app having safe defaults
 **Symptom:** the DevOps agent emits `.env.example` and `ENV` lines from the blueprint/repo map, but cannot read

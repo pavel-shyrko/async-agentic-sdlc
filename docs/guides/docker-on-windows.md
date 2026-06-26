@@ -28,6 +28,41 @@ This configuration replaces **Docker Desktop** for several reasons:
 
 ## 2. WSL2 Configuration (The Server)
 
+### Step 0: Tune WSL2 Resource Limits (Windows-side)
+
+By default WSL2 caps the VM at ~50 % of host RAM. For a machine with 64 GB RAM and 16 cores
+(e.g. Core Ultra 7), create or edit `%USERPROFILE%\.wslconfig` **in Windows** (not inside WSL):
+
+```ini
+[wsl2]
+# Allocate 32 GB of RAM to WSL (leaving 32 GB for Windows host)
+memory=32GB
+
+# Allocate 12 virtual CPU cores out of 16 available
+processors=12
+
+# Configure the swap space size inside the Linux environment
+swap=8GB
+
+[experimental]
+# Return to standard NAT networking because host has disabled IPv6
+networkingMode=NAT
+
+# Automatically shrink the virtual disk (VHD) and release RAM as space is freed up
+autoMemoryReclaim=gradual
+```
+
+After saving the file, restart WSL from **Windows PowerShell**:
+```powershell
+wsl --shutdown
+```
+
+> **Note:** `networkingMode=NAT` is used here because this setup requires standard NAT networking
+> (the host has IPv6 disabled). If you later enable `mirrored` mode, remove the `networkingMode`
+> line or set it to `mirrored` and add `pageReporting=true`.
+
+---
+
 ### Step A: Install the Docker Engine (`docker-ce`)
 This setup uses the upstream Docker Engine, **not** Docker Desktop and **not** the
 `docker.io` apt package. Install `docker-ce` inside your WSL2 Ubuntu distribution:

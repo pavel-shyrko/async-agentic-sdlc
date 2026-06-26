@@ -63,7 +63,7 @@ class FailureMarkerAndIgnoreDirTests(unittest.TestCase):
 
     def test_repo_map_ignore_dirs_env_specific_and_union(self) -> None:
         from src.shared.core.environments import repo_map_ignore_dirs
-        self.assertIn("node_modules", repo_map_ignore_dirs("node-20-web"))
+        self.assertIn("node_modules", repo_map_ignore_dirs("node-22-web"))
         self.assertIn("obj", repo_map_ignore_dirs("dotnet-10-sdk"))
         self.assertNotIn("node_modules", repo_map_ignore_dirs("dotnet-10-sdk"))  # env-specific, not global
         # No env id (the TechLead runs before the language is known) → the union across all stacks.
@@ -87,7 +87,7 @@ class OrphanTestMarkerTests(unittest.TestCase):
 
     def test_go_is_exempt_dotnet_python_node_opt_in(self) -> None:
         self.assertNotIn("empty_test_markers", SUPPORTED_ENVIRONMENTS["go-1.23-cli"])
-        for env_id in ("dotnet-10-sdk", "python-3.12-core", "node-20-web"):
+        for env_id in ("dotnet-10-sdk", "python-3.12-core", "node-22-web"):
             self.assertTrue(SUPPORTED_ENVIRONMENTS[env_id].get("empty_test_markers"), env_id)
 
 
@@ -130,7 +130,7 @@ class AuthoringContractTests(unittest.TestCase):
 
     def test_dependency_manifest_accessor_is_registry_driven(self) -> None:
         self.assertEqual(dependency_manifest("go-1.23-cli"), "go.mod")
-        self.assertEqual(dependency_manifest("node-20-web"), "package.json")
+        self.assertEqual(dependency_manifest("node-22-web"), "package.json")
         self.assertEqual(dependency_manifest("dotnet-10-sdk"), "*.csproj")
         # Unknown env / None → None (the missing-manifest gate then treats it as exempt, never a false fail).
         self.assertIsNone(dependency_manifest("no-such-env"))

@@ -96,8 +96,8 @@ class IsTestableSourceTests(unittest.TestCase):
     def test_filters_package_markers_per_stack(self) -> None:
         self.assertFalse(is_testable_source("python-3.12-core", "src/__init__.py"))
         self.assertTrue(is_testable_source("python-3.12-core", "src/cmd/root.py"))
-        self.assertFalse(is_testable_source("node-20-web", "package.json"))
-        self.assertTrue(is_testable_source("node-20-web", "src/app.ts"))
+        self.assertFalse(is_testable_source("node-22-web", "package.json"))
+        self.assertTrue(is_testable_source("node-22-web", "src/app.ts"))
         self.assertFalse(is_testable_source("dotnet-10-sdk", "App.csproj"))
         self.assertTrue(is_testable_source("dotnet-10-sdk", "src/Converter.cs"))
 
@@ -108,14 +108,14 @@ class IsTestFileTests(unittest.TestCase):
     def test_positives_per_language(self) -> None:
         self.assertTrue(is_test_file("go-1.23-cli", "src/internal/converter/converter_test.go"))
         self.assertTrue(is_test_file("python-3.12-core", "tests/test_converter.py"))
-        self.assertTrue(is_test_file("node-20-web", "src/app.test.ts"))
-        self.assertTrue(is_test_file("node-20-web", "src/app.spec.js"))
+        self.assertTrue(is_test_file("node-22-web", "src/app.test.ts"))
+        self.assertTrue(is_test_file("node-22-web", "src/app.spec.js"))
         self.assertTrue(is_test_file("dotnet-10-sdk", "src/ConverterTests.cs"))
 
     def test_negatives_are_production(self) -> None:
         self.assertFalse(is_test_file("go-1.23-cli", "src/internal/converter/converter.go"))
         self.assertFalse(is_test_file("python-3.12-core", "src/converter.py"))
-        self.assertFalse(is_test_file("node-20-web", "src/app.ts"))
+        self.assertFalse(is_test_file("node-22-web", "src/app.ts"))
         self.assertFalse(is_test_file("dotnet-10-sdk", "src/Converter.cs"))
 
 
@@ -133,7 +133,7 @@ class DeriveTestTargetTests(unittest.TestCase):
         self.assertEqual(ref, "src/internal/converter/engine.go")
 
     def test_node_colocated_dot_test(self) -> None:
-        path, _ = derive_test_target("node-20-web", "src/app.ts")
+        path, _ = derive_test_target("node-22-web", "src/app.ts")
         self.assertEqual(path, "src/app.test.ts")
 
     def test_dotnet_project_layout_returns_flat_name(self) -> None:
@@ -154,7 +154,7 @@ class TestRootProfileTests(unittest.TestCase):
         self.assertEqual(prof["test_root"], "tests")
 
     def test_colocated_stacks_have_no_test_root(self) -> None:
-        for env in ("go-1.23-cli", "node-20-web"):
+        for env in ("go-1.23-cli", "node-22-web"):
             prof = get_qa_profile(env)
             self.assertEqual(prof["layout"], "colocated")
             self.assertIsNone(prof["test_root"])
@@ -241,7 +241,7 @@ class ResolveTestProjectDirTests(unittest.TestCase):
         with TemporaryDirectory() as td:
             repo = Path(td)
             (repo / "tests").mkdir()
-            for env in ("python-3.12-core", "go-1.23-cli", "node-20-web"):
+            for env in ("python-3.12-core", "go-1.23-cli", "node-22-web"):
                 self.assertIsNone(resolve_test_project_dir(["src/x"], repo, env))
 
 

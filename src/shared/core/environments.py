@@ -90,6 +90,11 @@ SUPPORTED_ENVIRONMENTS = {
         # gate reads as a permanent style failure the agents can never clear). Use the flag each subcommand
         # actually supports.
         "lint_cmd": f"ruff check --no-cache --extend-exclude={DEPENDENCY_VENDOR_DIR} . && ruff format --check --exclude={DEPENDENCY_VENDOR_DIR} .",
+        # ci_lint_setup_cmd: installs the lint tooling globally (not --target) so `ruff` lands on PATH
+        # in the CI runner. The engine sandbox image (sdlc-sandbox/python:latest) has ruff pre-installed,
+        # so the engine gate passes without this; GitHub Actions ubuntu-latest does NOT — hence this
+        # separate field rather than baking the install into lint_cmd (which would run in both places).
+        "ci_lint_setup_cmd": "pip install ruff",
         # format_cmd: deterministic cleanup pass — strips unused imports, autofixes safe lint, AND applies
         # the formatter (ruff format) so the lint gate's `ruff format --check` passes without rerouting the
         # (expensive) Developer for pure formatting. --exit-zero keeps a residual unfixable finding from
@@ -158,7 +163,7 @@ SUPPORTED_ENVIRONMENTS = {
         "language_id": "go",
         "description": "Go 1.23 CLI runtime, full compile toolchain (go test; Semgrep SAST).",
     },
-    "node-20-web": {
+    "node-22-web": {
         "image": "sdlc-sandbox/node:latest",
         "build_cmd": "npm run build --if-present",
         "test_cmd": "npm test",
@@ -189,7 +194,7 @@ SUPPORTED_ENVIRONMENTS = {
             "Dependency manifest: declare all dependencies and devDependencies (including the test runner) in `package.json`, with a committed `package-lock.json`; the toolchain restores via `npm ci` (falling back to `npm install`). The `test` script MUST be present, or the test gate has nothing to run.",
         ),
         "language_id": "node",
-        "description": "Node.js 20 / JS / React (node, npm — frontend build & tests; Semgrep SAST).",
+        "description": "Node.js 22 / JS / React (node, npm — frontend build & tests; Semgrep SAST).",
     },
     "dotnet-10-sdk": {
         "image": "sdlc-sandbox/dotnet:latest",
