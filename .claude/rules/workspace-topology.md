@@ -1,5 +1,17 @@
 # Boundary constraint: Engine vs Sandbox
 
+## Terminology
+
+- **The factory** — this repository (`src/`, `prompts/`, `tests/framework/`); the engine that plans and
+  builds applications using AI agents. When the developer says "the factory", "фабрика", or refers to
+  engine code, they mean this codebase.
+- **The application** (also: **the run**, **ран**, **ран приложения**, **последний ран**) — the software
+  the factory produces inside a run clone (`runs/<project>/<NNN>_exec_…/repo/`); owned by the AI
+  Developer/QA agents, never edited by hand. "The last run" refers to the most recent executor run dir
+  under the relevant project in `runs/`.
+
+---
+
 The project contains two entirely isolated domains:
 
 1. **The Orchestrator Engine (Meta-Code)**
