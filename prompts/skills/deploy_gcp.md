@@ -34,7 +34,7 @@ DEPLOY TARGET: Google Cloud Run (web services) via Workload Identity Federation.
   WITHOUT a public-invoker grant, Cloud Run rejects every anonymous request with HTTP 403 ("The request was not authenticated. Either allow unauthenticated invocations or set the proper Authorization header."). Only OMIT public access for an explicitly private/internal service (whose callers then need their own `roles/run.invoker` binding).
 - **WHY the explicit IAM binding, not just the flag:** a Cloud Run service's public-access policy is **IAM, stored separately from the service spec** — it is NOT part of the Knative manifest. So `flags: '--allow-unauthenticated'` only takes effect in the action's **image deploy** mode; if the workflow instead deploys a `service.yaml` (`metadata:` / `gcloud run services replace`), that flag is incompatible and silently dropped, IAM is reset to the project default (authenticated-only), and the live service returns HTTP 403 even though the manifest set `ingress: all`. The `add-iam-policy-binding` step sets the policy directly and works regardless of deploy mode — that is why it is mandatory.
 
-  Reference implementation for the binding step (runs after the deploy step):
+  Reference implementation — **one explicit step** run after the deploy step:
   ```yaml
         - name: Allow public (unauthenticated) invocation
           env:
@@ -43,8 +43,10 @@ DEPLOY TARGET: Google Cloud Run (web services) via Workload Identity Federation.
             PROJECT: ${{ vars.GCP_PROJECT_ID }}
           run: gcloud run services add-iam-policy-binding "$SERVICE" --region="$REGION" --project="$PROJECT" --member="allUsers" --role="roles/run.invoker"
   ```
-  **Use this single-line `run:` form (no `run: |`).** A multi-line block requires `\` line-continuation backslashes on every line but the last; if any backslash is dropped, the shell runs only the first line as the gcloud command and the `--member` / `--role` lines execute as separate invalid commands — gcloud returns `argument --member --role: Must be specified` (exit 1) and the step fails silently at the wrong point. The single-line form with `env:` vars is immune to this class of error.
-  The service name MUST remain `${{ github.event.repository.name }}` in the `env:` block — never hardcode a literal repo name.
+  **Why the explicit IAM binding?** `add-iam-policy-binding` is the authoritative access-control mechanism — Cloud Run evaluates the IAM policy on every request; `allUsers → roles/run.invoker` is what makes the service publicly reachable. The `google-github-actions/deploy-cloudrun@v2` action's `flags: '--allow-unauthenticated'` runs gcloud with `ignoreReturnCode: true` and `silent: true` — if the flag is silently rejected (e.g. an org policy constraint or transient API error), the IAM binding step runs explicitly, fails loudly, and guarantees the policy is set. Re-applying the binding every run is idempotent and harmless. Note: `gcloud run services update --allow-unauthenticated` is **NOT a valid command** (that flag only exists for `gcloud run deploy`) — do not emit it.
+
+  **Use single-line `run:` form (no `run: |`) for each step individually.** A multi-line block requires `\` line-continuation backslashes on every line but the last; if any backslash is dropped, the shell runs only the first line as the gcloud command and remaining flag lines execute as separate invalid commands — gcloud returns `argument --member --role: Must be specified` (exit 1). The single-line form with `env:` vars is immune to this class of error.
+  The service name MUST remain `${{ github.event.repository.name }}` in each step's `env:` block — never hardcode a literal repo name.
 - The container listens on `$PORT` (Cloud Run injects it) and binds `0.0.0.0` — that is the archetype skill's Dockerfile/server concern; this deploy step does not set the port.
 
 ## Cloud SQL (only for a database-backed CRUD service)
