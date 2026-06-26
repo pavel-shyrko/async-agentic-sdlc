@@ -1,8 +1,8 @@
 """Unit tests for the MODEL_PROVIDER / --provider switch (force the whole pipeline onto one provider).
 
 Covers the config resolver (alias normalization, override, structured-role + developer routing,
-Anthropic cost estimation, provider-aware env check), run_structured_llm's client/max_tokens routing,
-the DeveloperFileSet model, and the Gemini Developer node's file materialization."""
+provider-aware env check), run_structured_llm routing, the DeveloperFileSet model, and the Gemini
+Developer node's file materialization."""
 import os
 import tempfile
 import unittest
@@ -16,9 +16,9 @@ os.environ.setdefault("GEMINI_API_KEY", "test-key")  # config builds the genai c
 from src.shared.core import config
 from src.shared.core.config import (
     normalize_provider, set_model_provider, active_provider, structured_role_routing,
-    developer_provider, estimate_anthropic_cost_usd, CLAUDE_API_MODEL, CLAUDE_CLI_MODEL,
-    DEVELOPER_GEMINI_MODEL, ANTHROPIC_MAX_TOKENS,
-    PROVIDER_DEFAULT, PROVIDER_GEMINI, PROVIDER_CLAUDE, PROVIDER_CLAUDE_API,
+    developer_provider, CLAUDE_CLI_MODEL,
+    DEVELOPER_GEMINI_MODEL,
+    PROVIDER_DEFAULT, PROVIDER_GEMINI, PROVIDER_CLAUDE,
 )
 from src.shared.core.models import DeveloperFileWrite, DeveloperFileSet
 
@@ -33,8 +33,6 @@ class NormalizeProviderTests(unittest.TestCase):
             self.assertEqual(normalize_provider(raw), PROVIDER_GEMINI)
         for raw in ("claude", "claude-code", "cli", "Claude", " CLI "):
             self.assertEqual(normalize_provider(raw), PROVIDER_CLAUDE)        # Claude Code CLI (no key)
-        for raw in ("anthropic", "claude-api", "claude_api"):
-            self.assertEqual(normalize_provider(raw), PROVIDER_CLAUDE_API)    # Anthropic API (key-based)
         for raw in ("", None, "default", "mixed", "nonsense"):
             self.assertEqual(normalize_provider(raw), PROVIDER_DEFAULT)
 
@@ -48,8 +46,6 @@ class ActiveProviderOverrideTests(unittest.TestCase):
         self.assertEqual(active_provider(), PROVIDER_GEMINI)
         self.assertEqual(set_model_provider("claude"), PROVIDER_CLAUDE)
         self.assertEqual(active_provider(), PROVIDER_CLAUDE)
-        self.assertEqual(set_model_provider("anthropic"), PROVIDER_CLAUDE_API)
-        self.assertEqual(active_provider(), PROVIDER_CLAUDE_API)
 
     def test_falsy_leaves_current_unchanged(self) -> None:
         set_model_provider("claude")
@@ -75,13 +71,6 @@ class StructuredRoleRoutingTests(unittest.TestCase):
             self.assertEqual(model, CLAUDE_CLI_MODEL)
             self.assertEqual(provider, PROVIDER_CLAUDE)
 
-    def test_anthropic_provider_routes_every_role_to_the_api(self) -> None:
-        set_model_provider("anthropic")
-        for role in config.ROLE_MODELS:
-            model, _label, provider = structured_role_routing(role)
-            self.assertEqual(model, CLAUDE_API_MODEL)
-            self.assertEqual(provider, PROVIDER_CLAUDE_API)
-
     def test_developer_pseudo_role_is_always_gemini_emitter(self) -> None:
         # The "developer" structured role is the Gemini emitter — only reached on the gemini path.
         set_model_provider("api")
@@ -96,28 +85,9 @@ class DeveloperProviderTests(unittest.TestCase):
     def test_developer_backend_per_provider(self) -> None:
         set_model_provider("api")
         self.assertEqual(developer_provider(), PROVIDER_GEMINI)         # Gemini emitter
-        for prov in (PROVIDER_DEFAULT, "claude", "anthropic"):
+        for prov in (PROVIDER_DEFAULT, "claude"):
             set_model_provider(prov)
             self.assertEqual(developer_provider(), PROVIDER_CLAUDE)     # agentic Claude CLI
-
-
-class EstimateAnthropicCostTests(unittest.TestCase):
-    def test_sonnet_input_output_exact(self) -> None:
-        usage = SimpleNamespace(input_tokens=1_000_000, output_tokens=1_000_000)
-        cost = estimate_anthropic_cost_usd("claude-sonnet-4-6", usage)
-        self.assertEqual(cost, Decimal("3.00") + Decimal("15.00"))     # 3 + 15 per 1M
-        self.assertIsInstance(cost, Decimal)
-
-    def test_cache_read_cheaper(self) -> None:
-        usage = SimpleNamespace(input_tokens=0, output_tokens=0, cache_read_input_tokens=1_000_000)
-        self.assertEqual(estimate_anthropic_cost_usd("sonnet", usage), Decimal("0.30"))
-
-    def test_unknown_model_falls_back_to_sonnet(self) -> None:
-        usage = SimpleNamespace(input_tokens=1_000_000, output_tokens=0)
-        self.assertEqual(estimate_anthropic_cost_usd("mystery-model", usage), Decimal("3.00"))
-
-    def test_missing_fields_never_raise(self) -> None:
-        self.assertEqual(estimate_anthropic_cost_usd("sonnet", object()), Decimal("0"))
 
 
 class CheckEnvironmentProviderTests(unittest.TestCase):
@@ -139,13 +109,6 @@ class CheckEnvironmentProviderTests(unittest.TestCase):
         set_model_provider("claude")
         with self.assertRaises(SystemExit):
             self._run({}, which_ok=("docker", "bandit"))               # `claude` missing → exit
-
-    def test_anthropic_provider_needs_anthropic_key_not_gemini(self) -> None:
-        set_model_provider("anthropic")
-        self._run({"ANTHROPIC_API_KEY": "x"})                          # no GEMINI_API_KEY → still OK
-        set_model_provider("anthropic")
-        with self.assertRaises(SystemExit):
-            self._run({})                                              # missing ANTHROPIC_API_KEY → exit
 
     def test_gemini_provider_needs_no_claude_binary(self) -> None:
         set_model_provider("api")
@@ -174,8 +137,8 @@ class DeveloperFileSetModelTests(unittest.TestCase):
 
 
 class RunStructuredLlmRoutingTests(unittest.IsolatedAsyncioTestCase):
-    """run_structured_llm picks the Anthropic client + passes max_tokens under provider=claude, and the
-    Gemini client (no max_tokens) otherwise."""
+    """run_structured_llm uses the Gemini instructor_client (default/gemini) or the Claude Code CLI
+    one-shot adapter (provider=claude)."""
     def tearDown(self) -> None:
         _restore_default()
 
@@ -186,34 +149,11 @@ class RunStructuredLlmRoutingTests(unittest.IsolatedAsyncioTestCase):
             return (SimpleNamespace(ok=True), SimpleNamespace())
         return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create_with_completion=_create)))
 
-    async def test_anthropic_provider_uses_anthropic_client_with_max_tokens(self) -> None:
-        from src.shared.utils import llm
-        set_model_provider("anthropic")
-        captured: dict = {}
-        gemini_called = {"n": 0}
-
-        def _gemini_create(**kwargs):
-            gemini_called["n"] += 1
-            return (None, None)
-
-        gemini_client = SimpleNamespace(
-            chat=SimpleNamespace(completions=SimpleNamespace(create_with_completion=_gemini_create))
-        )
-        with mock.patch.object(llm, "get_anthropic_instructor_client", return_value=self._fake_client(captured)), \
-                mock.patch.object(llm, "instructor_client", gemini_client):
-            await llm.run_structured_llm("tpm", object, [{"role": "user", "content": "hi"}])
-
-        self.assertEqual(captured["model"], CLAUDE_API_MODEL)
-        self.assertEqual(captured["max_tokens"], ANTHROPIC_MAX_TOKENS)
-        self.assertEqual(gemini_called["n"], 0)                        # Gemini client never touched
-
     async def test_default_provider_uses_gemini_client_without_max_tokens(self) -> None:
         from src.shared.utils import llm
         set_model_provider(PROVIDER_DEFAULT)
         captured: dict = {}
-        with mock.patch.object(llm, "instructor_client", self._fake_client(captured)), \
-                mock.patch.object(llm, "get_anthropic_instructor_client",
-                                  side_effect=AssertionError("anthropic client must not be built")):
+        with mock.patch.object(llm, "instructor_client", self._fake_client(captured)):
             await llm.run_structured_llm("tpm", object, [{"role": "user", "content": "hi"}])
         self.assertNotIn("max_tokens", captured)
         self.assertEqual(captured["model"], config.ROLE_MODELS["tpm"][0])

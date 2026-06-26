@@ -64,8 +64,8 @@ EFFORT_MAX    = "max"
 AVAILABLE_EFFORT_LEVELS = (EFFORT_LOW, EFFORT_MEDIUM, EFFORT_HIGH, EFFORT_XHIGH, EFFORT_MAX)
 
 # Developer agent (Claude CLI) — set each to any value from the catalogs above.
-DEVELOPER_MODEL = CLAUDE_SONNET           # any of AVAILABLE_CLAUDE_MODELS (or a pinned full id)
-DEVELOPER_EFFORT = EFFORT_MEDIUM          # any of AVAILABLE_EFFORT_LEVELS
+DEVELOPER_MODEL  = os.environ.get("DEVELOPER_MODEL", CLAUDE_SONNET)   # any of AVAILABLE_CLAUDE_MODELS (or a pinned full id)
+DEVELOPER_EFFORT = os.environ.get("DEVELOPER_EFFORT", EFFORT_MEDIUM)  # any of AVAILABLE_EFFORT_LEVELS
 
 # ==========================================
 # PROVIDER SWITCH (single knob: which LLM provider drives EVERY role)
@@ -79,25 +79,19 @@ DEVELOPER_EFFORT = EFFORT_MEDIUM          # any of AVAILABLE_EFFORT_LEVELS
 #     Developer is the agentic CLI (as in default) AND every structured role runs through the SAME CLI in a
 #     one-shot JSON mode (the prompt embeds the Pydantic JSON Schema; the answer is parsed + validated +
 #     retried). Needs only the `claude` binary on PATH (already subscription-authenticated).
-#   * "anthropic" / "claude-api"       → Anthropic API EVERYWHERE: structured roles run on the Anthropic
-#     API (instructor.from_anthropic, CLAUDE_API_MODEL — needs ANTHROPIC_API_KEY + the `anthropic` pkg);
-#     the Developer stays the agentic Claude Code CLI.
 # The CLI flag overrides the env via set_model_provider() (called once in main() before any role runs);
 # resolution is dynamic (active_provider()), never a frozen dict, so the override takes effect everywhere.
 PROVIDER_DEFAULT    = "default"     # mixed: Gemini structured + Claude-CLI Developer (today's behaviour)
 PROVIDER_GEMINI     = "gemini"      # Google Gemini for every role
 PROVIDER_CLAUDE     = "claude"      # Claude Code CLI for every role (subscription, no API key)
-PROVIDER_CLAUDE_API = "claude_api"  # Anthropic API for every structured role (key-based)
 
 # Accepted CLI/env spellings → canonical provider. "api"/"google" are the operator-facing aliases for
-# Gemini (the user asked for "api гугла"); "claude"/"claude-code"/"cli" mean the Claude Code CLI (NOT the
-# API); the key-based Anthropic API is the opt-in "anthropic"/"claude-api".
+# Gemini (the user asked for "api гугла"); "claude"/"claude-code"/"cli" mean the Claude Code CLI.
 PROVIDER_ALIASES = {
     "": PROVIDER_DEFAULT, "default": PROVIDER_DEFAULT, "mixed": PROVIDER_DEFAULT,
     "api": PROVIDER_GEMINI, "google": PROVIDER_GEMINI, "gemini": PROVIDER_GEMINI,
     "claude": PROVIDER_CLAUDE, "claude-code": PROVIDER_CLAUDE, "claude_code": PROVIDER_CLAUDE,
     "cli": PROVIDER_CLAUDE, "claude-cli": PROVIDER_CLAUDE, "claude_cli": PROVIDER_CLAUDE,
-    "anthropic": PROVIDER_CLAUDE_API, "claude-api": PROVIDER_CLAUDE_API, "claude_api": PROVIDER_CLAUDE_API,
 }
 
 
@@ -124,16 +118,9 @@ def active_provider() -> str:
     return _ACTIVE_PROVIDER
 
 
-# Model the structured roles use when provider == claude (Claude Code CLI). A CLI tier ALIAS (resolves to
-# the latest of that tier), env-overridable. Distinct from CLAUDE_API_MODEL (the full id the Anthropic API
-# needs) — the CLI accepts the short alias.
-CLAUDE_CLI_MODEL = os.environ.get("CLAUDE_CLI_MODEL", CLAUDE_SONNET)
-
-# Anthropic API model used for the structured roles when provider == anthropic. The Anthropic API needs a
-# FULL model id (not the CLI tier alias), env-overridable. ANTHROPIC_MAX_TOKENS bounds the output (the
-# Anthropic Messages API requires max_tokens; Gemini does not).
-CLAUDE_API_MODEL = os.environ.get("CLAUDE_API_MODEL", "claude-sonnet-4-6")
-ANTHROPIC_MAX_TOKENS = int(os.environ.get("ANTHROPIC_MAX_TOKENS", "8192"))
+# Model the structured roles use when provider == claude (Claude Code CLI). A CLI tier ALIAS
+# (resolves to the latest of that tier), env-overridable.
+CLAUDE_CLI_MODEL = os.environ.get("CLAUDE_CLI_MODEL", CLAUDE_HAIKU)
 
 # Gemini model the Developer uses when provider == gemini (structured file-emitter path). Defaults to the
 # capable flash tier so generated code quality holds; env-overridable to any AVAILABLE_GEMINI_MODELS value.
@@ -142,9 +129,8 @@ DEVELOPER_GEMINI_MODEL = os.environ.get("DEVELOPER_GEMINI_MODEL", GEMINI_3_5_FLA
 
 def structured_role_routing(role: str) -> tuple[str, str, str]:
     """Resolve (model, display_label, provider) for a structured role under the active provider:
-      * claude     → CLAUDE_CLI_MODEL via the Claude Code CLI one-shot JSON adapter (PROVIDER_CLAUDE),
-      * anthropic  → CLAUDE_API_MODEL via the Anthropic API (PROVIDER_CLAUDE_API),
-      * otherwise  → the role's Gemini model via instructor (PROVIDER_GEMINI).
+      * claude    → CLAUDE_CLI_MODEL via the Claude Code CLI one-shot JSON adapter (PROVIDER_CLAUDE),
+      * otherwise → the role's Gemini model via instructor (PROVIDER_GEMINI).
 
     The display label is taken from ROLE_MODELS so telemetry/plane attribution is provider-independent.
     The pseudo-role ``"developer"`` is the Gemini structured file-emitter (provider=gemini only — under
@@ -157,8 +143,6 @@ def structured_role_routing(role: str) -> tuple[str, str, str]:
     provider = active_provider()
     if provider == PROVIDER_CLAUDE:
         return CLAUDE_CLI_MODEL, label, PROVIDER_CLAUDE
-    if provider == PROVIDER_CLAUDE_API:
-        return CLAUDE_API_MODEL, label, PROVIDER_CLAUDE_API
     return _model, label, PROVIDER_GEMINI
 
 
@@ -363,13 +347,12 @@ def check_environment(require_forge: bool = False):
     log.info(f"🔍 Pre-flight environment check (provider: {active_provider()})...")
     provider = active_provider()
     # Provider routing decides which binaries/keys are actually exercised this run, so we only require
-    # what will be called: the Claude CLI is unused under provider=gemini, and the Gemini API key + the
-    # Anthropic API key are each only needed when that provider drives at least one role.
-    # The Claude Code CLI binary is exercised whenever the Developer is the agentic CLI (default / claude /
-    # anthropic) AND, under provider=claude, by every structured role too — i.e. for any non-gemini provider.
+    # what will be called: the Claude CLI is unused under provider=gemini, and the Gemini API key is
+    # only needed when Gemini drives at least one role.
+    # The Claude Code CLI binary is exercised whenever the Developer is the agentic CLI (default / claude)
+    # AND, under provider=claude, by every structured role too — i.e. for any non-gemini provider.
     need_claude_cli = developer_provider() == PROVIDER_CLAUDE
     need_gemini_key = provider in (PROVIDER_DEFAULT, PROVIDER_GEMINI)  # gemini structured roles and/or gemini Developer
-    need_anthropic_key = provider == PROVIDER_CLAUDE_API              # structured roles on the Anthropic API (key-based)
 
     # `gh` (+ GITHUB_TOKEN) is only required when the run will open/merge a PR (--auto-merge, E2),
     # so plain runs never force a forge CLI on the operator.
@@ -381,11 +364,6 @@ def check_environment(require_forge: bool = False):
 
     if need_gemini_key and not os.environ.get("GEMINI_API_KEY"):
         log.error("🚨 CRITICAL: GEMINI_API_KEY is not set.")
-        sys.exit(1)
-
-    if need_anthropic_key and not os.environ.get("ANTHROPIC_API_KEY"):
-        log.error("🚨 CRITICAL: MODEL_PROVIDER=anthropic requires ANTHROPIC_API_KEY to be set "
-                  "(use --provider claude for the subscription Claude Code CLI instead, no key needed).")
         sys.exit(1)
 
     if require_forge and not os.environ.get("GITHUB_TOKEN"):
@@ -426,64 +404,6 @@ instructor_client: instructor.Instructor = instructor.from_genai(
     client=_genai_client,
     mode=instructor.Mode.GENAI_STRUCTURED_OUTPUTS,
 )
-
-# Anthropic instructor client — built LAZILY (only when provider == claude) so the default/gemini paths
-# never need the `anthropic` package or ANTHROPIC_API_KEY. Cached after first build.
-_anthropic_instructor_client: instructor.Instructor | None = None
-
-
-def get_anthropic_instructor_client() -> instructor.Instructor:
-    """Return the cached Anthropic instructor client, building it on first use.
-
-    Raises a clear RuntimeError if the optional `anthropic` package is missing — provider=claude requires
-    it (it is not pulled in by the default/gemini paths). The API key is read at build time from
-    ANTHROPIC_API_KEY (validated up-front in check_environment for a claude-routed run)."""
-    global _anthropic_instructor_client
-    if _anthropic_instructor_client is None:
-        try:
-            import anthropic  # optional dependency — only the claude provider needs it
-        except ImportError as e:  # pragma: no cover - exercised only without the optional dep installed
-            raise RuntimeError(
-                "MODEL_PROVIDER=anthropic requires the 'anthropic' package — install it (pip install "
-                "anthropic), or use --provider claude for the subscription Claude Code CLI (no package/key)."
-            ) from e
-        log.debug("Initializing Anthropic client via ANTHROPIC_API_KEY")
-        _anthropic_instructor_client = instructor.from_anthropic(
-            anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-        )
-    return _anthropic_instructor_client
-
-
-# Anthropic API pricing — USD per 1,000,000 tokens, (input, output, cache_read) like the Gemini matrix.
-# Keyed by a substring of the model id (opus/sonnet/haiku) so a pinned full id or a tier alias both match.
-# Source: Anthropic public pricing; tune to your billing tier. Unlike the Claude CLI (authoritative cost),
-# the raw Anthropic API returns only token counts, so spend on this path is ESTIMATED — same as Gemini.
-ANTHROPIC_PRICING: dict[str, tuple[Decimal, Decimal, Decimal]] = {
-    "opus":   (Decimal("15.00"), Decimal("75.00"), Decimal("1.50")),
-    "sonnet": (Decimal("3.00"),  Decimal("15.00"), Decimal("0.30")),
-    "haiku":  (Decimal("0.80"),  Decimal("4.00"),  Decimal("0.08")),
-}
-DEFAULT_ANTHROPIC_PRICING = ANTHROPIC_PRICING["sonnet"]   # fallback for an unrecognized id
-
-
-def estimate_anthropic_cost_usd(model_name: str, usage) -> Decimal:
-    """Exact-precision USD cost for one Anthropic API call from its ``usage`` object (the anthropic
-    Message ``.usage``: ``input_tokens`` / ``output_tokens`` / ``cache_read_input_tokens`` /
-    ``cache_creation_input_tokens``). Cache-read tokens are billed at the cheaper cached rate; cache
-    creation is billed at the input rate here (close enough for the estimate). Never raises."""
-    try:
-        rate = next((v for k, v in ANTHROPIC_PRICING.items() if k in (model_name or "").lower()),
-                    DEFAULT_ANTHROPIC_PRICING)
-        in_rate, out_rate, cache_rate = rate
-        fresh_in = int(getattr(usage, "input_tokens", 0) or 0)
-        output = int(getattr(usage, "output_tokens", 0) or 0)
-        cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
-        cache_write = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
-        return (Decimal(fresh_in + cache_write) * in_rate + Decimal(output) * out_rate
-                + Decimal(cache_read) * cache_rate) / _PER_MILLION
-    except Exception as e:  # pragma: no cover - pricing must never break the pipeline
-        log.debug(f"Failed to estimate Anthropic cost for '{model_name}': {e}")
-        return Decimal("0")
 
 # ==========================================
 # HELPER FOR GRACEFUL QUOTA ERROR HANDLING

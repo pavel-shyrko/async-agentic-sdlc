@@ -155,33 +155,6 @@ def log_token_usage(telemetry: Any, agent_name: str, raw_response: Any, model_na
                 f"${telemetry.total_cost_usd:.4f}"
             )
             return
-        # Anthropic API (provider=claude) structured path: the raw response is an anthropic Message whose
-        # `.usage` carries `input_tokens` (fresh) / `output_tokens` / `cache_*_input_tokens`. Cost is
-        # ESTIMATED here (the raw API returns no cost figure — unlike the agentic Claude CLI). The actual
-        # model is the configured CLAUDE_API_MODEL, not the gemini `model_name` the caller still passes.
-        usage = getattr(raw_response, "usage", None)
-        if usage is not None and hasattr(usage, "input_tokens"):
-            from src.shared.core.config import (  # lazy: avoid config↔observability cycle
-                estimate_anthropic_cost_usd, CLAUDE_API_MODEL, AGENT_PLANE,
-            )
-            from src.shared.utils.llm import LAST_LLM_ELAPSED_S
-            fresh_in = int(getattr(usage, "input_tokens", 0) or 0)
-            out_tokens = int(getattr(usage, "output_tokens", 0) or 0)
-            cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
-            cache_write = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
-            cost_usd = estimate_anthropic_cost_usd(CLAUDE_API_MODEL, usage)
-            telemetry.record(
-                agent_name, fresh_in, out_tokens, cost_usd, provider="claude",
-                cache_read_tokens=cache_read, cache_write_tokens=cache_write,
-                plane=AGENT_PLANE.get(agent_name, "development"),
-                duration_seconds=LAST_LLM_ELAPSED_S.get(),
-            )
-            log.info(
-                f"   [TOKENS] {agent_name} | Input(fresh): {fresh_in} | "
-                f"Output: {out_tokens} | Budgeted: {fresh_in + out_tokens} | "
-                f"Cost: ${cost_usd:.4f} (est.) | Cumulative: {telemetry.total_tokens}t / "
-                f"${telemetry.total_cost_usd:.4f}"
-            )
     except Exception as e:
         log.debug(f"Failed to parse token usage for {agent_name}: {e}")
 

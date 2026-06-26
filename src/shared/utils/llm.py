@@ -8,8 +8,7 @@ from typing import Any, Type
 
 from src.shared.core.config import (
     instructor_client, structured_role_routing,
-    get_anthropic_instructor_client, ANTHROPIC_MAX_TOKENS,
-    PROVIDER_CLAUDE, PROVIDER_CLAUDE_API,
+    PROVIDER_CLAUDE,
     DEVELOPER_CLI_TIMEOUT, DEVELOPER_CLI_IDLE_TIMEOUT,
 )
 from src.shared.core.observability import log, finish_reason_name
@@ -71,10 +70,9 @@ async def run_structured_llm(
     (parsed_model, raw_response) tuple from create_with_completion.
 
     The client/model are resolved per the active provider (``structured_role_routing``): Gemini via the
-    shared ``instructor_client`` (default/gemini); the Anthropic API via ``instructor.from_anthropic``
-    (provider=anthropic, which additionally needs ``max_tokens``); or the **Claude Code CLI** one-shot JSON
-    adapter (provider=claude — see ``_run_structured_via_claude_cli``). The RECITATION recovery below is
-    Gemini-specific and simply never triggers on the Claude paths.
+    shared ``instructor_client`` (default/gemini); or the **Claude Code CLI** one-shot JSON adapter
+    (provider=claude — see ``_run_structured_via_claude_cli``). The RECITATION recovery below is
+    Gemini-specific and never triggers on the Claude path.
 
     On a Gemini RECITATION block (deterministic — ``with_api_retry`` fails it fast), makes ONE
     paraphrase-guarded retry that appends ``RECITATION_GUARD`` to the messages. A second block (or any
@@ -91,23 +89,18 @@ async def run_structured_llm(
         finally:
             LAST_LLM_ELAPSED_S.set(time.perf_counter() - start)
 
-    # Gemini uses the module-global instructor_client (also the patch point for the unit tests); the
-    # Anthropic API client is built lazily and requires an explicit max_tokens on every call.
-    is_api_claude = provider == PROVIDER_CLAUDE_API
-    extra_kwargs = {"max_tokens": ANTHROPIC_MAX_TOKENS} if is_api_claude else {}
+    # Gemini uses the module-global instructor_client (also the patch point for the unit tests).
 
     @with_api_retry(max_retries=3, agent_name=agent_name)
     async def _invoke(msgs: list[dict]) -> tuple:
         safe_msgs = _relocate_jinja_system_messages(msgs)
-        client = get_anthropic_instructor_client() if is_api_claude else instructor_client
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None,
-            lambda: client.chat.completions.create_with_completion(
+            lambda: instructor_client.chat.completions.create_with_completion(
                 model=model_name,
                 response_model=response_model,
                 messages=safe_msgs,
-                **extra_kwargs,
             ),
         )
 
