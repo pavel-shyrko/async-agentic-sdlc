@@ -38,8 +38,8 @@ system prompt; this skill only maps them to Python idioms.
 
 ## File Placement & Module Identity
 - Tests live in the dedicated `tests/` directory by default (the engine derives the exact path) — NEVER colocated next to the source file. For monorepo layouts a domain skill may specify a subdirectory (e.g. `backend/tests/`); that instruction takes precedence over this default. Emit only the suite body for the assigned module.
-- Import the module under test by its exact dotted path (e.g. `import package.module` or
-  `from package.module import ...`).
+- **Test runner working directory**: `pytest` runs from the REPOSITORY ROOT (`/workspace`). All imports must use the full repo-root-relative dotted module path. In a monorepo where source lives under a subdirectory (e.g. `backend/app/main.py`), import as `from backend.app.main import ...` — NEVER as `from app.main import ...`. The prefix is the subdirectory name, not an optional part.
+- Import the module under test by its exact dotted path (e.g. `import package.module` or `from package.module import ...`). Read the source file to confirm the exact path before writing the import.
 - A thin entrypoint (a module whose only top-level executable code is an `if __name__ == "__main__":`
   guard delegating elsewhere) has no independently testable logic — emit at most a faithful minimal
   check (it imports cleanly / the wired callables exist) in its OWN module.

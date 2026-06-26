@@ -1737,10 +1737,8 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
                 amend_allowed = ctx.contract_amendments < MAX_CONTRACT_AMENDMENTS
                 if verdict.route == "contract" and amend_allowed:
                     pinned_env = ctx.contract.environment_id
-                    pinned_wd  = ctx.contract.working_directory
                     await run_techlead_node(ctx, amendment_feedback=verdict.contract_amendment_directive)
-                    ctx.contract.environment_id    = pinned_env   # PIN: amendment never thrashes the platform
-                    ctx.contract.working_directory = pinned_wd    # PIN: amendment never changes the sandbox root
+                    ctx.contract.environment_id    = pinned_env   # PIN: amendment never thrashes the platform (Docker image)
                     ctx.contract_amendments += 1
                     regenerate_tests = True                    # QA re-derives tests vs the amended contract
                     ctx.error_trace = ""                       # stale: referenced the pre-amendment contract

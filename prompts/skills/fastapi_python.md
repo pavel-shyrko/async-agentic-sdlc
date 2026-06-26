@@ -27,7 +27,11 @@ LANGUAGE TARGET: Python / FastAPI — production-code rules for a FastAPI backen
 - Use `pytest` with `pytest-asyncio` and `httpx.AsyncClient` (with `ASGITransport`) for integration tests against the running application instance — no mocking of internal business logic.
 - Test files MUST live under `backend/tests/` with `test_` prefix. This overrides the generic Python test placement rule — do NOT place tests under the root `tests/` directory.
 - Every endpoint MUST have at least one integration test covering the happy path and one covering a key error path (e.g. 404, 422 validation failure).
-- Import path: tests import from `backend.` modules; ensure `backend/__init__.py` exists if needed.
+- **Test runner context**: `pytest` runs from the REPOSITORY ROOT (`/workspace`), NOT from `backend/`. All imports MUST use the full repo-root-relative module path — `from backend.app.main import app`, never `from app.main import app`. Ensure `backend/__init__.py` exists so the `backend` package is discoverable from the root.
+- **Separate test execution**: backend tests (`pytest backend/tests/`) run independently of frontend tests; do not mix test frameworks or import cross-boundary between them.
+
+## Repository hygiene
+- Generate `backend/.gitignore` with Python-specific patterns: `__pycache__/`, `*.pyc`, `*.pyo`, `.env`, `venv/`, `.venv/`, `.pytest_cache/`, `*.egg-info/`, `dist/`, `build/`, `.mypy_cache/`.
 
 ## Security
 - The Bandit SAST scanner runs before review; zero tolerance for flagged vulnerabilities.

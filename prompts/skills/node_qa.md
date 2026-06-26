@@ -25,6 +25,9 @@ in the QA system prompt; this skill only maps them to Node idioms.
 - Assert thrown errors with `expect(() => fn()).toThrow(ErrorType)` — pass the error CLASS/type only.
   NEVER `.toThrow('message')`, `.message`, or any message-derived value.
 
+## Test Runner Working Directory
+- `npm test` runs from the **component's package directory** (e.g. `frontend/`), NOT from the repo root. All import paths are relative to `frontend/src/` — do NOT prefix imports with `frontend/`. Read each source file to verify the exact path before writing any import.
+- In a fullstack monorepo, frontend tests and backend tests run independently; never import from the backend package in a frontend test.
+
 ## Imports
-- `import { Symbol } from '<relative module path>'` using the exact path from the topology contract /
-  production snapshot.
+- `import { Symbol } from '<relative module path>'` using the exact path from the topology contract / the source file you Read. Relative paths are relative to the test file's location (e.g. `../api/client`).

@@ -27,6 +27,11 @@ LANGUAGE TARGET: React / Node.js — production-code rules for a React frontend 
 - Test files live alongside their components with `.test.tsx` / `.test.jsx` suffix, OR under `frontend/src/__tests__/`.
 - Every component that fetches data or renders user-facing state MUST have at least one test covering the happy-path render and one covering an error/loading state.
 - Mock `fetch`/`axios` at the module boundary in tests — never make real HTTP calls in the test suite.
+- **Test runner context**: `npm test` runs from the `frontend/` directory. All imports are relative to `frontend/src/` — do NOT use `frontend/src/` as a prefix in import paths inside test files.
+- **Separate test execution**: frontend tests (`cd frontend && npm test`) run independently of backend tests; do not import from `backend/` or mix test frameworks.
+
+## Repository hygiene
+- Generate `frontend/.gitignore` with Node/React-specific patterns: `node_modules/`, `dist/`, `build/`, `.env.local`, `.env.development.local`, `.env.test.local`, `.env.production.local`, `.DS_Store`, `coverage/`, `.eslintcache`.
 
 ## Nginx runtime (frontend/Dockerfile)
 - The Nginx stage MUST listen on `$PORT` (injected by Cloud Run). Use an `envsubst`-based entrypoint or a template config to substitute `$PORT` into the Nginx `listen` directive at container startup; never hardcode port 80 or 3000.
