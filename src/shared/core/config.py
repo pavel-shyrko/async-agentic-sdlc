@@ -32,12 +32,14 @@ AVAILABLE_GEMINI_MODELS = (
 )
 
 # Per-role model — set to any value from AVAILABLE_GEMINI_MODELS.
-TECHLEAD_MODEL = GEMINI_3_5_FLASH
-QA_MODEL = GEMINI_3_5_FLASH
-REVIEWER_MODEL = GEMINI_3_5_FLASH
-TECHWRITER_MODEL = GEMINI_3_5_FLASH   # Living-ADR maintainer; matches the other Gemini worker roles.
-ARBITER_MODEL = GEMINI_3_5_FLASH      # Failure-triage / contract-conflict classifier (see runner FSM).
-DEVOPS_MODEL = GEMINI_3_5_FLASH       # Deploy-scaffolding finalizer (E4); matches the other Gemini worker roles.
+TECHLEAD_MODEL = GEMINI_2_5_FLASH
+QA_MODEL = GEMINI_2_5_FLASH
+REVIEWER_MODEL = GEMINI_2_5_FLASH
+TECHWRITER_MODEL = GEMINI_2_5_FLASH   # Living-ADR maintainer; matches the other Gemini worker roles.
+ARBITER_MODEL = GEMINI_2_5_FLASH      # Failure-triage / contract-conflict classifier (see runner FSM).
+DEVOPS_MODEL = GEMINI_2_5_FLASH       # Deploy-scaffolding finalizer (E4); matches the other Gemini worker roles.
+DB_ARCHITECT_MODEL = GEMINI_2_5_FLASH  # DB schema generation from blueprint (E7 --provision-db).
+SEED_DATA_MODEL = GEMINI_2_5_FLASH     # Seed INSERT generation (E7 --provision-db, dev/staging only).
 # Nexus Control Plane roles (Product Owner / Solution Architect / TPM). Defaulted to the
 # cheap flash-lite tier to match the worker roles and keep the PoC inexpensive; SA/TPM can be
 # bumped to GEMINI_2_5_PRO for deeper architectural reasoning.
@@ -95,6 +97,11 @@ CLAUDE_CLI_BIN = os.environ.get("CLAUDE_CLI_BIN", "claude")
 # — so only the bump POLICY is a knob. Env-overridable.
 RELEASE_VERSION_BUMP = os.environ.get("RELEASE_VERSION_BUMP", "minor")
 
+# E7 — schema-validation gate retry budget for the DB provisioning phase (--provision-db).
+# On a gate failure the DatabaseArchitectAgent is re-invoked with the violation list; this caps
+# how many times that loop may run before a Hard Halt.
+DB_PROVISION_MAX_RETRIES = int(os.environ.get("DB_PROVISION_MAX_RETRIES", "2"))
+
 # ==========================================
 # FINOPS — Financial Circuit Breaker budget
 # ==========================================
@@ -140,7 +147,9 @@ ROLE_MODELS = {
     "reviewer":  (REVIEWER_MODEL,  "Reviewer Agent"),
     "techwriter": (TECHWRITER_MODEL, "Technical Writer Agent"),
     "arbiter":   (ARBITER_MODEL,   "Arbiter Agent"),
-    "devops":    (DEVOPS_MODEL,    "DevOps Agent"),
+    "devops":       (DEVOPS_MODEL,       "DevOps Agent"),
+    "db_architect": (DB_ARCHITECT_MODEL, "DB Architect Agent"),
+    "seed_data":    (SEED_DATA_MODEL,    "Seed Data Agent"),
     # Nexus Control Plane roles.
     "po":      (PO_MODEL,      "Product Owner Agent"),
     "sa":      (SA_MODEL,      "Solution Architect Agent"),
@@ -164,6 +173,8 @@ AGENT_PLANE = {
     "Arbiter Agent": "development",
     "Developer Agent": "development",
     "DevOps Agent": "deployment",
+    "DB Architect Agent": "deployment",
+    "Seed Data Agent": "deployment",
 }
 
 # ==========================================
