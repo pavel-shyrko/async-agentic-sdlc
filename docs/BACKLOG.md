@@ -80,7 +80,7 @@ E1 ✅ Nexus auto-dispatches Executor (one ticket)   — DONE (v0.17.0 / ADR 001
                       │       └─► E6 ✅ Autonomous release-tagging (--release; nexus tags main → triggers the E4 workflow)  — DONE (v0.23.0 / ADR 0023)
                       └─► E5 ✅ Application-wide FinOps budget (one money ceiling, remaining threaded per ticket)  — DONE (v0.22.0 / ADR 0022)
 
-E7 ⬜ Distribute the factory as an installable CLI + factory self-release CI pipeline   — OPEN
+E7 ✅ Distribute the factory as an installable CLI + factory self-release CI pipeline   — DONE (feat/installable-cli)
 
 E8 ⬜ Code-coverage of the generated app — measure + report (report-only, no gating)   — OPEN
       └─► E9 ⬜ Hard coverage gate (COVERAGE_FLOOR threshold → fail gate + reroute to QA)   — OPEN
@@ -367,7 +367,7 @@ the release workflow running automatically (no manual tag); the version is the r
 `v0.1.0` greenfield); `--release` is off by default; re-runs/`--resume` neither duplicate nor collide a tag.
 Likely warrants an ADR (new FSM terminal action).
 
-## E7. [⬜ OPEN] Distribute the factory as an installable CLI + factory self-release CI pipeline
+## E7. [✅ DONE — feat/installable-cli] Distribute the factory as an installable CLI + factory self-release CI pipeline
 
 **Goal:** two complementary deliverables that make the factory a first-class distributable tool:
 

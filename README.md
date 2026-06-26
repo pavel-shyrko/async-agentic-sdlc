@@ -137,6 +137,22 @@ Ensure your local environment variable contains a valid Gemini credential:
 export GEMINI_API_KEY="your-api-key-here"
 ```
 
+### Install as a CLI (`tbf`)
+
+The factory ships as an installable package: `pip install` it (inside WSL) and get a `tbf` command on your
+PATH — no repo clone required to *use* (as opposed to develop) the engine. `tbf` is a drop-in for
+`python3 main.py`, every flag identical.
+
+```bash
+# inside the WSL2 Ubuntu terminal, ideally in a venv (python3 -m venv venv && source venv/bin/activate)
+pip install git+https://github.com/<org>/token-burners-factory.git
+tbf --help            # same output as `python3 main.py --help`
+```
+
+> **Full step-by-step install + run guide (WSL entry, prerequisites, credentials, first run):
+> [docs/guides/install.md](./docs/guides/install.md).** Machine setup from scratch:
+> [docs/guides/setup.md](./docs/guides/setup.md).
+
 ### Execution
 
 Run the main orchestrator loop to initiate the autonomous code-generation and testing pipeline:

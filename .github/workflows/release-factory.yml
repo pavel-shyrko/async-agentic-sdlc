@@ -1,0 +1,41 @@
+name: Release factory
+
+# Publishes the factory engine itself (the `tbf` package) — distinct from E6's `--release`,
+# which tags *generated* applications. A `v*` tag pushed to THIS repo builds wheel + sdist and
+# attaches them to a GitHub Release. No extra secrets: GITHUB_TOKEN is provided by Actions.
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    name: Build wheel + sdist, publish GitHub Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # create the GitHub Release + upload assets
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # full history so release notes span back to the previous tag
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade pip build
+
+      - name: Build wheel + sdist
+        run: python -m build
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true   # auto-fill the body from commits since the previous tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

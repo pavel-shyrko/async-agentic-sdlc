@@ -1812,5 +1812,16 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
     # Escalation on Circuit Breaker open
     _abort_with_incident(ctx, "\n🚨 CIRCUIT BREAKER OPEN: Retries exhausted.")
 
+def _cli_main():
+    """Console-script entry point for the installed `tbf` command (pyproject [project.scripts]).
+    Mirrors main.py: run the async orchestrator, map an escaped FSM halt to a non-zero exit."""
+    try:
+        asyncio.run(main())
+    except PipelineHalt:
+        # An FSM halt that escaped a single-ticket path (the E3 batch loop catches its own).
+        # _abort_with_incident already wrote the incident report + FinOps; just surface exit 1.
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    _cli_main()
