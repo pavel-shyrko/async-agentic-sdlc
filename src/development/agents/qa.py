@@ -120,7 +120,11 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
     #                          *Tests.cs in the production project's glob (no xUnit ref → CS0246).
     #  - "colocated" (go/node): next to the source, under the repo root.
     if profile["layout"] == "separate":
-        test_root = repo_dir / profile["test_root"]
+        # For monorepo tickets (contract.working_directory set), anchor tests under the service
+        # subdir so the sandbox root (repo/<wd>/) can discover them without path gymnastics.
+        # Single-runtime tickets (working_directory=None) keep the existing repo-root anchor.
+        _wd = ctx.contract.working_directory
+        test_root = (repo_dir / _wd if _wd else repo_dir) / profile["test_root"]
     elif profile["layout"] == "project":
         # Resolve from the contract, OR — on a follow-on ticket that didn't re-list the existing
         # manifest — by scanning the clone (repo_dir) for it. Registry-driven, language-agnostic.
@@ -211,7 +215,14 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
     async def _generate(module_file: str) -> tuple[Path, str, object, object]:
         # environment_id decides the test file name, extension, and placement (colocated vs separate).
         rel_test_path, module_ref = derive_test_target(env_id, module_file)
-        test_path = test_root / rel_test_path  # colocated → repo root; separate → repo/<test_root>
+        # Strip the working_directory prefix from the dotted module_ref so the generated import
+        # resolves from the sandbox root (e.g. "backend.main" → "main" when wd="backend").
+        _wd = ctx.contract.working_directory
+        if _wd and profile["layout"] == "separate":
+            _wd_prefix = _wd.replace("/", ".") + "."
+            if module_ref.startswith(_wd_prefix):
+                module_ref = module_ref[len(_wd_prefix):]
+        test_path = test_root / rel_test_path  # colocated → repo root; separate → repo/<wd>/<test_root>
         test_path.parent.mkdir(parents=True, exist_ok=True)
         # Surface the current on-disk suite as the agent's WORKING DRAFT so it returns the complete
         # corrected file (preserve valid cases, fix flagged ones). Read once; reused for the empty-delta

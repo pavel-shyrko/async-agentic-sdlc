@@ -32,18 +32,18 @@ AVAILABLE_GEMINI_MODELS = (
 )
 
 # Per-role model — set to any value from AVAILABLE_GEMINI_MODELS.
-TECHLEAD_MODEL = GEMINI_3_5_FLASH
-QA_MODEL = GEMINI_3_5_FLASH
-REVIEWER_MODEL = GEMINI_3_5_FLASH
-TECHWRITER_MODEL = GEMINI_3_5_FLASH   # Living-ADR maintainer; matches the other Gemini worker roles.
-ARBITER_MODEL = GEMINI_3_5_FLASH      # Failure-triage / contract-conflict classifier (see runner FSM).
-DEVOPS_MODEL = GEMINI_3_5_FLASH       # Deploy-scaffolding finalizer (E4); matches the other Gemini worker roles.
+TECHLEAD_MODEL = GEMINI_2_5_PRO
+QA_MODEL = GEMINI_2_5_FLASH
+REVIEWER_MODEL = GEMINI_2_5_FLASH
+TECHWRITER_MODEL = GEMINI_2_5_PRO   # Living-ADR maintainer; matches the other Gemini worker roles.
+ARBITER_MODEL = GEMINI_2_5_PRO      # Failure-triage / contract-conflict classifier (see runner FSM).
+DEVOPS_MODEL = GEMINI_2_5_FLASH       # Deploy-scaffolding finalizer (E4); matches the other Gemini worker roles.
 # Nexus Control Plane roles (Product Owner / Solution Architect / TPM). Defaulted to the
 # cheap flash-lite tier to match the worker roles and keep the PoC inexpensive; SA/TPM can be
 # bumped to GEMINI_2_5_PRO for deeper architectural reasoning.
-PO_MODEL = GEMINI_2_5_FLASH     # lighter tier — avoids gemini-3.5-flash 503 high-demand spikes
-SA_MODEL = GEMINI_2_5_FLASH
-TPM_MODEL = GEMINI_2_5_FLASH
+PO_MODEL = GEMINI_2_5_PRO
+SA_MODEL = GEMINI_2_5_PRO
+TPM_MODEL = GEMINI_2_5_PRO
 # Available Claude models for the Developer agent (Claude CLI). The CLI --model accepts a tier
 # ALIAS (always resolves to the latest of that tier) or a pinned full id for reproducibility.
 # Ordered most → least capable / expensive:
@@ -64,7 +64,7 @@ EFFORT_MAX    = "max"
 AVAILABLE_EFFORT_LEVELS = (EFFORT_LOW, EFFORT_MEDIUM, EFFORT_HIGH, EFFORT_XHIGH, EFFORT_MAX)
 
 # Developer agent (Claude CLI) — set each to any value from the catalogs above.
-DEVELOPER_MODEL = CLAUDE_SONNET           # any of AVAILABLE_CLAUDE_MODELS (or a pinned full id)
+DEVELOPER_MODEL = CLAUDE_HAIKU           # any of AVAILABLE_CLAUDE_MODELS (or a pinned full id)
 DEVELOPER_EFFORT = EFFORT_MEDIUM          # any of AVAILABLE_EFFORT_LEVELS
 
 # Wall-clock ceiling (seconds) for ONE agentic Developer CLI session. The launcher kills+reaps the
