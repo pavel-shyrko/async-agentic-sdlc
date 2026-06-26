@@ -8,6 +8,31 @@ LANGUAGE TARGET: .NET (C#) — concrete syntax for the .NET tech stack. The lang
 (exception fidelity, namespace/import fidelity, whole-file assembly, BVA strategy) live in the QA
 system prompt; this skill only maps them to C# idioms.
 
+## MANDATORY PRE-WRITE SCAN — Execute BEFORE authoring any test
+
+Before writing a single test, scan the production code snapshot for these three patterns. Each one
+has a mandatory response. Missing any of them causes deterministic gate failures.
+
+**1. `OnStarting` callbacks**
+- DETECT: search snapshot for `context.Response.OnStarting(` AND any test that uses `DefaultHttpContext`
+- APPLY: replace `DefaultHttpContext`'s feature with `FakeHttpResponseFeature` (see
+  "ASP.NET Core Middleware — OnStarting Callbacks" section below for the full pattern)
+- Skipping this produces `Expected: <status>. Actual: 200` failures — the callbacks never fire
+
+**2. BCL exception helpers**
+- DETECT: search snapshot for `ArgumentException.ThrowIfNullOrEmpty`, `ArgumentNullException.ThrowIfNull`,
+  or `JsonDocument.Parse`
+- APPLY:
+  - `ThrowIfNullOrEmpty(null, …)` → use `Assert.ThrowsAny<ArgumentException>()` (raises `ArgumentNullException`)
+  - `JsonDocument.Parse(badJson)` → use `Assert.ThrowsAny<JsonException>()` (raises `JsonReaderException`)
+  - Full table in "Assertions & Exceptions" below
+- Skipping this produces `Expected: typeof(ArgumentException). Actual: typeof(ArgumentNullException)` failures
+
+**3. Empty-string header parameters via WebApplicationFactory**
+- DETECT: any `[InlineData]` row where a header parameter is `""`
+- APPLY: remove those rows entirely — the in-memory transport strips empty headers before middleware runs
+- Full rule in "WebApplicationFactory Integration Tests" below
+
 ## Testing Framework & Layout
 - Use xUnit (`[Fact]` / `[Theory]`). Do NOT mix in NUnit or MSTest.
 - Name the test file `<Name>Tests.cs` after the type under test (e.g. `Converter.cs` → `ConverterTests
