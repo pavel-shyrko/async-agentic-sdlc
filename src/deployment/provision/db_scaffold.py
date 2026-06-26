@@ -13,6 +13,7 @@ docker-compose service URL in local dev).  Without it the phase halts with a cle
 of attempting a connection.
 """
 import os
+import re
 from decimal import Decimal
 from pathlib import Path
 
@@ -93,12 +94,18 @@ async def _execute_seed(inserts: list[str], db_url: str) -> None:
     log.info("  ✓ %d seed rows inserted.", len(inserts))
 
 
+_SAFE_TABLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$")
+
+
 async def _verify_seed(expected: dict[str, int], db_url: str) -> list[str]:
     """Verify each seeded table has at least the expected row count."""
     problems: list[str] = []
     async with await psycopg.AsyncConnection.connect(db_url) as conn:
         for table, min_rows in expected.items():
-            row = await (await conn.execute(f"SELECT count(*) FROM {table}")).fetchone()  # noqa: S608
+            if not _SAFE_TABLE_RE.match(table):
+                problems.append(f"{table}: rejected — unsafe identifier")
+                continue
+            row = await (await conn.execute(f"SELECT count(*) FROM {table}")).fetchone()  # nosec B608
             actual = row[0] if row else 0
             if actual < min_rows:
                 problems.append(f"{table}: expected >={min_rows}, got {actual}")
