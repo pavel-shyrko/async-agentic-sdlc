@@ -73,6 +73,20 @@ def reconfigure_logging(new_log_dir: Path) -> None:
             handler.close()
     logger.addHandler(_build_audit_handler(Path(new_log_dir)))
 
+# Human label per canonical provider, for the role start banner.
+_PROVIDER_BANNER_LABELS = {"gemini": "Gemini", "claude": "Claude Code CLI", "claude_api": "Anthropic API"}
+
+
+def log_role_banner(role: str, emoji: str, label: str | None = None) -> None:
+    """Log a role's start banner reflecting the ACTUAL provider + model resolved for the active provider —
+    so a ``--provider`` override is never misrepresented (the old hard-coded ``[PROVIDER] Gemini`` lied
+    under ``--provider claude``). Resolves the (model, label, provider) via ``structured_role_routing``."""
+    from src.shared.core.config import structured_role_routing  # lazy: avoid config↔observability cycle
+    model, resolved_label, provider = structured_role_routing(role)
+    provider_label = _PROVIDER_BANNER_LABELS.get(provider, provider)
+    log.info(f"{emoji} [ROLE] {label or resolved_label} | [PROVIDER] {provider_label} | [MODEL] {model}")
+
+
 # ==========================================
 # TOKEN OBSERVABILITY HELPER
 # ==========================================

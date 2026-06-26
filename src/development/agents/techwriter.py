@@ -1,7 +1,7 @@
 # subprocess: only fixed-argument `git` exec with no shell=True, never untrusted input as a command.
 import subprocess  # nosec B404
 
-from src.shared.core.observability import log, log_token_usage
+from src.shared.core.observability import log, log_token_usage, log_role_banner
 from src.shared.core.config import TECHWRITER_MODEL
 from src.shared.core.boilerplate import render_apache_license
 from src.shared.core.models import DocumentationUpdate, GlobalPipelineContext
@@ -23,7 +23,7 @@ async def run_techwriter_node(ctx: GlobalPipelineContext) -> None:
     file is `git add`ed so finalize_transaction's single atomic commit includes the docs. Does NOT call
     build_agent_context (which would re-inject the very ADR it is about to rewrite).
     """
-    log.info(f"🔷 [ROLE] Technical Writer Agent | [MODEL] {TECHWRITER_MODEL}")
+    log_role_banner("techwriter", "🔷")
 
     repo_dir = ctx.workspace_paths.repo_dir
     adr_path = repo_dir / "docs" / "architecture_state.md"

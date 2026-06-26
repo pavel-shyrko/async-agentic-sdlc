@@ -1,6 +1,6 @@
 import re
 
-from src.shared.core.observability import log, log_token_usage
+from src.shared.core.observability import log, log_token_usage, log_role_banner
 from src.shared.core.config import TECHLEAD_MODEL
 from src.shared.core.models import TechLeadContract, GlobalPipelineContext
 from src.shared.core.environments import env_language, extension_language_map
@@ -23,10 +23,9 @@ async def run_techlead_node(ctx: GlobalPipelineContext, amendment_feedback: str 
     the failing evidence, the TechLead re-emits a REVISED contract that resolves a contract-level
     conflict (the runner additionally pins ``environment_id`` so the platform never thrashes).
     """
-    model_name = TECHLEAD_MODEL
     amending = bool(amendment_feedback) and ctx.contract is not None
     label = "Technical Lead Agent (AMENDMENT)" if amending else "Technical Lead Agent"
-    log.info(f"🔷 [ROLE] {label} | [MODEL] {model_name}")
+    log_role_banner("techlead", "🔷", label)
 
     if not ctx.repository_map:
         ctx.repository_map = generate_repo_map(ctx.workspace_paths.repo_dir)

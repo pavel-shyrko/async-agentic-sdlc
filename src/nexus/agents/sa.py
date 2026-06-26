@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, field_validator
 from src.shared.core.config import SA_MODEL
 from src.shared.core.environments import SUPPORTED_ENVIRONMENTS
 from src.shared.core.models import PipelineTelemetry
-from src.shared.core.observability import log, log_token_usage
+from src.shared.core.observability import log, log_token_usage, log_role_banner
 from src.shared.core.prompts import get_system_prompt_with_platforms
 from src.shared.utils.llm import run_structured_llm
 
@@ -38,7 +38,7 @@ async def run_sa(epic_text: str, raw_idea: str = "", telemetry: PipelineTelemetr
             f"=== ORIGINAL USER REQUEST ===\n{raw_idea}\n\n"
             f"=== EPIC ===\n{epic_text}"
         )
-    log.info(f"🟪 [ROLE] Solution Architect Agent | [PROVIDER] Gemini | [MODEL] {SA_MODEL}")
+    log_role_banner("sa", "🟪")
     result, raw_response = await run_structured_llm(
         "sa",
         Blueprint,

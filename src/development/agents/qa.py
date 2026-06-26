@@ -2,7 +2,7 @@ import re
 import sys
 from pathlib import Path
 
-from src.shared.core.observability import log, log_token_usage
+from src.shared.core.observability import log, log_token_usage, log_role_banner
 from src.shared.core.config import QA_MODEL
 from src.shared.core.models import QATestSuite, GlobalPipelineContext
 from src.shared.core.environments import get_qa_profile, is_testable_source, derive_test_target, env_language, is_test_file, resolve_test_project_dir, test_manifest_suffix
@@ -101,8 +101,7 @@ def _environment_profile_block(env_id: str, profile: dict) -> str:
 
 
 async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -> None:
-    model_name = QA_MODEL
-    log.info(f"🔶 [ROLE] QA Agent | [MODEL] {model_name}")
+    log_role_banner("qa", "🔶")
 
     if not ctx.contract or not ctx.contract.files_to_modify:
         log.error("🚨 CRITICAL: Cannot generate tests without a locked TechLead Contract.")

@@ -1,7 +1,7 @@
 # subprocess: only fixed-argument `git` exec with no shell=True, never untrusted input as a command.
 import subprocess  # nosec B404
 
-from src.shared.core.observability import log, log_token_usage
+from src.shared.core.observability import log, log_token_usage, log_role_banner
 from src.shared.core.config import DEVOPS_MODEL
 from src.shared.core.models import DevOpsManifests, GlobalPipelineContext
 from src.shared.core.environments import SUPPORTED_ENVIRONMENTS, deploy_target_skills
@@ -69,7 +69,7 @@ async def run_devops_node(
     its prompt directly (no ``build_agent_context``: there is no TechLeadContract in this phase).
     ``gate_feedback`` carries the static-lint errors from a prior attempt on a self-heal retry.
     """
-    log.info(f"🔷 [ROLE] DevOps Agent | [MODEL] {DEVOPS_MODEL}")
+    log_role_banner("devops", "🔷")
 
     repo_dir = ctx.workspace_paths.repo_dir
     system_prompt = f"{get_system_prompt('devops')}\n\n=== ARCHETYPE GUIDANCE ===\n{_archetype_guidance(environment_ids)}"

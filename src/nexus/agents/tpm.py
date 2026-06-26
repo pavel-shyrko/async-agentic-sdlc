@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, field_validator
 from src.shared.core.config import TPM_MODEL
 from src.shared.core.environments import SUPPORTED_ENVIRONMENTS
 from src.shared.core.models import PipelineTelemetry
-from src.shared.core.observability import log, log_token_usage
+from src.shared.core.observability import log, log_token_usage, log_role_banner
 from src.shared.core.prompts import get_system_prompt_with_platforms
 from src.shared.utils.llm import run_structured_llm
 
@@ -35,7 +35,7 @@ async def run_tpm(epic_text: str, blueprint_text: str, telemetry: PipelineTeleme
     """Invoke the TPM on the Epic + Blueprint; returns a list of task dicts (ticket_id/title/description).
 
     Logs token/cost telemetry into ``telemetry`` when provided (executor-parity observability)."""
-    log.info(f"🟨 [ROLE] Technical Project Manager Agent | [PROVIDER] Gemini | [MODEL] {TPM_MODEL}")
+    log_role_banner("tpm", "🟨")
     user_content = (
         f"=== EPIC ===\n{epic_text}\n\n"
         f"=== BLUEPRINT ===\n{blueprint_text}"

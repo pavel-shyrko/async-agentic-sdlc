@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 
 from src.shared.core.config import PO_MODEL
 from src.shared.core.models import PipelineTelemetry
-from src.shared.core.observability import log, log_token_usage
+from src.shared.core.observability import log, log_token_usage, log_role_banner
 from src.shared.core.prompts import get_system_prompt
 from src.shared.utils.llm import run_structured_llm
 
@@ -17,7 +17,7 @@ async def run_po(raw_idea: str, telemetry: PipelineTelemetry | None = None) -> s
     """Invoke the Product Owner to expand a raw idea into a Markdown Epic; returns the markdown.
 
     Logs token/cost telemetry into ``telemetry`` when provided (executor-parity observability)."""
-    log.info(f"🟦 [ROLE] Product Owner Agent | [PROVIDER] Gemini | [MODEL] {PO_MODEL}")
+    log_role_banner("po", "🟦")
     result, raw_response = await run_structured_llm(
         "po",
         EpicDocument,

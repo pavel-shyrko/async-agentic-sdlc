@@ -2,7 +2,7 @@
 # root cause and picks a routing target. Beyond the Developer/QA feedback channels it adds a THIRD route
 # — `contract` — so a flawed TechLead contract (not an agent-fixable bug) is repaired via amendment
 # instead of looping to the circuit breaker. See pipeline-fsm-loops + the Arbiter ADR.
-from src.shared.core.observability import log, log_token_usage
+from src.shared.core.observability import log, log_token_usage, log_role_banner
 from src.shared.core.config import ARBITER_MODEL
 from src.shared.core.models import ArbiterVerdict, GlobalPipelineContext
 from src.shared.core.prompts import get_system_prompt, build_agent_context
@@ -16,8 +16,7 @@ async def run_arbiter_node(
     prev_qa_trace: str = "",
 ) -> None:
     """Triage a stuck cycle into an ArbiterVerdict (route + reasoning [+ amendment directive])."""
-    model_name = ARBITER_MODEL
-    log.info(f"⚖️  [ROLE] Arbiter Agent | [MODEL] {model_name}")
+    log_role_banner("arbiter", "⚖️")
 
     production_code = "\n\n".join(
         f"=== FILE: {p} ===\n{c}" for p, c in ctx.production_code_snapshot.items()
