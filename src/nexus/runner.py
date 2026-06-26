@@ -69,6 +69,7 @@ class RunConfig:
     auto_merge: bool = False  # --auto-merge: on success, open a PR into base_branch and squash-merge it (E2; implies push)
     scaffold_deploy: bool = False  # --scaffold-deploy: after a batch merges all tickets, generate + merge deploy manifests (E4)
     release: bool = False  # --release: after a batch merges all tickets (+ optional scaffold), push a v* release tag (E6)
+    provision_db: bool = False  # --provision-db: after the batch (+ optional scaffold/release), provision the Ghostwire PostgreSQL schema (E7)
     budget_usd: Decimal | None = None  # --budget: app-wide money ceiling override for this invocation (E5); None → PIPELINE_APP_BUDGET_USD
 
 
@@ -113,6 +114,11 @@ def parse_args() -> RunConfig:
                              "minor; v0.1.0 greenfield) — to trigger the deploy/release workflow (E6). "
                              "Opt-in; consumed only by the --auto-execute batch (or its --resume); reuses "
                              "the batch's git push credentials.")
+    parser.add_argument("--provision-db", action="store_true",
+                        help="After the batch (and optional --scaffold-deploy / --release), provision the "
+                             "Ghostwire PostgreSQL schema via the DatabaseArchitectAgent (E7). Requires "
+                             "DATABASE_URL in the environment; missing → logged and skipped (non-fatal). "
+                             "Consumed only by the --auto-execute batch (or its --resume).")
 
     args = parser.parse_args()
 
@@ -121,9 +127,10 @@ def parse_args() -> RunConfig:
 
     # --scaffold-deploy and --release are consumed ONLY by the post-batch terminal phase (run_batch). On any
     # non-batch invocation they are inert — warn rather than silently ignore them.
-    if (args.scaffold_deploy or args.release) and not (args.auto_execute or args.resume):
+    if (args.scaffold_deploy or args.release or args.provision_db) and not (args.auto_execute or args.resume):
         flags = " / ".join(f for f, on in (("--scaffold-deploy", args.scaffold_deploy),
-                                           ("--release", args.release)) if on)
+                                           ("--release", args.release),
+                                           ("--provision-db", args.provision_db)) if on)
         log.warning(f"⚠️  {flags} is consumed only by the --auto-execute batch (or its --resume); "
                     "it has no effect on this invocation.")
 
@@ -138,7 +145,7 @@ def parse_args() -> RunConfig:
             description=None, base_branch=args.base_branch, resume=None, reset_attempts=False,
             idea=args.idea, repo=args.repo, push=(push or auto_merge), auto_execute=args.auto_execute,
             auto_merge=auto_merge, scaffold_deploy=args.scaffold_deploy, release=args.release,
-            budget_usd=args.budget,
+            provision_db=args.provision_db, budget_usd=args.budget,
         )
 
     # Execute a ticket under an existing project: --run <project> -f <ticket>.
@@ -165,7 +172,8 @@ def parse_args() -> RunConfig:
             description=None, base_branch=args.base_branch, resume=None,
             reset_attempts=args.reset_attempts, push=push, auto_merge=args.auto_merge,
             resume_project=first, resume_number=(args.resume[1] if len(args.resume) > 1 else None),
-            scaffold_deploy=args.scaffold_deploy, release=args.release, budget_usd=args.budget,
+            scaffold_deploy=args.scaffold_deploy, release=args.release,
+            provision_db=args.provision_db, budget_usd=args.budget,
         )
 
     # Fresh DIRECT run: a target repo and ticket are mandatory for git-anchored bootstrapping.
@@ -1066,6 +1074,18 @@ async def run_batch(projects: Projects, project, cfg: RunConfig, nexus_run_dir: 
         # budget threading; idempotent on --resume via batch.released_tag (persisted by the finally below).
         if cfg.release:
             await finalize_release(projects, project, cfg, nexus_run_dir, batch)
+
+        # E7 — after all tickets (+ optional deploy scaffold + release tag), provision the Ghostwire
+        # PostgreSQL schema. Lazy import mirrors the --scaffold-deploy seam (breaks deployment→nexus cycle).
+        # db_scaffold merges its telemetry into batch.app_telemetry in its OWN finally, so a PipelineHalt
+        # mid-generation still records the partial DB spend in the app-wide report.
+        if cfg.provision_db:
+            from src.deployment.provision.db_scaffold import run_db_provisioning
+            db_remaining = app_budget - batch.app_telemetry.total_cost_usd
+            await run_db_provisioning(projects, project, nexus_run_dir,
+                                      budget_usd_ceiling=db_remaining,
+                                      app_telemetry=batch.app_telemetry,
+                                      env=os.environ.get("APP_ENV", "staging"))
     finally:
         # Always persist the application-wide spend + report, regardless of how the batch exits.
         batch.save_checkpoint(batch_path)

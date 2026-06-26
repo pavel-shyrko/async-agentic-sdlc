@@ -5,3 +5,4 @@ bandit==1.9.4
 pytest==9.0.3
 jsonref
 PyYAML>=6.0   # E4 deploy-scaffolding: host-side static-lint of generated GitHub Actions deploy.yml
+psycopg[binary]>=3.1  # E7 DB provisioning: async PostgreSQL DDL execution (db_scaffold, db_gates)

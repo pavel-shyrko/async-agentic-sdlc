@@ -513,3 +513,68 @@ class BatchState(BaseModel):
     @classmethod
     def load_checkpoint(cls, path: Path) -> "BatchState":
         return cls.model_validate_json(Path(path).read_text(encoding="utf-8"))
+
+
+# ==========================================
+# DB PROVISIONING CONTRACTS (Ghostwire E7)
+# ==========================================
+class TableDDL(BaseModel):
+    """One PostgreSQL table: its CREATE TABLE statement and the names of tables it FK-references.
+
+    Tables in ``SchemaContract.tables`` are ordered by dependency — parents before children — so the
+    provisioning skill can execute them in list order without sorting."""
+    table_name: str = Field(description="Exact postgres table name (snake_case).")
+    ddl: str = Field(description="Complete, runnable CREATE TABLE ... statement.")
+    dependencies: list[str] = Field(
+        default_factory=list,
+        description="Names of tables this table references via FOREIGN KEY (used by the gate's cycle check).",
+    )
+
+
+class IndexDDL(BaseModel):
+    index_name: str
+    ddl: str = Field(description="Complete CREATE INDEX ... statement.")
+
+
+class SchemaContract(BaseModel):
+    """Structured output of the DatabaseArchitectAgent.
+
+    Tables are ordered by FK dependency — parents before children — so the provisioning skill can
+    execute them in list order without any additional sorting."""
+    tables: list[TableDDL]
+    indexes: list[IndexDDL] = Field(default_factory=list)
+    views: list[str] = Field(
+        default_factory=list,
+        description="Raw DDL for materialized views (CREATE MATERIALIZED VIEW ...).",
+    )
+    seed_sql: list[str] = Field(
+        default_factory=list,
+        description="Bootstrap INSERT statements (admin user, service accounts only).",
+    )
+    rationale: str = Field(description="One-paragraph explanation of the schema design.")
+
+
+class GateViolation(BaseModel):
+    table_name: str
+    violation: str
+
+
+class SchemaGateResult(BaseModel):
+    passed: bool
+    violations: list[GateViolation] = Field(default_factory=list)
+
+
+class ProvisioningResult(BaseModel):
+    success: bool
+    tables_created: list[str] = Field(default_factory=list)
+    tables_failed: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
+class SeedOutput(BaseModel):
+    """Structured output of the SeedDataAgent — INSERT statements + expected row counts per table."""
+    inserts: list[str] = Field(description="Runnable PostgreSQL INSERT statements.")
+    row_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description="Expected minimum row count per table after seed, for post-seed verification.",
+    )
