@@ -151,6 +151,27 @@ or minor:
 **Developer**: Never downgrade these versions. Even one minor-version step (e.g. `17.12.0` → `17.11.1`)
 misses the baked fallback and will cause a NU1301 network halt in the offline sandbox.
 
+## JSON Serialization with System.Text.Json (MANDATORY — no manual escaping)
+
+### Developer
+- When serializing a `JsonElement` value (array, object, or primitive) to a JSON string, ALWAYS use
+  `JsonSerializer.Serialize(element)` — never build the JSON string manually via string concatenation or
+  bracket + escaped-quote literals such as `$"\\\"" + value + "\\\""`.
+- Manual construction always introduces escaping bugs (double-backslash, mismatched brackets, wrong
+  whitespace). `JsonSerializer.Serialize` is the ONLY correct path.
+- For a `JsonElement` of `ValueKind == Array`, iterate elements and serialize each with
+  `JsonSerializer.Serialize(item)`, then join with `,` inside `[…]`. Do NOT use `GetRawText()` on the
+  whole array without controlling whitespace — `GetRawText()` preserves the original input's whitespace
+  (may include spaces after commas), which diverges from the compact format required by the contract.
+
+### TechLead
+- Array format examples in `architectural_constraints` and `acceptance_examples` MUST use **compact
+  JSON** (no spaces after `,` or `:`). This matches what `JsonSerializer.Serialize` actually produces.
+  Never mix spaced and compact forms across these two fields — a mismatch propagates to QA tests
+  oscillating between `[1, 2, 3]` and `[1,2,3]` and triggers Arbiter misroutes.
+- Example: write `["admin","user"]` — NOT `["admin", "user"]`. Any example that uses spaces after `,`
+  or `:` will fail the gate when the Developer correctly uses `JsonSerializer.Serialize`.
+
 ## Recursive traversal with accumulated path/key prefix (TechLead — acceptance_examples obligation)
 For any algorithm that recursively processes a nested structure while accumulating a path or key prefix
 (e.g. JSON flattening, nested-property enumeration, tree serialization), the TechLead MUST author
