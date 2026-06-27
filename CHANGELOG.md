@@ -42,12 +42,22 @@ routing with a SHA-256 production-code oracle, and delivers targeted prompt qual
   callbacks, integration test constraints.
 - **QA pre-write scan** (`prompts/skills/engineering_guide.md`, `prompts/system/qa.md`): mandatory
   domain-trap check before generating tests.
+- **QA agent migrated to Claude CLI** (`src/development/agents/qa.py`, `src/shared/core/config.py`). QA is now driven by `run_claude_cli` (same infrastructure as the Developer) instead of `run_structured_llm`. `QA_MODEL` (default `haiku`) and `QA_EFFORT` (default `low`) replace the Gemini model assignment; `QA_CLI_TIMEOUT` (default `600 s`, env-overridable) and `QA_CLI_IDLE_TIMEOUT` (default `120 s`) bound the session. QA is removed from `ROLE_MODELS`; its Gemini cost is replaced by authoritative Claude telemetry.
+- **Fullstack monorepo support** (`src/shared/core/environments.py`, `src/shared/core/models.py`, `src/nexus/runner.py`, `src/deployment/agents/devops.py`). New `gcp-cloud-run-monorepo` deploy target and `fullstack_monorepo` archetype. `TechLeadContract.working_directory` (None = repo root, `'backend'`/`'frontend'` for monorepo tickets). `_sandbox_root()` resolves the gate execution root from `working_directory`; `_pin_working_directory_from_component()` engine-deterministically overrides any LLM/skill value with the `## Component: BACKEND/FRONTEND` tag the Nexus writes into each ticket. `DevOpsManifests.frontend_dockerfile_content` added; Dockerfiles now land at `backend/Dockerfile` and `frontend/Dockerfile`. New `devops_fullstack_monorepo` skill. `resolve_environment()` helper merges skill-declared `env_overlays` into the base registry entry; overlays stored in `GlobalPipelineContext.env_overlays`.
+- **Reviewer strictness toggle** (`PIPELINE_REVIEWER_STRICT`, `src/shared/core/config.py`). When `false`, loads `reviewer_lenient.md` — approves unless a CRITICAL defect is found. Default `true` (standard "brutal" reviewer). Env-overridable.
+- **SAST gate toggle** (`PIPELINE_SAST_ENABLED`, `src/shared/core/config.py`). When `false`, the Semgrep scan is skipped and treated as passed. Default `true`. Env-overridable.
+- **SAST opt-rule exclusion** (`src/shared/core/environments.py`). `SAST_CMD` now passes `--exclude-rule 'opt.*'` to skip advisory/optional Semgrep rules (e.g. `jsx-not-internationalized`) that produce false positives deadlocking the FSM.
+- **`ci_lint_setup_cmd`** for `python-3.12-core` environment (`src/shared/core/environments.py`). Installs `ruff` globally on the CI runner (`pip install ruff`) — the sandbox image has it pre-installed but GitHub Actions `ubuntu-latest` does not.
+- **Node.js 22** (`node-22-web`). Node environment renamed from `node-20-web` to `node-22-web`; description updated.
 
 ### Changed
 - **Nexus control-plane tier** (`src/shared/core/config.py`): PO/SA/TPM switched from
   `GEMINI_3_5_FLASH` to `GEMINI_2_5_FLASH` — stabler under demand spikes, lower cost.
 - **`.NET skill expansions`** (`prompts/skills/dotnet_core.md`): BCL exception handling, middleware
   conventions, mandatory JSON serialization attributes, integration test constraints.
+- **Executor Gemini model upgrades** (`src/shared/core/config.py`): TechLead and TechWriter moved to `GEMINI_2_5_PRO`; Reviewer and DevOps moved to `GEMINI_2_5_FLASH`; Arbiter moved to `GEMINI_2_5_PRO` — sharpened per role workload (deep reasoning vs. fast scan).
+- **Developer model** (`src/shared/core/config.py`): `DEVELOPER_MODEL` changed from `CLAUDE_SONNET` to `CLAUDE_HAIKU` — sufficient for mechanical file edits at lower cost.
+- **`go-1.23-cli` and `dotnet-10-sdk` environments disabled** (`src/shared/core/environments.py`, `enabled: False`). Both remain in the registry for future re-enable; no active sandboxes needed.
 
 ### Fixed
 - **Missing language variant in archetype guidance** (`prompts/skills/engineering_guide.md`): handles

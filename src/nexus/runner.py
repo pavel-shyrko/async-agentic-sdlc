@@ -22,7 +22,7 @@ from src.shared.core.config import (
 )
 from src.shared.core.models import GlobalPipelineContext, WorkspacePaths, RUNS_BASE, BatchState, PipelineTelemetry
 from src.shared.core.runs import Projects
-from src.shared.core.environments import is_test_file, get_qa_profile, failure_origin_markers, all_comment_prefixes, DEPENDENCY_VENDOR_DIR, working_directory_for_component
+from src.shared.core.environments import is_test_file, get_qa_profile, failure_origin_markers, all_comment_prefixes, auto_generated_patterns, DEPENDENCY_VENDOR_DIR, working_directory_for_component
 from src.shared.core.prompts import generate_repo_map
 from src.shared.utils.git_helpers import get_git_root, get_pipeline_snapshot_files
 from src.shared.utils.redaction import redact
@@ -832,9 +832,12 @@ async def enforce_documentation_guardrail(ctx: GlobalPipelineContext) -> str | N
     # Only NEWLY-CREATED files need a justification — intersect the candidates with the git-added set.
     repo_dir = ctx.workspace_paths.repo_dir
     added = set(await get_pipeline_snapshot_files(str(repo_dir), ctx.base_branch, diff_filter="A"))
+    generated_names = set(auto_generated_patterns(ctx.contract.environment_id or ""))
     violations = [
         rel for rel in uncontracted
-        if rel in added and _top_block_has_comment(repo_dir / rel) is False
+        if rel in added
+        and Path(rel).name not in generated_names
+        and _top_block_has_comment(repo_dir / rel) is False
     ]
     if not violations:
         return None

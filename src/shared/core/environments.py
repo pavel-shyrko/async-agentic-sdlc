@@ -157,6 +157,9 @@ SUPPORTED_ENVIRONMENTS = {
         "failure_origin_markers": ("panic:", "--- FAIL", "build failed", "cannot find package"),
         "repo_map_ignore_dirs": ("vendor", "bin"),
         "comment_prefixes": ("//", "/*", "*"),
+        # go mod tidy/download auto-generates go.sum — it cannot carry a comment and the
+        # toolchain regenerates it on every module operation.
+        "auto_generated_file_patterns": ("go.sum",),
         "dependency_manifest": "go.mod",
         "authoring_contract": (
             "Dependency manifest: declare all module dependencies in `go.mod` (with a consistent `go.sum`); the toolchain restores via `go mod download`. Run `go mod tidy` so the manifest matches the imports — a dependency imported but absent from `go.mod` breaks the offline build.",
@@ -190,6 +193,9 @@ SUPPORTED_ENVIRONMENTS = {
         "failure_origin_markers": ("Error:", "Cannot find module", "ReferenceError", "SyntaxError", "TypeError:"),
         "repo_map_ignore_dirs": ("node_modules", "dist", "build", "out", "coverage"),
         "comment_prefixes": ("//", "/*", "*"),
+        # npm auto-generates package-lock.json on every install — it cannot carry a top-of-file
+        # comment (JSON spec) and the toolchain would overwrite one anyway.
+        "auto_generated_file_patterns": ("package-lock.json",),
         "dependency_manifest": "package.json",
         "authoring_contract": (
             "Dependency manifest: declare all dependencies and devDependencies (including the test runner) in `package.json`, with a committed `package-lock.json`; the toolchain restores via `npm ci` (falling back to `npm install`). The `test` script MUST be present, or the test gate has nothing to run.",
@@ -651,6 +657,18 @@ def all_comment_prefixes() -> tuple[str, ...]:
         for prefix in spec.get("comment_prefixes", ()):
             seen[prefix] = None
     return tuple(seen)
+
+
+def auto_generated_patterns(environment_id: str) -> tuple[str, ...]:
+    """Bare filenames the build toolchain auto-creates for this env.
+
+    Files matching these names are exempt from the documentation guardrail — they are not
+    human-authored and the toolchain would overwrite any injected comment. Each env declares
+    its own patterns; the engine carries no language knowledge. Adding a new stack: add
+    ``auto_generated_file_patterns`` to its SUPPORTED_ENVIRONMENTS entry.
+    """
+    spec = SUPPORTED_ENVIRONMENTS.get(environment_id, {})
+    return tuple(spec.get("auto_generated_file_patterns", ()))
 
 
 def repo_map_ignore_dirs(environment_id: str | None = None) -> frozenset[str]:
