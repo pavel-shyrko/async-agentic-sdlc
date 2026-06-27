@@ -10,7 +10,7 @@ from src.shared.core.boilerplate import (
     render_apache_license,
     build_gitignore_baseline_block,
 )
-from src.shared.core.environments import get_gitignore_template
+from src.shared.core.environments import get_gitignore_template, GITIGNORE_TEMPLATES
 
 
 class RenderApacheLicenseTests(unittest.TestCase):
@@ -49,6 +49,17 @@ class BuildGitignoreBaselineBlockTests(unittest.TestCase):
     def test_unsupported_env_fails_fast(self) -> None:
         with self.assertRaises(ValueError):
             build_gitignore_baseline_block("rust-1.0-nope")
+
+    def test_list_of_envs_combines_all_patterns(self) -> None:
+        block = build_gitignore_baseline_block(["python-3.12-core", "node-22-web"])
+        self.assertIn("__pycache__/", block)    # python patterns
+        self.assertIn("node_modules/", block)   # node patterns
+        self.assertIn("```gitignore", block)
+
+    def test_list_with_single_env_matches_str_call(self) -> None:
+        block_str = build_gitignore_baseline_block("python-3.12-core")
+        block_list = build_gitignore_baseline_block(["python-3.12-core"])
+        self.assertEqual(block_str, block_list)
 
 
 if __name__ == "__main__":

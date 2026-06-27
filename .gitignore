@@ -91,3 +91,8 @@ Thumbs.db
 *.log
 logs/
 docker/certs/company_root.crt
+
+# ==========================================
+# Claude Code (local machine settings)
+# ==========================================
+.claude/settings.local.json

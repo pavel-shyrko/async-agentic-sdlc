@@ -7,7 +7,7 @@
 # block is byte-stable. The .gitignore is reused from environments.py (single source of truth). The LICENSE
 # is no longer part of this block: the Technical Writer owns README.md/LICENSE/CHANGELOG.md post-implementation
 # and writes the LICENSE deterministically from render_apache_license() (still RECITATION-safe — no LLM).
-from src.shared.core.environments import get_gitignore_template
+from src.shared.core.environments import get_gitignore_template, get_combined_gitignore_template
 
 # Fallback copyright holder when the run carries no better attribution (keeps the license valid rather
 # than leaving a placeholder the Developer agent would have to guess at).
@@ -222,15 +222,19 @@ def render_apache_license(holder: str = "", year: str = "2026") -> str:
     return APACHE_LICENSE_TEMPLATE.format(year=year, holder=(holder or "").strip() or DEFAULT_LICENSE_HOLDER)
 
 
-def build_gitignore_baseline_block(environment_id: str) -> str:
+def build_gitignore_baseline_block(environment_ids: "str | list[str]") -> str:
     """Assemble the engine-provided baseline-files block appended to TASK-01's description.
 
-    Contains the canonical ``.gitignore`` for ``environment_id`` (reused from environments.py) — the one
-    baseline file the Developer still owns (the TPM no longer reproduces it verbatim). The Developer agent
-    reads the literal content here and applies it idempotently (merge/refresh, never blind-overwrite). The
-    ``LICENSE`` is no longer part of this block — the Technical Writer writes it post-implementation.
+    Accepts a single environment_id string or a list of ids (for fullstack monorepo projects where
+    TASK-01 must cover all technology layers). Patterns from each environment are combined and
+    deduplicated so ``node_modules/``, ``dist/``, ``__pycache__/`` etc. are all present regardless
+    of which layer's ticket is the first ticket. The Developer applies the result idempotently.
+    The ``LICENSE`` is no longer part of this block — the Technical Writer writes it post-implementation.
     """
-    gitignore = get_gitignore_template(environment_id).rstrip()
+    if isinstance(environment_ids, str):
+        gitignore = get_gitignore_template(environment_ids).rstrip()
+    else:
+        gitignore = get_combined_gitignore_template(environment_ids).rstrip()
     return (
         "## Repository Baseline Files (engine-provided — apply VERBATIM)\n\n"
         "The following baseline file is engine-curated. Create it from the EXACT content below; do "

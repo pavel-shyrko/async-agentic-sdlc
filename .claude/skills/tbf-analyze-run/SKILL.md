@@ -1,6 +1,6 @@
 ---
 name: tbf-analyze-run
-description: Diagnose a pipeline run (executor or Nexus) from its persisted artifacts — classify root cause, cite evidence, and point the fix at the engine/prompts (never the clone). Use when the user asks to analyze/diagnose a run, explain a CIRCUIT BREAKER / "Retries exhausted" halt, an application-budget exhaustion / `budget_marker` clean stop (`--budget` / `PIPELINE_APP_BUDGET_USD`, E5), a looping or stuck cycle, a Gemini RECITATION/SAFETY block, a PR/merge (forge) failure under `--auto-merge`, a lint-gate reroute loop or an E4 deploy-scaffolding (`--scaffold-deploy`) static-lint halt (incl. a missing public-invoker grant on a Cloud Run web service, or a *live* deployed service returning HTTP 403 / "not authenticated"), a Developer Claude-CLI provider-quota / session-limit halt (a `🚨 PROVIDER QUOTA HALT` / "hit your session limit" stop where the Developer billed 0 tokens), a HARD HALT (wrong-path / documentation guardrail) or ENVIRONMENT/NETWORK/LINT-TOOLING halt, a missing-dependency-manifest halt (a `🚨 MISSING DEPENDENCY MANIFEST` banner, or an older run where a `ModuleNotFoundError` for a declared core library was misrouted to the Reviewer and the Arbiter halted `unrecoverable` because the toolchain restored nothing — no `requirements.txt`/`go.mod`/`package.json`/`.csproj`), a git clone/push credential failure, a non-halt crash/hang (an `embedded null byte` traceback, a Jinja-in-system-message `ValueError`, or a stalled agent call that printed no incident), or "what happened" in a runs/<project>/<NNN>_... run. Accepts a run dir, a project slug, or pasted run log output.
+description: Diagnose a pipeline run (executor or Nexus) from its persisted artifacts — classify root cause, cite evidence, and point the fix at the engine/prompts (never the clone). Use when the user asks to analyze/diagnose a run, explain a CIRCUIT BREAKER / "Retries exhausted" halt, an application-budget exhaustion / `budget_marker` clean stop (`--budget` / `PIPELINE_APP_BUDGET_USD`, E5), a looping or stuck cycle, a Gemini RECITATION/SAFETY block, a PR/merge (forge) failure under `--auto-merge`, a lint-gate reroute loop or an E4 deploy-scaffolding (`--scaffold-deploy`) static-lint halt (incl. a missing public-invoker grant on a Cloud Run web service, or a *live* deployed service returning HTTP 403 / "not authenticated"), a Developer Claude-CLI provider-quota / session-limit halt (a `🚨 PROVIDER QUOTA HALT` / "hit your session limit" stop where the Developer billed 0 tokens), a HARD HALT (wrong-path / documentation guardrail) or ENVIRONMENT/NETWORK/LINT-TOOLING halt, a missing-dependency-manifest halt (a `🚨 MISSING DEPENDENCY MANIFEST` banner, or an older run where a `ModuleNotFoundError` / `Cannot find module` for a declared core library was misrouted to the Reviewer and the Arbiter halted `unrecoverable` because the toolchain restored nothing — no `requirements.txt`/`package.json`), a git clone/push credential failure, a non-halt crash/hang (an `embedded null byte` traceback, a Jinja-in-system-message `ValueError`, or a stalled agent call that printed no incident), or "what happened" in a runs/<project>/<NNN>_... run. Accepts a run dir, a project slug, or pasted run log output.
 context: fork
 ---
 
@@ -39,6 +39,10 @@ not `/mnt/c/…`) — see [run-tests-via-wsl](../../rules/run-tests-via-wsl.md).
   separate from the app-shape archetype skills; `run_devops_gate(repo_dir, archetype)` is archetype-aware and,
   for a `requires_public_invoker` target (Cloud Run web service), flags a workflow that omits the
   `--allow-unauthenticated` grant (self-healed by the DevOps agent in the `DEVOPS_MAX_RETRIES` loop).
+  **Monorepo (`gcp-cloud-run-monorepo` deploy target):** the scaffold generates TWO Cloud Run services
+  (one for `./backend/Dockerfile`, one for `./frontend/Dockerfile` serving React statics via Nginx); BOTH
+  are public-facing and require the `--allow-unauthenticated` grant. A lint halt on either service path
+  points at the component's Dockerfile or GH Actions workflow, not the application code.
   **Live-service 403 (not a run artifact):** a deployed Cloud Run service that returns HTTP 403 / "The request
   was not authenticated" means the *deployed* workflow predates this gate (no public-invoker grant) — the fix
   is to re-run `--scaffold-deploy` (regenerates the workflow with the grant) or apply the
@@ -56,7 +60,10 @@ not `/mnt/c/…`) — see [run-tests-via-wsl](../../rules/run-tests-via-wsl.md).
 ## Step 2 — Gather state (in this order)
 1. **Checkpoint** — `reports/checkpoint.json`. Executor (`GlobalPipelineContext`): `current_attempt`,
    `contract` (the TechLead spec — `instruction`, `function_signatures`, `architectural_constraints`,
-   `files_to_modify`, `environment_id`, `topology_contract`), `review_report`
+   `files_to_modify`, `environment_id`, `topology_contract`), `production_code_hash`/`prev_production_code_hash`
+   (E7 SHA-256 of the production snapshot, recomputed each cycle; the Arbiter receives a `production_code_changed`
+   boolean — a cycle where the Developer ran but produced zero diff routes QA-persistent failures as
+   `production_bug` even without new code), `review_report`
    (`code_quality_approved`/`test_integrity_approved` + `code_quality_analysis`/`test_integrity_analysis`/
    `log_verification_analysis` + `dev_diagnostic_payload`/`qa_diagnostic_payload`/`dev_evidence_citation`),
    `error_trace`/`qa_error_trace`, and the Arbiter fields `arbiter_verdict{root_cause_class,route,reasoning,
@@ -68,9 +75,9 @@ not `/mnt/c/…`) — see [run-tests-via-wsl](../../rules/run-tests-via-wsl.md).
    its markers: `[ROLE]` (every agent turn — the reliable anchor for who ran when), `🔷 Orchestration
    cycle N/M` (cycle boundaries), `🔶` (cycle-failed + fast-fail reroutes), `[VERDICT]`/`route=`
    (Arbiter), `[TOKENS]` (per-agent spend), and any `🚨 … HALT` / `CIRCUIT BREAKER` / `🛑` header. Then
-   grep for known failure signatures: `hit your session limit`, `RECITATION`, `NU1301`/`NU1510`,
-   `ModuleNotFoundError`, `MISSING DEPENDENCY MANIFEST`, `embedded null byte`, `Jinja templating`,
-   `could not read Password`.
+   grep for known failure signatures: `hit your session limit`, `RECITATION`,
+   `ModuleNotFoundError`, `Cannot find module`, `MISSING DEPENDENCY MANIFEST`, `embedded null byte`,
+   `Jinja templating`, `could not read Password`.
 3. **Incident report** — `reports/incident_report.json` (present only on an FSM halt): the redacted final
    state + the halt header. **Tell:** a run that printed the FinOps GRAND TOTAL and then died with a raw
    Python traceback (and **no** incident report) is *not* an FSM halt — it is an uncaught exception that
@@ -116,15 +123,21 @@ Then map the evidence to one class (decisive — pick the dominant one and say s
   (`🚨 ENVIRONMENT\RUNNER MISCONFIGURATION` deadlock guard, `runner.py`): not agent-fixable (e.g. sandbox
   import-path/network). The Reviewer approving both sides on a hard-gate FAILURE is the signature.
 - **Missing dependency manifest** — a build/test/test-compile gate FAILED with a module-resolution error
-  (`ModuleNotFoundError`, `Cannot find module`, `cannot find package`) because the env's declared
-  `dependency_manifest` (`requirements.txt`/`package.json`/`go.mod`/`.csproj`) was ABSENT, so `setup_cmd`
-  restored NOTHING (the silent `pip install -r requirements.txt 2>/dev/null || true` no-op). The
-  `missing_dependency_manifest` backstop (`gates.py`) now prepends a `🚨 MISSING DEPENDENCY MANIFEST` banner,
-  so a current run names itself; an OLDER run shows it mislabelled (the import error misrouted to the
-  Reviewer → Arbiter `root_cause_class: unrecoverable`). Fix is **authoring-side, not the clone**: the env's
-  `authoring_contract` + the language `_core` skill must mandate producing the manifest (e.g. `python_core`
-  → `requirements.txt`), and the SA `## Runtime Contract` / TPM `TASK-01` propagation must carry it — see
+  (`ModuleNotFoundError` for Python, `Cannot find module` for Node) because the env's declared
+  `dependency_manifest` (`requirements.txt` for Python, `package.json` for Node) was ABSENT, so `setup_cmd`
+  restored NOTHING. The `missing_dependency_manifest` backstop (`gates.py`) now prepends a
+  `🚨 MISSING DEPENDENCY MANIFEST` banner, so a current run names itself; an OLDER run shows it mislabelled
+  (the import error misrouted to the Reviewer → Arbiter `root_cause_class: unrecoverable`). Fix is
+  **authoring-side, not the clone**: the env's `authoring_contract` + the language `_core` skill must mandate
+  producing the manifest (`python_core` → `requirements.txt`; `node_core` → `package.json`), and the SA
+  `## Runtime Contract` / TPM `TASK-01` propagation must carry it — see
   [agent-contracts](../../rules/agent-contracts.md). NEVER hand-add the manifest to the run clone.
+  **Monorepo note:** for a `fullstack_monorepo` ticket, the gate runs inside the component's
+  `working_directory` (`backend/` or `frontend/`), so the missing manifest is `backend/requirements.txt` or
+  `frontend/package.json`. `working_directory` is **not** a checkpoint field — it is derived at runtime from
+  the `## Component: <BACKEND|FRONTEND>` tag the TPM writes into the ticket via `working_directory_for_component`
+  (`src/shared/core/environments.py`). Read the ticket's `## Component:` line or the `topology_contract`
+  `file_path` prefixes to infer which component's directory is under test.
 - **Guardrail hard-halt (Developer pre-Reviewer fast-fail loops)** — a Developer guardrail loop hit its
   `GUARDRAIL_MAX_REROUTES` cap and aborted *before* the Reviewer ever ran. Three distinct headers/causes,
   each pointing at a different fix:
@@ -134,9 +147,6 @@ Then map the evidence to one class (decisive — pick the dominant one and say s
   - `🚨 HARD HALT: Developer failed the documentation guardrail …` — a newly-created uncontracted file
     lacks the mandated top-of-file justification comment. Fix `developer.md`'s justification directive or
     the `enforce_documentation_guardrail` scanner (`runner.py`).
-  - `🚨 ENVIRONMENT\NETWORK HALT: dependency restore could not reach the package feed (NU1301 / …)` — the
-    sandbox couldn't reach the package registry on the compile gate. Infra/network, retry-later — NOT a
-    code defect; check the proxy/offline-vendoring posture, never reroute the Developer.
 - **Financial circuit breaker** — cumulative **USD** spend met/exceeded the effective ceiling
   (`enforce_financial_circuit_breaker(ctx, budget_usd)`; money-only since E5/ADR 0022 — tokens are reported,
   never a gate). On a batch the ceiling is the *remaining* application budget (`app_budget − spent`), so a
@@ -156,6 +166,11 @@ Then map the evidence to one class (decisive — pick the dominant one and say s
   `reconcile_feedback_routing` (ADR 0024). So a genuine stuck loop now points at: a contract flaw the Arbiter
   didn't route to `contract`, a correct-but-unfixable repeated failure, or a mis-route that recurred on cycle 1
   (before the Arbiter is eligible) or that the Arbiter agreed with.
+  **E7 no-change tell:** if `production_code_hash == prev_production_code_hash` across a cycle (Developer ran,
+  produced zero diff), the Arbiter's `production_code_changed = False` routes persistent QA failures as
+  `production_bug` → Developer. Grep FinOps for a Developer call count that does not advance the code (diff
+  the checkpoint hashes), and cross-check whether the Developer actually had a viable path (a
+  contract/environment issue that prevents the file from being writable is the common cause).
 - **Developer CLI provider-quota exhaustion (infra halt — Claude session/usage limit)** — the agentic
   Developer's Claude CLI hit the subscription's rolling session/usage limit. **Tell:** a `You've hit your
   session limit · resets <time>` line in `sdlc_audit.log` (logged from `stream_claude_stdout`), the

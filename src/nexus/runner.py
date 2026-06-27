@@ -18,11 +18,11 @@ from src.shared.core.observability import log, reconfigure_logging
 from src.shared.core.observability import log_finops_summary as _render_finops_summary
 from src.shared.core.config import (
     check_environment, PIPELINE_APP_BUDGET_USD, PIPELINE_APP_BUDGET_FLOOR_USD,
-    EFFECTIVE_BUDGET_USD, effective_budget_usd, RELEASE_VERSION_BUMP,
+    EFFECTIVE_BUDGET_USD, effective_budget_usd, RELEASE_VERSION_BUMP, PIPELINE_SAST_ENABLED,
 )
 from src.shared.core.models import GlobalPipelineContext, WorkspacePaths, RUNS_BASE, BatchState, PipelineTelemetry
 from src.shared.core.runs import Projects
-from src.shared.core.environments import is_test_file, get_qa_profile, failure_origin_markers, all_comment_prefixes, DEPENDENCY_VENDOR_DIR
+from src.shared.core.environments import is_test_file, get_qa_profile, failure_origin_markers, all_comment_prefixes, auto_generated_patterns, DEPENDENCY_VENDOR_DIR, working_directory_for_component
 from src.shared.core.prompts import generate_repo_map
 from src.shared.utils.git_helpers import get_git_root, get_pipeline_snapshot_files
 from src.shared.utils.redaction import redact
@@ -704,6 +704,39 @@ def _cap_text(text: str, max_chars: int = FEEDBACK_MAX_CHARS) -> str:
     return f"{text[:half]}\n…[truncated]…\n{text[-half:]}"
 
 
+def _sandbox_root(ctx: GlobalPipelineContext) -> Path:
+    """Resolve the gate execution root: repo root for single-runtime tickets, subdir for monorepo."""
+    base = ctx.workspace_paths.repo_dir
+    if ctx.contract and ctx.contract.working_directory:
+        return base / ctx.contract.working_directory
+    return base
+
+
+# Matches ONLY the engine-authored byte-stable heading nexus_runner writes (`## Component: BACKEND`),
+# never the TPM's `**Component:**` prose line — so the pin keys off the deterministic tag.
+_COMPONENT_TAG_RE = re.compile(r"^##\s*Component:\s*(?:\w+\.)?(\w+)", re.MULTILINE)
+
+
+def _pin_working_directory_from_component(ctx: GlobalPipelineContext) -> None:
+    """Deterministically pin ``contract.working_directory`` from the ticket's ``## Component`` tag, OVERRIDING
+    whatever the TechLead LLM emitted. The component-layout SSOT (``working_directory_for_component``) is the
+    sole authority on where every gate runs (``_sandbox_root`` mount) and where QA writes its tests
+    (``qa.py``), so the layout never depends on prompt/skill adherence — the run-004 regression, where a skill
+    overrode it to ``null`` and split QA placement off from the gate. A tag-less ticket (legacy direct run)
+    keeps the contract's own value, preserving non-monorepo flows.
+    """
+    if not ctx.contract:
+        return
+    m = _COMPONENT_TAG_RE.search(ctx.pr_description or "")
+    if not m:
+        return
+    wd = working_directory_for_component(m.group(1))
+    if ctx.contract.working_directory != wd:
+        log.info(f"   [LAYOUT] working_directory pinned to {wd!r} from `## Component: "
+                 f"{m.group(1).upper()}` (TechLead emitted {ctx.contract.working_directory!r}).")
+    ctx.contract.working_directory = wd
+
+
 def reconcile_feedback_routing(review_report, arbiter_verdict):
     """Single SSOT for assigning the two isolated feedback channels (BACKLOG #18/#25).
 
@@ -799,9 +832,12 @@ async def enforce_documentation_guardrail(ctx: GlobalPipelineContext) -> str | N
     # Only NEWLY-CREATED files need a justification — intersect the candidates with the git-added set.
     repo_dir = ctx.workspace_paths.repo_dir
     added = set(await get_pipeline_snapshot_files(str(repo_dir), ctx.base_branch, diff_filter="A"))
+    generated_names = set(auto_generated_patterns(ctx.contract.environment_id or ""))
     violations = [
         rel for rel in uncontracted
-        if rel in added and _top_block_has_comment(repo_dir / rel) is False
+        if rel in added
+        and Path(rel).name not in generated_names
+        and _top_block_has_comment(repo_dir / rel) is False
     ]
     if not violations:
         return None
@@ -1303,6 +1339,11 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
         log.info("Skipping TechLead node: contract already present in context.")
     else:
         await run_techlead_node(ctx)
+        # Engine-deterministic layout: pin working_directory from the ticket's component tag (overriding any
+        # LLM/skill value) BEFORE the checkpoint, so the pinned value persists. The component decides where
+        # every gate executes and where QA writes its tests. A resumed contract is already pinned (or has no
+        # component tag), so no re-pin/extra save is needed here.
+        _pin_working_directory_from_component(ctx)
         enforce_financial_circuit_breaker(ctx, budget_usd)
         ctx.save_checkpoint(checkpoint_file)
         log.debug(f"Checkpoint saved after TechLead node: {checkpoint_file}")
@@ -1444,7 +1485,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
                 # reroutes to the Developer (no functional-budget spent), exactly like the doc guardrail.
                 build_ok, build_lines = await _timed_phase(
                     ctx.telemetry, "build",
-                    run_build_gate(ctx.contract.environment_id, str(ctx.workspace_paths.repo_dir)),
+                    run_build_gate(ctx.contract.environment_id, str(_sandbox_root(ctx)), env_overlays=ctx.env_overlays),
                 )
                 if build_ok:
                     break  # documented + compiles → proceed to gates/Reviewer
@@ -1457,7 +1498,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
                     log.warning("🔶 Compile gate failed on a NETWORK/restore error (not a code defect) — retrying the build once before judging.")
                     build_ok, build_lines = await _timed_phase(
                         ctx.telemetry, "build",
-                        run_build_gate(ctx.contract.environment_id, str(ctx.workspace_paths.repo_dir)),
+                        run_build_gate(ctx.contract.environment_id, str(_sandbox_root(ctx)), env_overlays=ctx.env_overlays),
                     )
                     if build_ok:
                         break
@@ -1509,7 +1550,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
         for qa_gate_retries in range(QA_GATE_MAX_REROUTES + 1):
             tc_ok, tc_lines = await _timed_phase(
                 ctx.telemetry, "test-compile",
-                run_test_compile_gate(ctx.contract.environment_id, str(ctx.workspace_paths.repo_dir)),
+                run_test_compile_gate(ctx.contract.environment_id, str(_sandbox_root(ctx)), env_overlays=ctx.env_overlays),
             )
             if tc_ok:
                 break
@@ -1555,11 +1596,11 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
         for lint_retries in range(LINT_GATE_MAX_REROUTES + 1):
             await _timed_phase(
                 ctx.telemetry, "format",
-                run_format_pass(ctx.contract.environment_id, str(ctx.workspace_paths.repo_dir)),
+                run_format_pass(ctx.contract.environment_id, str(_sandbox_root(ctx)), env_overlays=ctx.env_overlays),
             )
             lint_ok, lint_lines = await _timed_phase(
                 ctx.telemetry, "lint",
-                run_lint_gate(ctx.contract.environment_id, str(ctx.workspace_paths.repo_dir)),
+                run_lint_gate(ctx.contract.environment_id, str(_sandbox_root(ctx)), env_overlays=ctx.env_overlays),
             )
             if lint_ok:
                 break
@@ -1630,21 +1671,32 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
         log.debug("Triggering parallel validation gates (QA & Security)")
         # Timed as ONE "qa+sast" phase = the gather's true wall-clock (= max of the two, they run in
         # parallel), so the parallel work is NOT double-counted in the infra total.
+        async def _sast_stub() -> tuple[bool, list[str]]:
+            return True, ["SAST disabled (PIPELINE_SAST_ENABLED=false)."]
+
+        sast_coro = (
+            run_security_scan(
+                environment_id=ctx.contract.environment_id,
+                repo_root=str(_sandbox_root(ctx)),
+            )
+            if PIPELINE_SAST_ENABLED
+            else _sast_stub()
+        )
         qa_result, sec_result = await _timed_phase(
             ctx.telemetry, "qa+sast",
             asyncio.gather(
                 run_qa_unit_tests(
                     environment_id=ctx.contract.environment_id,
-                    repo_root=str(ctx.workspace_paths.repo_dir),
+                    repo_root=str(_sandbox_root(ctx)),
+                    env_overlays=ctx.env_overlays,
                 ),
-                run_security_scan(
-                    environment_id=ctx.contract.environment_id,
-                    repo_root=str(ctx.workspace_paths.repo_dir),
-                ),
+                sast_coro,
             ),
         )
         qa_success, qa_lines = qa_result
         sec_success, sec_lines = sec_result
+        if not PIPELINE_SAST_ENABLED:
+            log.info("  [GATE][SAST-SECURITY] SKIPPED (PIPELINE_SAST_ENABLED=false)")
 
         # 5. Comprehensive Audit Phase (Reviewer Agent) — failure log sliced marker-aware so the root
         #    ImportError/Traceback is preserved even when buried above a long stack.
@@ -1720,7 +1772,8 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
                 if verdict.route == "contract" and amend_allowed:
                     pinned_env = ctx.contract.environment_id
                     await run_techlead_node(ctx, amendment_feedback=verdict.contract_amendment_directive)
-                    ctx.contract.environment_id = pinned_env   # PIN: amendment never thrashes the platform
+                    ctx.contract.environment_id    = pinned_env   # PIN: amendment never thrashes the platform (Docker image)
+                    _pin_working_directory_from_component(ctx)    # PIN: amendment never moves the component layout
                     ctx.contract_amendments += 1
                     regenerate_tests = True                    # QA re-derives tests vs the amended contract
                     ctx.error_trace = ""                       # stale: referenced the pre-amendment contract

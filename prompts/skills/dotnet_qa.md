@@ -3,6 +3,7 @@ skill_id: dotnet_qa
 type: domain
 triggers: [dotnet, csharp]
 nodes: [qa, reviewer]
+enabled: false
 ---
 LANGUAGE TARGET: .NET (C#) — concrete syntax for the .NET tech stack. The language-neutral rules
 (exception fidelity, namespace/import fidelity, whole-file assembly, BVA strategy) live in the QA

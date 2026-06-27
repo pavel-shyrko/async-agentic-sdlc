@@ -1,12 +1,13 @@
 from src.shared.core.observability import log, log_token_usage
-from src.shared.core.config import REVIEWER_MODEL
+from src.shared.core.config import REVIEWER_MODEL, PIPELINE_REVIEWER_STRICT
 from src.shared.core.models import ReviewReport, GlobalPipelineContext
 from src.shared.core.prompts import get_system_prompt, build_agent_context
 from src.shared.utils.llm import run_structured_llm
 
 async def run_reviewer_node(ctx: GlobalPipelineContext, qa_success: bool, qa_log: str, sec_success: bool, sec_log: list[str]) -> None:
     model_name = REVIEWER_MODEL
-    log.info(f"🔍 [ROLE] Reviewer Agent | [MODEL] {model_name}")
+    prompt_name = "reviewer" if PIPELINE_REVIEWER_STRICT else "reviewer_lenient"
+    log.info(f"🔍 [ROLE] Reviewer Agent | [MODEL] {model_name} | [MODE] {'STRICT' if PIPELINE_REVIEWER_STRICT else 'LENIENT'}")
 
     # qa_log arrives pre-sliced (marker-aware) from the orchestrator; sec_log is still a raw line list.
     qa_report = qa_log if qa_log else "No logs produced."
@@ -28,7 +29,7 @@ async def run_reviewer_node(ctx: GlobalPipelineContext, qa_success: bool, qa_log
         f"=== SAST SECURITY SCAN ({'PASSED' if sec_success else 'FAILED'}) ===\n{sec_report}"
     )
 
-    sys_prompt = get_system_prompt("reviewer") + "\n\n" + await build_agent_context("reviewer", ctx)
+    sys_prompt = get_system_prompt(prompt_name) + "\n\n" + await build_agent_context("reviewer", ctx)
 
     report, raw_response = await run_structured_llm(
         "reviewer",

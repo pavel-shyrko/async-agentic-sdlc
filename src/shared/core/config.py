@@ -32,18 +32,17 @@ AVAILABLE_GEMINI_MODELS = (
 )
 
 # Per-role model — set to any value from AVAILABLE_GEMINI_MODELS.
-TECHLEAD_MODEL = GEMINI_3_5_FLASH
-QA_MODEL = GEMINI_3_5_FLASH
-REVIEWER_MODEL = GEMINI_3_5_FLASH
-TECHWRITER_MODEL = GEMINI_3_5_FLASH   # Living-ADR maintainer; matches the other Gemini worker roles.
-ARBITER_MODEL = GEMINI_3_5_FLASH      # Failure-triage / contract-conflict classifier (see runner FSM).
-DEVOPS_MODEL = GEMINI_3_5_FLASH       # Deploy-scaffolding finalizer (E4); matches the other Gemini worker roles.
+TECHLEAD_MODEL = GEMINI_2_5_PRO
+REVIEWER_MODEL = GEMINI_2_5_FLASH
+TECHWRITER_MODEL = GEMINI_2_5_PRO   # Living-ADR maintainer; matches the other Gemini worker roles.
+ARBITER_MODEL = GEMINI_2_5_PRO      # Failure-triage / contract-conflict classifier (see runner FSM).
+DEVOPS_MODEL = GEMINI_2_5_FLASH       # Deploy-scaffolding finalizer (E4); matches the other Gemini worker roles.
 # Nexus Control Plane roles (Product Owner / Solution Architect / TPM). Defaulted to the
 # cheap flash-lite tier to match the worker roles and keep the PoC inexpensive; SA/TPM can be
 # bumped to GEMINI_2_5_PRO for deeper architectural reasoning.
-PO_MODEL = GEMINI_2_5_FLASH     # lighter tier — avoids gemini-3.5-flash 503 high-demand spikes
-SA_MODEL = GEMINI_2_5_FLASH
-TPM_MODEL = GEMINI_2_5_FLASH
+PO_MODEL = GEMINI_2_5_PRO
+SA_MODEL = GEMINI_2_5_PRO
+TPM_MODEL = GEMINI_2_5_PRO
 # Available Claude models for the Developer agent (Claude CLI). The CLI --model accepts a tier
 # ALIAS (always resolves to the latest of that tier) or a pinned full id for reproducibility.
 # Ordered most → least capable / expensive:
@@ -64,8 +63,15 @@ EFFORT_MAX    = "max"
 AVAILABLE_EFFORT_LEVELS = (EFFORT_LOW, EFFORT_MEDIUM, EFFORT_HIGH, EFFORT_XHIGH, EFFORT_MAX)
 
 # Developer agent (Claude CLI) — set each to any value from the catalogs above.
-DEVELOPER_MODEL = CLAUDE_SONNET           # any of AVAILABLE_CLAUDE_MODELS (or a pinned full id)
+DEVELOPER_MODEL = CLAUDE_HAIKU           # any of AVAILABLE_CLAUDE_MODELS (or a pinned full id)
 DEVELOPER_EFFORT = EFFORT_MEDIUM          # any of AVAILABLE_EFFORT_LEVELS
+
+# QA agent (Claude CLI) — Haiku (small/fast): test generation is mechanical and benefits most from
+# file-system access (Read tool verifies import paths) rather than deep reasoning.
+QA_MODEL = CLAUDE_HAIKU
+QA_EFFORT = EFFORT_LOW
+QA_CLI_TIMEOUT = int(os.environ.get("QA_CLI_TIMEOUT", "600"))       # 10 min hard cap; env-overridable
+QA_CLI_IDLE_TIMEOUT = int(os.environ.get("QA_CLI_IDLE_TIMEOUT", "120"))  # 2 min inactivity; env-overridable
 
 # Wall-clock ceiling (seconds) for ONE agentic Developer CLI session. The launcher kills+reaps the
 # child on expiry so a stalled `claude` can never hang the orchestrator. Generous default (15 min);
@@ -94,6 +100,16 @@ CLAUDE_CLI_BIN = os.environ.get("CLAUDE_CLI_BIN", "claude")
 # by this much (`v0.1.0` on a tagless/greenfield repo). The version itself is repo-derived — never persisted
 # — so only the bump POLICY is a knob. Env-overridable.
 RELEASE_VERSION_BUMP = os.environ.get("RELEASE_VERSION_BUMP", "minor")
+
+# Reviewer strictness mode. When False, loads reviewer_lenient.md — approves unless a CRITICAL
+# defect is found (crash, security hole, core business-requirement violation). Set to True (the
+# default) to restore the standard "brutal" reviewer. Env-overridable for instant toggling.
+PIPELINE_REVIEWER_STRICT = os.environ.get("PIPELINE_REVIEWER_STRICT", "true").lower() != "false"
+
+# SAST gate toggle. When False, the Semgrep security scan is skipped and treated as passed — useful
+# when the image is unavailable or the scan is not relevant (e.g. rapid logic iteration). Set to
+# True (default) to restore the standard gate. Env-overridable for instant toggling.
+PIPELINE_SAST_ENABLED = os.environ.get("PIPELINE_SAST_ENABLED", "true").lower() != "false"
 
 # ==========================================
 # FINOPS — Financial Circuit Breaker budget
@@ -134,9 +150,9 @@ def effective_budget_usd() -> Decimal:
     return current if current is not None else PIPELINE_APP_BUDGET_USD
 
 # Role -> (model, human-readable agent name) for structured (instructor) LLM calls.
+# NOTE: "qa" is intentionally absent — QA uses the Claude CLI (like the Developer), not run_structured_llm.
 ROLE_MODELS = {
     "techlead": (TECHLEAD_MODEL, "Technical Lead Agent"),
-    "qa":        (QA_MODEL,        "QA Agent"),
     "reviewer":  (REVIEWER_MODEL,  "Reviewer Agent"),
     "techwriter": (TECHWRITER_MODEL, "Technical Writer Agent"),
     "arbiter":   (ARBITER_MODEL,   "Arbiter Agent"),

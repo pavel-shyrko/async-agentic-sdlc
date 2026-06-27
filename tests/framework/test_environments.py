@@ -15,12 +15,14 @@ from src.shared.core.environments import (
     QA_LANGUAGE_PROFILES,
     GITIGNORE_TEMPLATES,
     get_gitignore_template,
+    get_combined_gitignore_template,
     all_source_extensions,
     extension_language_map,
     deploy_target_for_archetype,
     deploy_skill_for_target,
     deploy_target_skills,
     dependency_manifest,
+    working_directory_for_component,
 )
 
 
@@ -137,6 +139,24 @@ class AuthoringContractTests(unittest.TestCase):
         self.assertIsNone(dependency_manifest(None))
 
 
+class ComponentWorkingDirTests(unittest.TestCase):
+    """The component→working_directory SSOT — the engine pins this from the ticket's `## Component` tag so
+    the monorepo layout never depends on prompt/skill adherence."""
+
+    def test_component_maps_to_its_subdir(self) -> None:
+        self.assertEqual(working_directory_for_component("BACKEND"), "backend")
+        self.assertEqual(working_directory_for_component("FRONTEND"), "frontend")
+
+    def test_case_insensitive_and_whitespace_tolerant(self) -> None:
+        self.assertEqual(working_directory_for_component(" backend "), "backend")
+        self.assertEqual(working_directory_for_component("Frontend"), "frontend")
+
+    def test_infra_shared_unknown_and_none_have_no_component_root(self) -> None:
+        # INFRA/SHARED are repo-meta / shared glue (no component source root); unknown/None never raise.
+        for value in ("INFRA", "SHARED", "", "WHATEVER", None):
+            self.assertIsNone(working_directory_for_component(value))
+
+
 class DeployTargetRegistryTests(unittest.TestCase):
     """SUPPORTED_DEPLOY_TARGETS is the SSOT for WHERE an app deploys, mirroring SUPPORTED_ENVIRONMENTS.
     Pin its shape + the archetype→target / target→skill derivations so a new cloud is a registry entry
@@ -230,6 +250,20 @@ class GitignoreTemplateTests(unittest.TestCase):
                 "/" in line or "*" in line or "." in line,
                 f"suspicious unanchored bare pattern in go template: {line!r}",
             )
+
+    def test_combined_gitignore_merges_both_envs(self) -> None:
+        combined = get_combined_gitignore_template(["python-3.12-core", "node-22-web"])
+        self.assertIn("__pycache__/", combined)      # python patterns present
+        self.assertIn("node_modules/", combined)     # node patterns present
+
+    def test_combined_gitignore_deduplicates_same_env(self) -> None:
+        single = get_combined_gitignore_template(["python-3.12-core"])
+        doubled = get_combined_gitignore_template(["python-3.12-core", "python-3.12-core"])
+        self.assertEqual(single.strip(), doubled.strip())
+
+    def test_combined_gitignore_single_env_matches_single_template(self) -> None:
+        combined = get_combined_gitignore_template(["python-3.12-core"])
+        self.assertEqual(combined.strip(), get_gitignore_template("python-3.12-core").strip())
 
 
 if __name__ == "__main__":

@@ -28,8 +28,10 @@ LANGUAGE TARGET: Python — production-code rules for the Python tech stack.
 
 ## Dependency Manifest (MANDATORY — the toolchain restores from `requirements.txt`)
 - Declare EVERY third-party runtime AND test dependency (e.g. `fastapi`, `uvicorn`, `pydantic`,
-  `pytest`, `httpx`), version-pinned, one per line, in a `requirements.txt` at the repository ROOT.
-  Create the file if it is not already in the contract — it is required repository glue, like `__init__.py`.
+  `pytest`, `httpx`), version-pinned, one per line, in a `requirements.txt` at the COMPONENT ROOT — the
+  directory the gate runs in (e.g. `backend/requirements.txt` for a backend component, else a repo-root
+  `requirements.txt` for a single flat package). Create the file if it is not already in the contract — it
+  is required repository glue, like `__init__.py`.
 - The build/test toolchain restores dependencies with `pip install -r requirements.txt` ONLY. A
   `pyproject.toml` alone is NOT installed, so any dependency present only in `[project].dependencies`
   will be MISSING at build/test and raise `ModuleNotFoundError`.

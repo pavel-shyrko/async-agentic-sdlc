@@ -23,7 +23,7 @@ DEPLOY TARGET: Google Cloud Run (web services) via Workload Identity Federation.
 
 ## Build + push the image (Artifact Registry)
 - Configure docker auth for Artifact Registry: `gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet`.
-- Build the image tag from `${{ vars.GCP_REGION }}`, `${{ vars.GCP_PROJECT_ID }}`, `${{ vars.GCP_REGISTRY_NAME }}` and the repo-derived `<service>` name (e.g. `${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_REGISTRY_NAME }}/${{ github.event.repository.name }}:${{ github.sha }}`), then `docker build` + `docker push`.
+- Build the image tag from `${{ vars.GCP_REGION }}`, `${{ vars.GCP_PROJECT_ID }}`, `${{ vars.GCP_REGISTRY_NAME }}` and the repo-derived `<service>` name (e.g. `${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_REGISTRY_NAME }}/${{ github.event.repository.name }}:${{ github.sha }}`), then build FROM THE ARCHETYPE'S DOCKERFILE with its matching build context — `docker build -f <component>/Dockerfile <component>` (e.g. `-f backend/Dockerfile ./backend` for a backend service) — and `docker push`. A fullstack monorepo builds each component (backend, frontend) as its own image + service.
 
 ## Deploy to Cloud Run
 - Deploy with `google-github-actions/deploy-cloudrun@v2` in **image mode**: pass `service: ${{ github.event.repository.name }}` (the repo-derived name — see "Service naming" above; never a hardcoded literal), the pushed `image`, and `region: ${{ vars.GCP_REGION }}`. Do NOT deploy from a Knative `service.yaml` (the action's `metadata:` input, equivalent to `gcloud run services replace`) — see the warning below.

@@ -25,6 +25,42 @@ in the QA system prompt; this skill only maps them to Node idioms.
 - Assert thrown errors with `expect(() => fn()).toThrow(ErrorType)` — pass the error CLASS/type only.
   NEVER `.toThrow('message')`, `.message`, or any message-derived value.
 
+## Test Runner Working Directory
+- `npm test` runs from the **component's package directory** (e.g. `frontend/`), NOT from the repo root. All import paths are relative to `frontend/src/` — do NOT prefix imports with `frontend/`. Read each source file to verify the exact path before writing any import.
+- In a fullstack monorepo, frontend tests and backend tests run independently; never import from the backend package in a frontend test.
+
 ## Imports
-- `import { Symbol } from '<relative module path>'` using the exact path from the topology contract /
-  production snapshot.
+- `import { Symbol } from '<relative module path>'` using the exact path from the topology contract / the source file you Read. Relative paths are relative to the test file's location (e.g. `../api/client`).
+
+## ESM Module-Level Singleton Mocking (vitest)
+
+When the production module creates a singleton **at module level** (e.g. `const client = lib.create(...)`
+executed once during import), `beforeEach` is too late — by the time it runs, `lib.create()` has already
+been called with the auto-mock's default (`undefined`) return value, causing `TypeError: Cannot read
+properties of undefined` on every call.
+
+**Correct pattern — use the `vi.mock` factory argument:**
+```js
+const mockInstance = {
+  get: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn(), delete: vi.fn(),
+};
+vi.mock('axios', () => ({
+  default: { create: vi.fn(() => mockInstance) },
+}));
+```
+The factory runs synchronously during module resolution, before any test code, so `lib.create()` returns
+`mockInstance` when the module under test initialises its singleton.
+
+**NEVER write:**
+```js
+// ❌ Too late — module already initialized with undefined
+beforeEach(() => { axios.create.mockReturnValue(mockAxiosInstance); });
+```
+
+**NEVER assert per-call `create` counts for a singleton design:**
+```js
+// ❌ Wrong — the contract says "configure one instance", not "create one per call"
+expect(axios.create).toHaveBeenCalledTimes(2); // after two getTasks() calls
+```
+If the contract mandates a pre-configured singleton, `create` is called exactly **once** at import time —
+assert that at most in a single dedicated `it` block, or omit the count assertion entirely.

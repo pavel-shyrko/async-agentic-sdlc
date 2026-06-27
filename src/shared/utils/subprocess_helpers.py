@@ -102,7 +102,7 @@ def _humanize_stream_event(line: str) -> str | None:
     return " | ".join(parts) if parts else None
 
 
-async def stream_claude_stdout(stream: asyncio.StreamReader, raw_buffer: list, on_activity=None):
+async def stream_claude_stdout(stream: asyncio.StreamReader, raw_buffer: list, label: str = "Developer Agent", on_activity=None):
     """Consume the Claude CLI stream-json stdout: keep every raw line (for usage parsing) and surface
     a condensed, human-readable progress line per assistant event so the session is never a silent
     black box."""
@@ -116,18 +116,19 @@ async def stream_claude_stdout(stream: asyncio.StreamReader, raw_buffer: list, o
         raw_buffer.append(decoded)
         summary = _humanize_stream_event(decoded)
         if summary:
-            log.info(f"   [Developer Agent] {summary}")
+            log.info(f"   [{label}] {summary}")
 
 
 # A Claude subscription session/usage-limit block. The CLI surfaces it as a single assistant line
-# (e.g. "You've hit your session limit · resets 5:30am (Europe/Warsaw)") then exits non-zero without
+# (e.g. "You've hit your session limit · resets 5:30am (Europe/Warsaw)" or
+# "You've hit your weekly limit · resets Jun 29, 9pm") then exits non-zero without
 # touching a file — distinct from a stalled call (silence, caught by the idle watchdog) and from real
 # work. Two alternations keep it targeted (a verb adjacent to "<kind> limit") so it does not fire on an
-# agent merely discussing rate limits in code/output: "hit/reached/exceeded … session/usage/rate limit"
-# OR "session/usage/rate limit … reset/reached".
+# agent merely discussing rate limits in code/output: "hit/reached/exceeded … session/usage/rate/weekly limit"
+# OR "session/usage/rate/weekly limit … reset/reached".
 _CLAUDE_QUOTA_RE = re.compile(
-    r"(?:hit|reached|exceeded)[^\n]{0,40}\b(?:session|usage|rate)\s+limit\b"
-    r"|\b(?:session|usage|rate)\s+limit\b[^\n]{0,40}(?:reset|reached)",
+    r"(?:hit|reached|exceeded)[^\n]{0,40}\b(?:session|usage|rate|weekly)\s+limit\b"
+    r"|\b(?:session|usage|rate|weekly)\s+limit\b[^\n]{0,40}(?:reset|reached)",
     re.IGNORECASE,
 )
 
@@ -232,6 +233,7 @@ async def run_claude_cli(
     prompt: str, files: list[str], allowed_root: str,
     model: str | None = None, effort: str | None = None,
     timeout: float | None = None, idle_timeout: float | None = None,
+    label: str = "Developer Agent",
 ) -> tuple[int, dict | None]:
     """Launches the Claude CLI against sandbox-contained files and streams its output.
 
@@ -295,8 +297,8 @@ async def run_claude_cli(
 
     stdout_buffer, stderr_buffer = [], []
     reader = asyncio.gather(
-        stream_claude_stdout(proc.stdout, stdout_buffer, on_activity=_touch),
-        stream_subprocess_output("   [Developer Agent][STDERR]", proc.stderr, stderr_buffer,
+        stream_claude_stdout(proc.stdout, stdout_buffer, label=label, on_activity=_touch),
+        stream_subprocess_output(f"   [{label}][STDERR]", proc.stderr, stderr_buffer,
                                  verbose_to_console=True, on_activity=_touch),
     )
     watchdog = asyncio.create_task(_watchdog())

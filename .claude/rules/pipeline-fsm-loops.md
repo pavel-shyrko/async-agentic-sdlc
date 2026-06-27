@@ -22,6 +22,11 @@ no agent call, idempotent via `BatchState.released_tag`, gated on `cfg.release` 
 here. Related: [repo-module-map](repo-module-map.md),
 [agent-contracts](agent-contracts.md), [config-constant-convention](config-constant-convention.md).
 
+## Bootstrap phase (runs once, before the outer cycle)
+`run_executor` runs the TechLead node first: `run_techlead_node(ctx)` emits the `TechLeadContract`. Immediately after, the engine deterministically pins the gate layout: `_pin_working_directory_from_component(ctx)` reads the `## Component: <TAG>` heading that `nexus_runner.py` wrote into the ticket body and overrides `contract.working_directory` with the SSOT value from `working_directory_for_component` (`BACKEND→"backend"`, `FRONTEND→"frontend"`, `INFRA`/`SHARED`→`None`) — the run-004 regression backstop so the monorepo layout is never subject to LLM/skill prompt adherence. A tag-less ticket (legacy direct run) is left untouched. Then `enforce_financial_circuit_breaker` and checkpoint. On resume, the TechLead node is skipped (contract already present; no re-pin needed).
+
+**Contract amendment pin** (inside the outer cycle, Arbiter `contract_amendment` route): after `run_techlead_node(ctx, amendment_feedback=…)`, both `contract.environment_id` AND `contract.working_directory` are re-pinned from the preserved values (`pinned_env` and `_pin_working_directory_from_component`) — an amendment never thrashes the platform image or the component layout.
+
 ## Outer cycle
 `while ctx.current_attempt <= MAX_FUNCTIONAL_RETRIES + ctx.contract_amendments * AMENDMENT_RETRY_BONUS` —
 a **dynamic ceiling** recomputed each iteration from persisted state, so an Arbiter contract amendment

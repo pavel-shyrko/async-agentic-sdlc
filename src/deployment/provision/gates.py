@@ -70,13 +70,24 @@ def run_devops_gate(repo_dir, archetype: str | None = None) -> list[str]:
             except yaml.YAMLError as exc:
                 problems.append(f"deploy.yml is not valid YAML: {exc}")
 
-    dockerfile = repo_dir / "Dockerfile"
-    if dockerfile.exists():
-        lines = [ln.strip().upper() for ln in dockerfile.read_text(encoding="utf-8").splitlines()]
-        if not any(ln.startswith("FROM ") for ln in lines):
-            problems.append("Dockerfile is missing a FROM directive.")
-        if not any(ln.startswith("CMD") or ln.startswith("ENTRYPOINT") for ln in lines):
-            problems.append("Dockerfile is missing a CMD/ENTRYPOINT directive.")
+    # Under the universal component layout the (backend) service Dockerfile lives at backend/Dockerfile for
+    # EVERY web-service archetype — a single rest_api/crud_app AND the backend half of a fullstack_monorepo
+    # (which additionally has frontend/Dockerfile). A cli_tool has no Dockerfile (skipped when absent).
+    if archetype == "fullstack_monorepo":
+        dockerfiles_to_check = [
+            ("backend/Dockerfile", repo_dir / "backend" / "Dockerfile"),
+            ("frontend/Dockerfile", repo_dir / "frontend" / "Dockerfile"),
+        ]
+    else:
+        dockerfiles_to_check = [("backend/Dockerfile", repo_dir / "backend" / "Dockerfile")]
+
+    for dockerfile_label, dockerfile in dockerfiles_to_check:
+        if dockerfile.exists():
+            lines = [ln.strip().upper() for ln in dockerfile.read_text(encoding="utf-8").splitlines()]
+            if not any(ln.startswith("FROM ") for ln in lines):
+                problems.append(f"{dockerfile_label} is missing a FROM directive.")
+            if not any(ln.startswith("CMD") or ln.startswith("ENTRYPOINT") for ln in lines):
+                problems.append(f"{dockerfile_label} is missing a CMD/ENTRYPOINT directive.")
 
     # README-URL publish step contract (both platform skills emit an "Update README with … URL" step that
     # replaces text BETWEEN pre-seeded markers, falling back to an append). Two failure modes, both seen live:

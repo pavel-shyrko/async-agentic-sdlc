@@ -8,14 +8,18 @@ from src.shared.core.environments import SUPPORTED_ENVIRONMENTS, deploy_target_s
 from src.shared.core.prompts import get_system_prompt, get_skill, _parse_frontmatter
 from src.shared.utils.llm import run_structured_llm
 
-# The archetype skills (app SHAPE: REST API / CRUD / CLI). All are injected so the agent can self-classify
-# the finished app and follow the matching branch — the chosen class is recorded in DevOpsManifests.archetype.
-# The deploy-target PLATFORM skills (HOW/where to deploy) are injected alongside, registry-driven (below).
-_DEVOPS_SKILLS = ("devops_rest_api", "devops_crud_app", "devops_cli_tool")
+# The archetype skills (app SHAPE: REST API / CRUD / CLI / Fullstack Monorepo). All are injected so the
+# agent can self-classify the finished app and follow the matching branch — the chosen class is recorded in
+# DevOpsManifests.archetype. The deploy-target PLATFORM skills (HOW/where to deploy) are injected alongside,
+# registry-driven (below).
+_DEVOPS_SKILLS = ("devops_rest_api", "devops_crud_app", "devops_cli_tool", "devops_fullstack_monorepo")
 
 # Files the node writes into the clone (relative to repo root). Dockerfile/.env.example are conditional.
+# Under the universal component layout every backend service — a single web service OR the backend half of a
+# fullstack monorepo — keeps its Dockerfile at backend/Dockerfile (the frontend at frontend/Dockerfile).
 _WORKFLOW_PATH = ".github/workflows/deploy.yml"
-_DOCKERFILE_PATH = "Dockerfile"
+_BACKEND_DOCKERFILE_PATH = "backend/Dockerfile"
+_FRONTEND_DOCKERFILE_PATH = "frontend/Dockerfile"
 _ENV_EXAMPLE_PATH = ".env.example"
 
 
@@ -96,7 +100,9 @@ async def run_devops_node(
     ctx.devops_manifests = result
 
     # Write the manifests into the clone. The workflow is always written; the Dockerfile only for a web
-    # service (null for a CLI tool); the env scaffold only when provided.
+    # service (null for a CLI tool); the env scaffold only when provided. Under the component layout the
+    # (backend) service Dockerfile ALWAYS lands at backend/Dockerfile — for a single web service AND the
+    # backend half of a fullstack_monorepo; the frontend Dockerfile (monorepo only) at frontend/Dockerfile.
     staged: list[str] = []
     workflow_file = repo_dir / _WORKFLOW_PATH
     workflow_file.parent.mkdir(parents=True, exist_ok=True)
@@ -104,8 +110,16 @@ async def run_devops_node(
     staged.append(_WORKFLOW_PATH)
 
     if result.dockerfile_content:
-        (repo_dir / _DOCKERFILE_PATH).write_text(result.dockerfile_content, encoding="utf-8")
-        staged.append(_DOCKERFILE_PATH)
+        backend_dockerfile = repo_dir / _BACKEND_DOCKERFILE_PATH
+        backend_dockerfile.parent.mkdir(parents=True, exist_ok=True)
+        backend_dockerfile.write_text(result.dockerfile_content, encoding="utf-8")
+        staged.append(_BACKEND_DOCKERFILE_PATH)
+
+    if result.frontend_dockerfile_content:
+        frontend_dockerfile = repo_dir / _FRONTEND_DOCKERFILE_PATH
+        frontend_dockerfile.parent.mkdir(parents=True, exist_ok=True)
+        frontend_dockerfile.write_text(result.frontend_dockerfile_content, encoding="utf-8")
+        staged.append(_FRONTEND_DOCKERFILE_PATH)
 
     if result.env_scaffold_content:
         (repo_dir / _ENV_EXAMPLE_PATH).write_text(result.env_scaffold_content, encoding="utf-8")

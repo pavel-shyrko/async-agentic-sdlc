@@ -122,12 +122,13 @@ SUPPORTED_ENVIRONMENTS = {
         "comment_prefixes": ("#", '"""', "'''"),
         "dependency_manifest": "requirements.txt",
         "authoring_contract": (
-            "Dependency manifest: declare EVERY third-party runtime AND test dependency, version-pinned, one per line, in `requirements.txt` at the repository root. The toolchain restores from `requirements.txt` ONLY (`pip install -r requirements.txt`) — a `pyproject.toml` alone is NOT installed, so any dependency present only in `[project].dependencies` will be missing at build/test time and raise a module-not-found error. If the project also keeps a `pyproject.toml`, mirror its dependencies into `requirements.txt`; the two must not drift.",
+            "Dependency manifest: declare EVERY third-party runtime AND test dependency, version-pinned, one per line, in `requirements.txt` at the COMPONENT root (the directory the gate runs in — e.g. `backend/requirements.txt` for a backend component, else a repo-root `requirements.txt` for a single flat package). The toolchain restores from that `requirements.txt` ONLY (`pip install -r requirements.txt`) — a `pyproject.toml` alone is NOT installed, so any dependency present only in `[project].dependencies` will be missing at build/test time and raise a module-not-found error. If the project also keeps a `pyproject.toml`, mirror its dependencies into `requirements.txt`; the two must not drift.",
         ),
         "language_id": "python",
         "description": "Python 3.12 core runtime (pytest; Semgrep SAST).",
     },
     "go-1.23-cli": {
+        "enabled": False,
         "image": "sdlc-sandbox/go:latest",
         "build_cmd": "go build ./...",
         "test_cmd": "go test ./...",
@@ -156,6 +157,9 @@ SUPPORTED_ENVIRONMENTS = {
         "failure_origin_markers": ("panic:", "--- FAIL", "build failed", "cannot find package"),
         "repo_map_ignore_dirs": ("vendor", "bin"),
         "comment_prefixes": ("//", "/*", "*"),
+        # go mod tidy/download auto-generates go.sum — it cannot carry a comment and the
+        # toolchain regenerates it on every module operation.
+        "auto_generated_file_patterns": ("go.sum",),
         "dependency_manifest": "go.mod",
         "authoring_contract": (
             "Dependency manifest: declare all module dependencies in `go.mod` (with a consistent `go.sum`); the toolchain restores via `go mod download`. Run `go mod tidy` so the manifest matches the imports — a dependency imported but absent from `go.mod` breaks the offline build.",
@@ -166,7 +170,7 @@ SUPPORTED_ENVIRONMENTS = {
     "node-22-web": {
         "image": "sdlc-sandbox/node:latest",
         "build_cmd": "npm run build --if-present",
-        "test_cmd": "npm test",
+        "test_cmd": "CI=true npm test",
         "setup_cmd": "npm ci || npm install",
         # lint_cmd: HARD lint gate via the project's own eslint. SELF-GUARDS in the command itself: if the
         # clone carries no eslint config (flat eslint.config.* / legacy .eslintrc* / an "eslintConfig" key
@@ -189,6 +193,9 @@ SUPPORTED_ENVIRONMENTS = {
         "failure_origin_markers": ("Error:", "Cannot find module", "ReferenceError", "SyntaxError", "TypeError:"),
         "repo_map_ignore_dirs": ("node_modules", "dist", "build", "out", "coverage"),
         "comment_prefixes": ("//", "/*", "*"),
+        # npm auto-generates package-lock.json on every install — it cannot carry a top-of-file
+        # comment (JSON spec) and the toolchain would overwrite one anyway.
+        "auto_generated_file_patterns": ("package-lock.json",),
         "dependency_manifest": "package.json",
         "authoring_contract": (
             "Dependency manifest: declare all dependencies and devDependencies (including the test runner) in `package.json`, with a committed `package-lock.json`; the toolchain restores via `npm ci` (falling back to `npm install`). The `test` script MUST be present, or the test gate has nothing to run.",
@@ -197,6 +204,7 @@ SUPPORTED_ENVIRONMENTS = {
         "description": "Node.js 22 / JS / React (node, npm — frontend build & tests; Semgrep SAST).",
     },
     "dotnet-10-sdk": {
+        "enabled": False,
         "image": "sdlc-sandbox/dotnet:latest",
         "build_cmd": "dotnet build",
         "test_cmd": "dotnet test",
@@ -271,6 +279,7 @@ SUPPORTED_DEPLOY_TARGETS = {
         # target carrying this flag (registry-driven — a future private-by-default target simply omits it).
         "requires_public_invoker": True,
         "runtime_constraints": (
+            "Application code resides under /backend/ (the component layout); the service is built from backend/Dockerfile with the ./backend build context.",
             "Listen on the port given by the PORT environment variable (the platform injects it; default 8080) and bind 0.0.0.0 — never localhost.",
             "Boot with ZERO required configuration: every environment-sourced setting MUST have a safe in-code default. Environment variables OVERRIDE behavior; they never ENABLE startup.",
             "Be stateless: persist nothing to local disk between requests (the container filesystem is ephemeral and per-instance).",
@@ -282,7 +291,25 @@ SUPPORTED_DEPLOY_TARGETS = {
         "archetypes": ("cli_tool",),
         "skill": "deploy_github_release",
         "runtime_constraints": (
+            "Application/library code resides under /backend/ (the component layout); the build/release workflow runs its steps in backend/ and packages the artifact from there.",
             "Ship a self-contained, runnable/installable artifact; do not assume a hosted runtime or platform-injected environment.",
+        ),
+    },
+    "gcp-cloud-run-monorepo": {
+        "description": "Dual Google Cloud Run deployment for a fullstack monorepo — one service for the backend (./backend/Dockerfile) and one for the frontend (./frontend/Dockerfile, Nginx serving React static files).",
+        "archetypes": ("fullstack_monorepo",),
+        "skill": "deploy_gcp",
+        # Both services are public-facing; the deploy workflow MUST grant unauthenticated invocation
+        # for each service, else Cloud Run rejects every anonymous request with HTTP 403.
+        "requires_public_invoker": True,
+        "runtime_constraints": (
+            "Backend MUST listen on the port given by the PORT environment variable and bind 0.0.0.0 — never localhost.",
+            "Backend MUST boot with ZERO required configuration: every environment-sourced setting MUST have a safe in-code default.",
+            "Backend MUST be stateless: persist nothing to local disk between requests.",
+            "Backend MUST expose a lightweight health endpoint for liveness/readiness probes.",
+            "Frontend MUST be Nginx serving the React static build; listen on $PORT.",
+            "Both services MUST be publicly invocable (unauthenticated) by default.",
+            "Backend code MUST reside under /backend/; frontend code MUST reside under /frontend/.",
         ),
     },
 }
@@ -330,7 +357,9 @@ SAST_IMAGE = "sdlc-sandbox/semgrep:latest"
 # --exclude skips the engine's vendored-deps dir so SAST never scans (or flags findings in) third-party
 # packages a gate restored into /workspace/<DEPENDENCY_VENDOR_DIR>. Generic flag + engine-universal dir name
 # — no per-language coupling.
-SAST_CMD = f"semgrep scan --error --metrics off --exclude={DEPENDENCY_VENDOR_DIR} --config /opt/semgrep-rules /workspace"
+# Exclude opt.* rules — they are advisory/optional by Semgrep taxonomy and produce false positives
+# (e.g. jsx-not-internationalized on scaffold text) that deadlock the FSM when the Reviewer approves.
+SAST_CMD = f"semgrep scan --error --metrics off --exclude={DEPENDENCY_VENDOR_DIR} --config /opt/semgrep-rules --exclude-rule 'opt.*' /workspace"
 
 
 # ==========================================================================================
@@ -466,6 +495,27 @@ GITIGNORE_TEMPLATES = {
 }
 
 
+def resolve_environment(environment_id: str, env_overlays: dict | None = None) -> dict:
+    """Return the merged environment spec for a gate: base registry entry updated with any
+    skill-declared overlays (from ``GlobalPipelineContext.env_overlays``).
+
+    Skill frontmatter ``env_overrides`` lets a domain skill adapt setup/test/lint commands to a layout
+    that the base registry cannot express — a rarely-needed escape hatch. The monorepo stacks do NOT use
+    it: a component ticket carries ``working_directory`` (``backend``/``frontend``, pinned by the engine
+    from the ``## Component`` tag — ``working_directory_for_component``), which makes the gate execute
+    INSIDE that component dir (``_sandbox_root`` mounts ``repo/<wd>`` as ``/workspace``) and QA write its
+    tests there (``qa.py``). So the base ``setup_cmd``/``test_cmd`` already resolve the component's
+    ``requirements.txt``/``tests/`` relative to its own root — no command override is required. Registry-
+    driven: any env that declares no overlays falls through to the base spec unchanged.
+    """
+    base = dict(SUPPORTED_ENVIRONMENTS[environment_id])
+    if env_overlays:
+        overlay = env_overlays.get(environment_id)
+        if overlay:
+            base.update(overlay)
+    return base
+
+
 def get_gitignore_template(environment_id: str) -> str:
     """Return the canonical .gitignore body for an environment_id (keyed via its language_id).
 
@@ -473,6 +523,23 @@ def get_gitignore_template(environment_id: str) -> str:
     silently yields an empty ignore file.
     """
     return GITIGNORE_TEMPLATES[env_language(environment_id)]
+
+
+def get_combined_gitignore_template(environment_ids: list[str]) -> str:
+    """Return a merged .gitignore body covering all given environment_ids.
+
+    Each environment contributes its language-keyed template section exactly once (deduped by
+    language_id). Sections are joined with a blank line. Registry-driven: adding a new language to
+    GITIGNORE_TEMPLATES automatically surfaces here — no per-language branching in the caller.
+    """
+    seen: set[str] = set()
+    sections: list[str] = []
+    for env_id in environment_ids:
+        lang = env_language(env_id)
+        if lang not in seen:
+            seen.add(lang)
+            sections.append(GITIGNORE_TEMPLATES[lang])
+    return "\n".join(sections)
 
 
 # Doc/config artifacts that are NEVER testable source in any stack (fixes "tests for README/LICENSE").
@@ -512,6 +579,27 @@ def dependency_manifest(environment_id: str | None) -> str | None:
     """
     spec = SUPPORTED_ENVIRONMENTS.get(environment_id or "") or {}
     return spec.get("dependency_manifest")
+
+
+# Monorepo component → its repo-root-relative source subdirectory (the gate ``working_directory``). The
+# mature-layout invariant: every application component is self-contained in its OWN top-level dir
+# (`backend/`, `frontend/`), so a single-component app is still subdir-scoped (never flat at the repo root),
+# leaving the root for repo-meta + a future DevOps-owned `infrastructure/`. INFRA/SHARED map to None (no
+# component source root — repo-meta / shared glue). This is a COMPONENT-LAYOUT concept, NOT a programming
+# language (honors engine-language-agnostic), and it is keyed by the component STRING so the nexus-plane
+# ``ComponentType`` enum need not be imported across the plane boundary.
+COMPONENT_WORKING_DIRS = {"BACKEND": "backend", "FRONTEND": "frontend"}
+
+
+def working_directory_for_component(component: str | None) -> str | None:
+    """The gate ``working_directory`` for a ticket's ``## Component`` tag — the engine SSOT that pins where
+    every gate (mount, dependency restore, build/test/lint/SAST) executes and where QA writes its tests.
+
+    ``BACKEND`` -> ``"backend"``, ``FRONTEND`` -> ``"frontend"``; ``None`` for ``INFRA``/``SHARED``/unknown
+    (repo-root scope — repo-meta or future ``infrastructure/``). Deterministic so the layout never depends
+    on LLM/skill prompt adherence (the run-004 regression: a skill overrode it to ``null``).
+    """
+    return COMPONENT_WORKING_DIRS.get((component or "").strip().upper())
 
 
 def all_source_extensions() -> tuple[str, ...]:
@@ -569,6 +657,18 @@ def all_comment_prefixes() -> tuple[str, ...]:
         for prefix in spec.get("comment_prefixes", ()):
             seen[prefix] = None
     return tuple(seen)
+
+
+def auto_generated_patterns(environment_id: str) -> tuple[str, ...]:
+    """Bare filenames the build toolchain auto-creates for this env.
+
+    Files matching these names are exempt from the documentation guardrail — they are not
+    human-authored and the toolchain would overwrite any injected comment. Each env declares
+    its own patterns; the engine carries no language knowledge. Adding a new stack: add
+    ``auto_generated_file_patterns`` to its SUPPORTED_ENVIRONMENTS entry.
+    """
+    spec = SUPPORTED_ENVIRONMENTS.get(environment_id, {})
+    return tuple(spec.get("auto_generated_file_patterns", ()))
 
 
 def repo_map_ignore_dirs(environment_id: str | None = None) -> frozenset[str]:

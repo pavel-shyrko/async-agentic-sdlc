@@ -121,6 +121,17 @@ class TechLeadContract(BaseModel):
     techlead_reasoning: str = Field(description="Justification for the chosen design.")
     domain_tags: list[str] = Field(description="Up to 5 lowercase tags for the target tech stack/language AND business domain — e.g. 'python', 'dotnet', 'typescript', 'math', 'database'. The language tag acts as the dynamic skill router and MUST be declared first.", default_factory=list)
     environment_id: str = Field(..., description="The Paved-Road platform id (e.g. 'python-3.12-core') this ticket executes on, copied verbatim from the ticket/blueprint. MUST be one of the strictly supported environments.")
+    working_directory: str | None = Field(
+        default=None,
+        description="Repo-root-relative subdirectory for all sandbox gate execution. "
+                    "None = repo root (single-runtime apps). For monorepo tickets: 'backend' or 'frontend'.")
+
+    @field_validator("working_directory")
+    @classmethod
+    def _validate_working_directory(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        return normalize_repo_rel_path(v)
 
     @field_validator("files_to_modify")
     @classmethod
@@ -411,13 +422,18 @@ class DevOpsManifests(BaseModel):
     ``run_devops_scaffold``). ``archetype`` is a closed enum so an invalid class fails at
     deserialization; ``dockerfile_content`` is null for a ``cli_tool`` (no runtime container — the
     workflow builds/publishes a binary instead of deploying to Cloud Run)."""
-    archetype: Literal["rest_api", "crud_app", "cli_tool"] = Field(
+    archetype: Literal["rest_api", "crud_app", "cli_tool", "fullstack_monorepo"] = Field(
         description="Deploy archetype of the finished app — determines whether a runtime Dockerfile + "
         "Cloud Run deploy is generated (web service) or a build/release matrix (CLI tool / library).")
     dockerfile_content: str | None = Field(
         default=None,
-        description="Full Dockerfile content for a web service (multi-stage, non-root). MUST be null for "
-        "a cli_tool — a CLI/library has no runtime container.")
+        description="Full Dockerfile content for a web service (multi-stage, non-root). For a "
+        "fullstack_monorepo this is the BACKEND Dockerfile (written to backend/Dockerfile). "
+        "MUST be null for a cli_tool — a CLI/library has no runtime container.")
+    frontend_dockerfile_content: str | None = Field(
+        default=None,
+        description="Dockerfile for the React/Nginx frontend service (fullstack_monorepo only, "
+        "written to frontend/Dockerfile). MUST be null for all other archetypes.")
     workflow_content: str = Field(
         description="Full content of the .github/workflows/deploy.yml GitHub Actions workflow.")
     env_scaffold_content: str | None = Field(
@@ -466,6 +482,10 @@ class GlobalPipelineContext(BaseModel):
     # E4 deploy-scaffolding output (set only on a --scaffold-deploy run); persisted for checkpoint parity.
     devops_manifests: DevOpsManifests | None = None
     telemetry: PipelineTelemetry = Field(default_factory=PipelineTelemetry)
+    # Skill-declared environment command overrides (populated by build_agent_context from skill
+    # frontmatter env_overrides). Gates resolve commands via resolve_environment(env_id, env_overlays)
+    # so a domain skill can adapt test/setup commands to its layout without touching the registry.
+    env_overlays: dict[str, dict] = Field(default_factory=dict)
 
     def needs_test_regeneration(self) -> bool:
         """Whether QA must (re)generate tests before the next cycle.

@@ -29,20 +29,30 @@ context and its structured output model?
    requires explicit Human authorization (CLAUDE.md guardrail) — confirm before writing.** Single-section
    (loaded by `get_system_prompt` + `build_agent_context`, like reviewer/techlead) unless it needs a
    user-template split (`---`-delimited, like qa). Must be language-neutral and follow house prompt style.
-3. **Output model** — a Pydantic model in `src/shared/core/models.py`. Use `Literal[...]` for closed enums so
-   an invalid value fails at deserialization. If it carries an `environment_id`, reuse the shared
-   `_validate_environment_id` validator.
-4. **Agent node** — `src/development/agents/<role>.py` (worker) or `src/nexus/agents/<role>.py` (control). Mirror
-   [reviewer.py](../../../src/development/agents/reviewer.py): `sys_prompt = get_system_prompt(role) + "\n\n" +
-   await build_agent_context(role, ctx)`, call `run_structured_llm(role, Model, [...])`, store the result on
-   `ctx`, then ALWAYS `log_token_usage(ctx.telemetry, "<Label>", raw_response, XYZ_MODEL)` — telemetry parity
-   is mandatory or FinOps/the financial breaker under-counts.
+3. **Output model** — Where to define it depends on the plane:
+   - **Worker-plane / shared** (used across agents or by FSM routing) → `src/shared/core/models.py` (e.g., `ReviewReport`, `ArbiterVerdict`, `TechLeadContract`).
+   - **Control-plane only** (used by a single nexus agent, not consumed by the FSM) → local in the agent file (e.g., `TaskTicket`/`ProjectPlan` in `src/nexus/agents/tpm.py`, `Blueprint` in `sa.py`).
+   Use `Literal[...]` for closed enums so an invalid value fails at deserialization. If it carries an `environment_id`, reuse the shared `_validate_environment_id` validator (importable from `src/shared/core/environments.py`).
+4. **Agent node** — `src/development/agents/<role>.py` (worker) or `src/nexus/agents/<role>.py` (control).
+   - **Worker-plane:** mirror [reviewer.py](../../../src/development/agents/reviewer.py): build `sys_prompt =
+     get_system_prompt(role) + "\n\n" + await build_agent_context(role, ctx)`, call
+     `run_structured_llm(role, Model, [...])`, store the result on `ctx`.
+   - **Control-plane (nexus):** mirror `src/nexus/agents/tpm.py` or `po.py`: the context is passed directly as
+     `epic_text`/`blueprint_text` parameters; use `get_system_prompt_with_platforms(role)` (not
+     `get_system_prompt`) when the prompt injects the platform/environment list
+     (`{injected_supported_platforms_list}`).
+   In both planes: ALWAYS `log_token_usage(ctx.telemetry, "<Label>", raw_response, XYZ_MODEL)` — telemetry
+   parity is mandatory or FinOps/the financial breaker under-counts.
 5. **State + persistence** — if the output must survive `--resume`, add a field to `GlobalPipelineContext`
    (worker) or `NexusState` (control). Both checkpoint via `model_dump_json`/`model_validate_json`, so a new
    field auto-persists.
-6. **FSM wiring** — import the node in `src/nexus/runner.py` and call it at the right
-   point; gate it so existing flows are unaffected. New caps/limits are env-overridable `UPPER_CASE`
-   constants ([config-constant-convention](../../rules/config-constant-convention.md)), never inline literals.
+6. **FSM wiring** — wire the node in the runner for its plane:
+   - **Control-plane (nexus)** → `src/nexus/nexus_runner.py` (`run_nexus` function: the linear PO→SA→TPM
+     sequence; add a new phase there). The nexus FSM has no retry loop — each phase checkpoints on success.
+   - **Worker-plane (development / deployment)** → `src/nexus/runner.py` (`run_executor` function: the
+     budgeted retry cycle). Gate it so existing flows are unaffected.
+   New caps/limits are env-overridable `UPPER_CASE` constants
+   ([config-constant-convention](../../rules/config-constant-convention.md)), never inline literals.
 7. **Tests** — `tests/framework/test_orchestrator.py` (mock the node, assert routing/termination via the
    `mock.patch.object(... "run_*_node" ...)` pattern), a node unit test (mock `run_structured_llm`, assert
    verdict stored + telemetry recorded), and `test_prompts.py` pins for new prompt literals. Run via

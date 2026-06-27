@@ -376,7 +376,7 @@ wsl -e bash -lc "source venv/bin/activate && python3 -m unittest discover -s tes
 
 | Variable | Default | Effect |
 |---|---|---|
-| **`GEMINI_API_KEY`** | — (**required**) | Credential for every structured agent (TechLead/QA/Reviewer/TechWriter/Arbiter/DevOps + Nexus PO/SA/TPM). |
+| **`GEMINI_API_KEY`** | — (**required**) | Credential for every structured Gemini agent (TechLead/Reviewer/TechWriter/Arbiter/DevOps + Nexus PO/SA/TPM). |
 | `CLAUDE_CLI_BIN` | `claude` | Path to the Claude CLI binary; pin to the nvm Linux build under WSL. |
 | `GITHUB_TOKEN` | (unset) | Read by an env-backed git credential helper (if you configure one) to clone/push **private** HTTPS repos, so you can pass a token-free `--repo` URL — see [Git auth (private repos)](#git-auth-private-repos). Also the auth `gh` uses for `--auto-merge` (then **required**). |
 | `GITHUB_REVIEWER_TOKEN` | (unset) | A *separate* identity's token for `--auto-merge` PR approval (GitHub forbids approving your own PR). Best-effort: unset → approval skipped, relying on the `--admin` merge. |
@@ -384,10 +384,14 @@ wsl -e bash -lc "source venv/bin/activate && python3 -m unittest discover -s tes
 | `GH_NETWORK_TIMEOUT` | `300` | Hard wall-clock ceiling (s) for each `gh` PR/merge call. |
 | `DEVELOPER_CLI_TIMEOUT` | `900` | Hard wall-clock ceiling (s) per Developer CLI session; child is killed+reaped on expiry. |
 | `DEVELOPER_CLI_IDLE_TIMEOUT` | `120` | Inactivity ceiling (s); kills the child if it emits no output for this long. |
+| `QA_CLI_TIMEOUT` | `600` | Hard wall-clock ceiling (s) per QA CLI session; child is killed+reaped on expiry. |
+| `QA_CLI_IDLE_TIMEOUT` | `120` | Inactivity ceiling (s) for the QA session; kills the child if it emits no output for this long. |
 | `GEMINI_REQUEST_TIMEOUT` | `300` | Per-request wall-clock ceiling (s) for every structured Gemini call; a stalled request raises (retried, then fails fast) instead of hanging the run. |
 | `PIPELINE_APP_BUDGET_USD` | `25.00` | Application-wide money ceiling (E5) — the SOLE Financial Circuit Breaker gate (authoritative for Claude, estimated for Gemini). Governs a whole `--idea --auto-execute` build (threaded per-ticket as the remaining budget); overridable per-invocation by `--budget <usd>`. |
 | `PIPELINE_APP_BUDGET_FLOOR_USD` | `0.01` | The batch stops cleanly before dispatching a ticket once the remaining budget drops to this. |
 | `PIPELINE_BUDGET_TOKENS` | `1000000` | **Report-only** token figure (fresh in+out; cache excluded) — no longer a ceiling (the breaker is money-only, ADR 0022). |
+| `PIPELINE_REVIEWER_STRICT` | `true` | When `false`, loads the lenient reviewer — approves unless a CRITICAL defect is found. Set to `false` for rapid iteration cycles. |
+| `PIPELINE_SAST_ENABLED` | `true` | When `false`, the Semgrep SAST scan is skipped and treated as passed — useful when the sandbox image is unavailable or the scan is not relevant. |
 | `PIPELINE_MAX_RETRIES` | `3` | Functional retry budget for the FSM cycle. |
 | `ARBITER_TRIGGER_ATTEMPT` | `2` | First failing cycle on which the Arbiter may run. |
 | `MAX_CONTRACT_AMENDMENTS` | `1` | Autonomous contract rewrites allowed per run. |

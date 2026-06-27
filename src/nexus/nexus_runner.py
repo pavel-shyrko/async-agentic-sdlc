@@ -130,15 +130,23 @@ async def run_nexus(
     # repository-preparation ticket) gets the engine-curated .gitignore appended deterministically — the
     # TPM no longer reproduces it verbatim (that tripped Gemini RECITATION). README.md/LICENSE/CHANGELOG.md
     # are no longer scaffolded here: the Technical Writer owns them post-implementation.
+    # Collect all unique environment_ids across the plan so TASK-01's .gitignore covers every
+    # technology layer (e.g. both python + node for a fullstack monorepo).
+    all_env_ids = list(dict.fromkeys(
+        t.get("environment_id", "") for t in state.tasks if t.get("environment_id")
+    ))
     written = []
     for i, task in enumerate(state.tasks, start=1):
         ticket_id = _safe_ticket_id(task.get("ticket_id", ""), i)
         title = task.get("title", "").strip() or ticket_id
         description = task.get("description", "").strip()
+        # Write the component tag as a byte-stable engine-authored section BEFORE the LLM description
+        # so the TechLead reads it directly and never has to infer working_directory from file paths.
+        component = task.get("component", "BACKEND")
         if i == 1:
-            description = f"{description}\n\n{build_gitignore_baseline_block(task.get('environment_id', ''))}"
+            description = f"{description}\n\n{build_gitignore_baseline_block(all_env_ids)}"
         ticket_path = state.artifacts_dir / f"{ticket_id}.md"
-        ticket_path.write_text(f"# {title}\n\n{description}\n", encoding="utf-8")
+        ticket_path.write_text(f"# {title}\n\n## Component: {component}\n\n{description}\n", encoding="utf-8")
         written.append(ticket_path.name)
 
     log.info(f"✅ [NEXUS] Wrote epic.md, blueprint.md, and {len(written)} ticket(s): {written}")

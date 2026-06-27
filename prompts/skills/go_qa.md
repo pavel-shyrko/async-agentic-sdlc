@@ -3,6 +3,7 @@ skill_id: go_qa
 type: domain
 triggers: [go]
 nodes: [qa, reviewer]
+enabled: false
 ---
 LANGUAGE TARGET: Go — concrete syntax for the Go tech stack. The language-neutral rules (error
 fidelity, import fidelity, whole-file assembly, BVA strategy) live in the QA system prompt; this skill

@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 from functools import lru_cache
@@ -31,6 +32,8 @@ def _format_supported_platforms() -> str:
     from src.shared.core.environments import SUPPORTED_ENVIRONMENTS
     lines: list[str] = []
     for key, env in SUPPORTED_ENVIRONMENTS.items():
+        if not env.get("enabled", True):
+            continue
         lines.append(f"- {key}: {env['description']}")
         for bullet in env.get("authoring_contract", ()):
             lines.append(f"    - {bullet}")
@@ -111,6 +114,7 @@ def _format_env_commands() -> str:
     return "\n".join(
         f"- `{env_id}`: setup `{env['setup_cmd']}` | build `{env['build_cmd']}` | test `{env['test_cmd']}`"
         for env_id, env in SUPPORTED_ENVIRONMENTS.items()
+        if env.get("enabled", True)
     )
 
 
@@ -205,8 +209,10 @@ def get_skill(skill_name: str) -> str:
 def _parse_frontmatter(raw: str) -> tuple[dict, str]:
     """Split a skill markdown file into (frontmatter_dict, body).
 
-    Frontmatter is the leading ``---``-delimited block. Values shaped like
-    ``[a, b, c]`` become lists; everything else is a stripped scalar string.
+    Frontmatter is the leading ``---``-delimited block. Value shapes:
+    - ``[a, b, c]`` → list
+    - ``{...}`` → dict (parsed as JSON; allows skills to declare nested env_overrides)
+    - everything else → stripped scalar string
     Stdlib-only (no pyyaml dependency). Returns ``({}, raw)`` when absent.
     """
     m = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", raw, re.DOTALL)
@@ -219,9 +225,13 @@ def _parse_frontmatter(raw: str) -> tuple[dict, str]:
             continue
         key, _, value = line.partition(":")
         key, value = key.strip(), value.strip()
-        list_match = re.match(r"^\[(.*)\]$", value)
-        if list_match:
-            meta[key] = [item.strip() for item in list_match.group(1).split(",") if item.strip()]
+        if re.match(r"^\[.*\]$", value):
+            meta[key] = [item.strip() for item in re.match(r"^\[(.*)\]$", value).group(1).split(",") if item.strip()]
+        elif value.startswith("{"):
+            try:
+                meta[key] = json.loads(value)
+            except json.JSONDecodeError:
+                meta[key] = value
         else:
             meta[key] = value
     return meta, body
@@ -286,6 +296,8 @@ async def build_agent_context(
 
     for path in sorted(_SKILLS_DIR.glob("*.md")):
         meta, body = _parse_frontmatter(path.read_text(encoding="utf-8"))
+        if meta.get("enabled") == "false":
+            continue
         if node_name not in meta.get("nodes", []):
             continue
         skill_id = meta.get("skill_id", path.stem)
@@ -314,6 +326,12 @@ async def build_agent_context(
         if skill_type == "topology":
             body = body.format(**topology_kwargs)
         parts.append(body.strip())
+
+        # Accumulate skill-declared environment command overrides into ctx.env_overlays so
+        # gates can call resolve_environment(env_id, ctx.env_overlays) to get the merged spec.
+        for env_id, overrides in meta.get("env_overrides", {}).items():
+            if isinstance(overrides, dict):
+                ctx.env_overlays.setdefault(env_id, {}).update(overrides)
 
     log.info(
         f"   [SKILLS] {node_name} | included: {included}"
