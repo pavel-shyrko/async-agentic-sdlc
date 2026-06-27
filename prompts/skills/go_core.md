@@ -3,6 +3,7 @@ skill_id: go_core
 type: domain
 triggers: [go]
 nodes: [techlead, developer, reviewer]
+enabled: false
 ---
 LANGUAGE TARGET: Go — production-code rules for the Go tech stack.
 

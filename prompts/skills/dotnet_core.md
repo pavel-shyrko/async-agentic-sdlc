@@ -3,6 +3,7 @@ skill_id: dotnet_core
 type: domain
 triggers: [dotnet, csharp]
 nodes: [techlead, developer, reviewer]
+enabled: false
 ---
 LANGUAGE TARGET: .NET (C#) — production-code rules for the .NET tech stack.
 

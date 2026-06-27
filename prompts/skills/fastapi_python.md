@@ -3,6 +3,7 @@ skill_id: fastapi_python
 type: domain
 triggers: [fastapi, backend]
 nodes: [techlead, developer, qa]
+env_overrides: {"python-3.12-core": {"setup_cmd": "pip install --target=/workspace/.sdlc_deps -r /workspace/requirements.txt", "test_cmd": "PYTHONPATH=/workspace:/workspace/.sdlc_deps python -m pytest /workspace/tests/", "test_compile_cmd": "PYTHONPATH=/workspace:/workspace/.sdlc_deps python -m pytest --collect-only -q /workspace/tests/"}}
 ---
 LANGUAGE TARGET: Python / FastAPI — production-code rules for a FastAPI backend in a fullstack monorepo.
 

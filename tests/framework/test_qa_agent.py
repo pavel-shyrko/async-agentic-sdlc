@@ -245,6 +245,7 @@ class ResolveTestProjectDirTests(unittest.TestCase):
                 self.assertIsNone(resolve_test_project_dir(["src/x"], repo, env))
 
 
+@unittest.skip(".NET excluded from scope")
 class DotnetTestPlacementNodeTests(unittest.IsolatedAsyncioTestCase):
     """End-to-end placement fix: the QA node writes a .NET *Tests.cs INSIDE the contracted test PROJECT
     dir (tests/<Name>.Tests/), NOT in src/ next to the source — the CS0246 reroute root cause."""
@@ -324,6 +325,7 @@ class DotnetTestPlacementNodeTests(unittest.IsolatedAsyncioTestCase):
 class StripFencesTests(unittest.TestCase):
     """Fence stripping is language-neutral — any opening language tag is removed."""
 
+    @unittest.skip("Go/C# excluded from scope")
     def test_strips_go_and_csharp_fences(self) -> None:
         self.assertEqual(qa._strip_fences("```go\npackage x\n```"), "package x")
         self.assertEqual(qa._strip_fences("```csharp\nclass T {}\n```"), "class T {}")
@@ -349,6 +351,7 @@ class AssembleSuiteTests(unittest.TestCase):
     """One language-neutral whole-file assembly path: join header+code, honor the empty-delta safety
     net. No per-language parsing/rewriting — correctness is the agent's job (skills + compile gate)."""
 
+    @unittest.skip("Go excluded from scope")
     def test_joins_imports_and_code_go(self) -> None:
         suite = QATestSuite(new_imports='package converter\n\nimport "testing"',
                             new_test_code="func TestA(t *testing.T){}")

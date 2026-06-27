@@ -1,3 +1,4 @@
+import re
 import sys
 import time
 from pathlib import Path
@@ -13,6 +14,24 @@ from src.shared.core.prompts import get_system_prompt, build_agent_context, gene
 from src.shared.utils.subprocess_helpers import run_claude_cli
 from src.shared.utils.git_helpers import get_git_root, get_pipeline_snapshot_files
 from src.development.gates import run_format_pass
+
+def _strip_fences(text: str) -> str:
+    """Strip a single markdown code fence (```lang ... ```) returning only the inner content."""
+    m = re.match(r"^```[^\n]*\n(.*?)\n?```\s*$", text, re.DOTALL)
+    return m.group(1) if m else text
+
+
+def _assemble_suite(existing: str, suite) -> str:
+    """Assemble a whole test file from a QATestSuite delta.
+
+    Empty delta (both fields falsy) with overwrite_existing=False → preserve existing content.
+    Non-empty delta → join new_imports + new_test_code verbatim (no package/namespace rewriting).
+    """
+    if not suite.new_imports and not suite.new_test_code:
+        return existing
+    parts = [p for p in (suite.new_imports, suite.new_test_code) if p]
+    return "\n".join(parts)
+
 
 # Instructional preamble prepended on a correction cycle (mirrors Developer's _RETRY_PREAMBLE).
 _RETRY_PREAMBLE = (
@@ -196,7 +215,7 @@ async def run_qa_agent_node(ctx: GlobalPipelineContext, error_trace: str = "") -
     # Format pass: strip unused imports (hard compile error in some languages); non-fatal.
     written_paths = [str(p) for p in test_file_map.values() if p.exists()]
     if written_paths:
-        await run_format_pass(env_id, str(repo_dir))
+        await run_format_pass(env_id, str(repo_dir), env_overlays=ctx.env_overlays)
 
     # Snapshot from real git delta so the Reviewer sees exactly what was written/deleted.
     repo_root = Path(await get_git_root(str(repo_dir)))

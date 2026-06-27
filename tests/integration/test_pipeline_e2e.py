@@ -227,7 +227,7 @@ class PipelineEndToEndTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(code_file.is_file(), "developer did not write production code")
             self.assertEqual(code_file.read_text(encoding="utf-8"), _PROD_CODE)
             self.assertTrue(test_file.is_file(), "QA did not write the test file")
-            self.assertIn("CalculatorTests", test_file.read_text(encoding="utf-8"))
+            self.assertIn("def test_", test_file.read_text(encoding="utf-8"))
 
             # Assert — meta-state lives OUTSIDE the clone, and the real checkpoint captured the
             # git-diff snapshots (where path-separator / CRLF discrepancies would surface).
@@ -241,7 +241,7 @@ class PipelineEndToEndTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("src/calculator.py", prod)
             self.assertIn("def add", prod["src/calculator.py"])
             self.assertNotIn("tests/test_src_calculator.py", prod)
-            self.assertIn("CalculatorTests", data["test_code_snapshot"])
+            self.assertIn("def test_", data["test_code_snapshot"])
 
             # Assert — the atomic success transaction produced exactly one commit on the feature
             # branch (seed + atomic) with the conventional subject. No push (hermetic).

@@ -487,6 +487,24 @@ GITIGNORE_TEMPLATES = {
 }
 
 
+def resolve_environment(environment_id: str, env_overlays: dict | None = None) -> dict:
+    """Return the merged environment spec for a gate: base registry entry updated with any
+    skill-declared overlays (from ``GlobalPipelineContext.env_overlays``).
+
+    Skill frontmatter ``env_overrides`` lets a domain skill adapt setup/test/lint commands to its
+    layout without touching the shared registry — e.g. ``fastapi_python`` overrides ``setup_cmd``
+    to use an absolute ``/workspace/requirements.txt`` path that survives a ``working_directory``
+    sub-dir, and fixes ``test_cmd``/``test_compile_cmd`` for the ``backend/`` layout. Registry-
+    driven: any env that declares no overlays falls through to the base spec unchanged.
+    """
+    base = dict(SUPPORTED_ENVIRONMENTS[environment_id])
+    if env_overlays:
+        overlay = env_overlays.get(environment_id)
+        if overlay:
+            base.update(overlay)
+    return base
+
+
 def get_gitignore_template(environment_id: str) -> str:
     """Return the canonical .gitignore body for an environment_id (keyed via its language_id).
 

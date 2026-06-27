@@ -176,7 +176,7 @@ class GetSystemPromptTests(unittest.TestCase):
         # Guards against the import-guessing that breaks test collection and loops the pipeline.
         result = get_system_prompt("qa")
         self.assertIn("CRITICAL PACKAGING RULE", result)
-        self.assertIn("never guess a path", result)
+        self.assertIn("Never guess from path names", result)
 
     def test_qa_prompt_has_identity_fidelity_and_thin_module(self) -> None:
         # Language-neutral correctness: test pkg/namespace matches the sibling; no foreign-pkg fabrication.
@@ -192,9 +192,9 @@ class GetSystemPromptTests(unittest.TestCase):
         self.assertIn("native testing framework", result)
 
     def test_qa_prompt_has_whole_file_assembly(self) -> None:
-        # Unified, language-neutral assembly — no delta/AST language remains.
+        # Whole-file write: QA writes complete files via the Write tool; no delta/AST rewriting.
         result = get_system_prompt("qa")
-        self.assertIn("TEST FILE ASSEMBLY", result)
+        self.assertIn("TEST FILES TO WRITE", result)
         self.assertNotIn("obsolete_test_names", result)
 
     def test_reviewer_prompt_routes_wrong_test_package_to_qa(self) -> None:
@@ -340,10 +340,10 @@ class GetSystemPromptTests(unittest.TestCase):
         self.assertIn("OTHER tickets'", raw)
         self.assertIn("build manifest", raw)
 
-    def test_qa_prompt_splits_into_system_and_user(self) -> None:
-        system, user_template = get_system_prompt_sections("qa")
-        self.assertIn("automated QA engineer", system)
-        self.assertIn("{module_ref}", user_template)
+    def test_qa_prompt_loads_as_single_section(self) -> None:
+        # qa.md is a single-section prompt; the QA agent builds the full prompt from it + skills + data blocks.
+        result = get_system_prompt("qa")
+        self.assertIn("automated QA engineer", result)
 
     def test_sections_raises_on_missing_separator(self) -> None:
         with mock.patch(
@@ -585,9 +585,7 @@ class PerLanguageCoreRoutingTests(unittest.IsolatedAsyncioTestCase):
     miss deterministically excludes a domain skill (no network)."""
 
     _MARKERS = {
-        "go": "LANGUAGE TARGET: Go",
         "node": "LANGUAGE TARGET: Node",
-        "dotnet": "LANGUAGE TARGET: .NET",
         "python": "LANGUAGE TARGET: Python",
     }
     # Topology skills targeting a node are `.format()`-ed, so supply their placeholders.

@@ -142,9 +142,9 @@ class QaContextInjectionTests(unittest.IsolatedAsyncioTestCase):
     async def _captured_system_prompt(self, shared_context: str) -> str:
         captured: dict = {}
 
-        async def _fake_llm(node, model, messages):
-            captured["system"] = messages[0]["content"]
-            return QATestSuite(new_imports="import unittest", new_test_code="class T: pass"), {}
+        async def _fake_cli(prompt, code_files, **kwargs):
+            captured["prompt"] = prompt
+            return 0, None
 
         with TemporaryDirectory() as td:
             root = Path(td)
@@ -153,13 +153,13 @@ class QaContextInjectionTests(unittest.IsolatedAsyncioTestCase):
             ctx.repository_map = "MAP"  # pre-set so generate_repo_map is never invoked
             with (
                 mock.patch.object(qa, "build_agent_context", new=AsyncMock(return_value="SKILLS")),
-                mock.patch.object(qa, "run_structured_llm", side_effect=_fake_llm),
-                mock.patch.object(qa, "log_token_usage"),
+                mock.patch.object(qa, "run_claude_cli", side_effect=_fake_cli),
+                mock.patch.object(qa, "run_format_pass", new=AsyncMock(return_value=None)),
                 mock.patch.object(qa, "get_git_root", new=AsyncMock(return_value=str(root))),
                 mock.patch.object(qa, "get_pipeline_snapshot_files", new=AsyncMock(return_value=[])),
             ):
                 await qa.run_qa_agent_node(ctx)
-        return captured["system"]
+        return captured["prompt"]
 
     async def test_block_present_when_context_set(self) -> None:
         sys_prompt = await self._captured_system_prompt(_GOAL)

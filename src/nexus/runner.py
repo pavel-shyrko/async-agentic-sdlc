@@ -1452,7 +1452,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
                 # reroutes to the Developer (no functional-budget spent), exactly like the doc guardrail.
                 build_ok, build_lines = await _timed_phase(
                     ctx.telemetry, "build",
-                    run_build_gate(ctx.contract.environment_id, str(_sandbox_root(ctx))),
+                    run_build_gate(ctx.contract.environment_id, str(_sandbox_root(ctx)), env_overlays=ctx.env_overlays),
                 )
                 if build_ok:
                     break  # documented + compiles → proceed to gates/Reviewer
@@ -1465,7 +1465,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
                     log.warning("🔶 Compile gate failed on a NETWORK/restore error (not a code defect) — retrying the build once before judging.")
                     build_ok, build_lines = await _timed_phase(
                         ctx.telemetry, "build",
-                        run_build_gate(ctx.contract.environment_id, str(_sandbox_root(ctx))),
+                        run_build_gate(ctx.contract.environment_id, str(_sandbox_root(ctx)), env_overlays=ctx.env_overlays),
                     )
                     if build_ok:
                         break
@@ -1517,7 +1517,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
         for qa_gate_retries in range(QA_GATE_MAX_REROUTES + 1):
             tc_ok, tc_lines = await _timed_phase(
                 ctx.telemetry, "test-compile",
-                run_test_compile_gate(ctx.contract.environment_id, str(_sandbox_root(ctx))),
+                run_test_compile_gate(ctx.contract.environment_id, str(_sandbox_root(ctx)), env_overlays=ctx.env_overlays),
             )
             if tc_ok:
                 break
@@ -1563,11 +1563,11 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
         for lint_retries in range(LINT_GATE_MAX_REROUTES + 1):
             await _timed_phase(
                 ctx.telemetry, "format",
-                run_format_pass(ctx.contract.environment_id, str(_sandbox_root(ctx))),
+                run_format_pass(ctx.contract.environment_id, str(_sandbox_root(ctx)), env_overlays=ctx.env_overlays),
             )
             lint_ok, lint_lines = await _timed_phase(
                 ctx.telemetry, "lint",
-                run_lint_gate(ctx.contract.environment_id, str(_sandbox_root(ctx))),
+                run_lint_gate(ctx.contract.environment_id, str(_sandbox_root(ctx)), env_overlays=ctx.env_overlays),
             )
             if lint_ok:
                 break
@@ -1655,6 +1655,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
                 run_qa_unit_tests(
                     environment_id=ctx.contract.environment_id,
                     repo_root=str(_sandbox_root(ctx)),
+                    env_overlays=ctx.env_overlays,
                 ),
                 sast_coro,
             ),

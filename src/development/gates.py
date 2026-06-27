@@ -5,7 +5,7 @@ from pathlib import Path
 from src.shared.core.observability import log
 from src.shared.core.environments import (
     SUPPORTED_ENVIRONMENTS, SAST_IMAGE, SAST_CMD, is_test_file, all_source_extensions,
-    dependency_manifest,
+    dependency_manifest, resolve_environment,
 )
 from src.shared.core.docker_adapter import execute_in_sandbox, run_in_image
 
@@ -119,7 +119,10 @@ def missing_dependency_manifest(environment_id: str, repo_root: str, log_lines: 
     blob = "\n".join(log_lines).lower()
     if not _MODULE_RESOLUTION_RE.search(blob):
         return False
-    return not any(Path(repo_root).rglob(manifest))
+    root = Path(repo_root)
+    if not root.exists():
+        return False
+    return not any(root.rglob(manifest))
 
 
 def annotate_missing_manifest(environment_id: str, repo_root: str, log_lines: list[str]) -> list[str]:
@@ -247,10 +250,10 @@ def _has_test_files(environment_id: str, repo_root: str) -> bool:
 # ==========================================
 # Commands come from the static SUPPORTED_ENVIRONMENTS registry and run inside the canonical,
 # hardened sandbox image for the ticket's environment_id — no host tooling, no hardcoded runtime.
-async def run_qa_unit_tests(environment_id: str, repo_root: str) -> tuple[bool, list[str]]:
+async def run_qa_unit_tests(environment_id: str, repo_root: str, env_overlays: dict | None = None) -> tuple[bool, list[str]]:
     """Functional-test gate. Dependency restore runs FIRST with network ON (project deps can't be
     baked into the image); the tests themselves then run with network OFF (isolated execution)."""
-    spec = SUPPORTED_ENVIRONMENTS[environment_id]
+    spec = resolve_environment(environment_id, env_overlays)
     log_lines: list[str] = []
 
     # Empty-suite short-circuit: with no test files there is nothing to execute, so the gate is a
@@ -298,12 +301,12 @@ async def run_qa_unit_tests(environment_id: str, repo_root: str) -> tuple[bool, 
     return returncode == 0, log_lines
 
 
-async def run_build_gate(environment_id: str, repo_root: str) -> tuple[bool, list[str]]:
+async def run_build_gate(environment_id: str, repo_root: str, env_overlays: dict | None = None) -> tuple[bool, list[str]]:
     """Compile gate run right after the Developer: restore deps (network ON) then compile/typecheck
     (network OFF). BUILD/RUN ONLY — `build_cmd` never executes tests, so the Developer stays fenced
     off from the QA-owned test files. Returns ``(ok, log_lines)``; a no-op pass when the env declares
     no ``build_cmd``."""
-    spec = SUPPORTED_ENVIRONMENTS[environment_id]
+    spec = resolve_environment(environment_id, env_overlays)
     build_cmd = spec.get("build_cmd")
     if not build_cmd:
         return True, []
@@ -332,7 +335,7 @@ async def run_build_gate(environment_id: str, repo_root: str) -> tuple[bool, lis
     return returncode == 0, log_lines
 
 
-async def run_test_compile_gate(environment_id: str, repo_root: str) -> tuple[bool, list[str]]:
+async def run_test_compile_gate(environment_id: str, repo_root: str, env_overlays: dict | None = None) -> tuple[bool, list[str]]:
     """Pre-Reviewer COMPILE-ONLY gate over the QA-generated tests: restore deps (network ON) then run
     the env's `test_compile_cmd` (network OFF), which builds the test code but runs NO test bodies.
     Surfaces test compile errors (unused imports, undefined symbols) deterministically so the runner
@@ -340,7 +343,7 @@ async def run_test_compile_gate(environment_id: str, repo_root: str) -> tuple[bo
     `go test`) on purpose: a real assertion failure references the test file too, so running tests here
     would misroute production bugs to QA. Returns ``(ok, log_lines)``; a no-op pass when the env has no
     `test_compile_cmd` or no test files are present."""
-    spec = SUPPORTED_ENVIRONMENTS[environment_id]
+    spec = resolve_environment(environment_id, env_overlays)
     test_compile_cmd = spec.get("test_compile_cmd")
     if not test_compile_cmd:
         return True, []
@@ -370,7 +373,7 @@ async def run_test_compile_gate(environment_id: str, repo_root: str) -> tuple[bo
     return returncode == 0, log_lines
 
 
-async def run_lint_gate(environment_id: str, repo_root: str) -> tuple[bool, list[str]]:
+async def run_lint_gate(environment_id: str, repo_root: str, env_overlays: dict | None = None) -> tuple[bool, list[str]]:
     """HARD style/lint gate: restore deps (network ON) then run the env's `lint_cmd` (network OFF).
 
     The engine's own quality bar so a strict CI stays green — `lint_cmd` is the SSOT the DevOps-generated
@@ -379,7 +382,7 @@ async def run_lint_gate(environment_id: str, repo_root: str) -> tuple[bool, list
     self-guards INSIDE its `lint_cmd`, exiting 0 when the config is absent, so the engine carries no
     per-language branch.) Verify-only — the paired `format_cmd` autofix runs first, so only genuinely-
     unfixable findings (e.g. F841) fail here."""
-    spec = SUPPORTED_ENVIRONMENTS[environment_id]
+    spec = resolve_environment(environment_id, env_overlays)
     lint_cmd = spec.get("lint_cmd")
     if not lint_cmd:
         return True, []
@@ -403,14 +406,14 @@ async def run_lint_gate(environment_id: str, repo_root: str) -> tuple[bool, list
     return returncode == 0, log_lines
 
 
-async def run_format_pass(environment_id: str, repo_root: str) -> None:
+async def run_format_pass(environment_id: str, repo_root: str, env_overlays: dict | None = None) -> None:
     """Deterministic cleanup run over the workspace right after QA writes test files, before the
     compile gate. Its main job is stripping unused imports (a HARD compile error in Go) so generated
     tests don't bounce QA→Reviewer over a trivial `imported and not used`. Runs the env's optional
     `format_cmd` (network OFF). STRICTLY non-fatal: any missing tool, non-zero exit, or sandbox error
     is logged and swallowed — a formatter hiccup must never derail the pipeline. No-ops when the env
     declares no `format_cmd`."""
-    format_cmd = SUPPORTED_ENVIRONMENTS[environment_id].get("format_cmd")
+    format_cmd = resolve_environment(environment_id, env_overlays).get("format_cmd")
     if not format_cmd:
         return
     try:

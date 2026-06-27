@@ -482,6 +482,10 @@ class GlobalPipelineContext(BaseModel):
     # E4 deploy-scaffolding output (set only on a --scaffold-deploy run); persisted for checkpoint parity.
     devops_manifests: DevOpsManifests | None = None
     telemetry: PipelineTelemetry = Field(default_factory=PipelineTelemetry)
+    # Skill-declared environment command overrides (populated by build_agent_context from skill
+    # frontmatter env_overrides). Gates resolve commands via resolve_environment(env_id, env_overlays)
+    # so a domain skill can adapt test/setup commands to its layout without touching the registry.
+    env_overlays: dict[str, dict] = Field(default_factory=dict)
 
     def needs_test_regeneration(self) -> bool:
         """Whether QA must (re)generate tests before the next cycle.
