@@ -22,7 +22,7 @@ from src.shared.core.config import (
 )
 from src.shared.core.models import GlobalPipelineContext, WorkspacePaths, RUNS_BASE, BatchState, PipelineTelemetry
 from src.shared.core.runs import Projects
-from src.shared.core.environments import is_test_file, get_qa_profile, failure_origin_markers, all_comment_prefixes, DEPENDENCY_VENDOR_DIR
+from src.shared.core.environments import is_test_file, get_qa_profile, failure_origin_markers, all_comment_prefixes, DEPENDENCY_VENDOR_DIR, working_directory_for_component
 from src.shared.core.prompts import generate_repo_map
 from src.shared.utils.git_helpers import get_git_root, get_pipeline_snapshot_files
 from src.shared.utils.redaction import redact
@@ -712,6 +712,31 @@ def _sandbox_root(ctx: GlobalPipelineContext) -> Path:
     return base
 
 
+# Matches ONLY the engine-authored byte-stable heading nexus_runner writes (`## Component: BACKEND`),
+# never the TPM's `**Component:**` prose line — so the pin keys off the deterministic tag.
+_COMPONENT_TAG_RE = re.compile(r"^##\s*Component:\s*(\w+)", re.MULTILINE)
+
+
+def _pin_working_directory_from_component(ctx: GlobalPipelineContext) -> None:
+    """Deterministically pin ``contract.working_directory`` from the ticket's ``## Component`` tag, OVERRIDING
+    whatever the TechLead LLM emitted. The component-layout SSOT (``working_directory_for_component``) is the
+    sole authority on where every gate runs (``_sandbox_root`` mount) and where QA writes its tests
+    (``qa.py``), so the layout never depends on prompt/skill adherence — the run-004 regression, where a skill
+    overrode it to ``null`` and split QA placement off from the gate. A tag-less ticket (legacy direct run)
+    keeps the contract's own value, preserving non-monorepo flows.
+    """
+    if not ctx.contract:
+        return
+    m = _COMPONENT_TAG_RE.search(ctx.pr_description or "")
+    if not m:
+        return
+    wd = working_directory_for_component(m.group(1))
+    if ctx.contract.working_directory != wd:
+        log.info(f"   [LAYOUT] working_directory pinned to {wd!r} from `## Component: "
+                 f"{m.group(1).upper()}` (TechLead emitted {ctx.contract.working_directory!r}).")
+    ctx.contract.working_directory = wd
+
+
 def reconcile_feedback_routing(review_report, arbiter_verdict):
     """Single SSOT for assigning the two isolated feedback channels (BACKLOG #18/#25).
 
@@ -1311,6 +1336,11 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
         log.info("Skipping TechLead node: contract already present in context.")
     else:
         await run_techlead_node(ctx)
+        # Engine-deterministic layout: pin working_directory from the ticket's component tag (overriding any
+        # LLM/skill value) BEFORE the checkpoint, so the pinned value persists. The component decides where
+        # every gate executes and where QA writes its tests. A resumed contract is already pinned (or has no
+        # component tag), so no re-pin/extra save is needed here.
+        _pin_working_directory_from_component(ctx)
         enforce_financial_circuit_breaker(ctx, budget_usd)
         ctx.save_checkpoint(checkpoint_file)
         log.debug(f"Checkpoint saved after TechLead node: {checkpoint_file}")
@@ -1740,6 +1770,7 @@ async def run_executor(cfg: RunConfig, run_dir: Path, resume_checkpoint: Path | 
                     pinned_env = ctx.contract.environment_id
                     await run_techlead_node(ctx, amendment_feedback=verdict.contract_amendment_directive)
                     ctx.contract.environment_id    = pinned_env   # PIN: amendment never thrashes the platform (Docker image)
+                    _pin_working_directory_from_component(ctx)    # PIN: amendment never moves the component layout
                     ctx.contract_amendments += 1
                     regenerate_tests = True                    # QA re-derives tests vs the amended contract
                     ctx.error_trace = ""                       # stale: referenced the pre-amendment contract

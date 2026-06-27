@@ -244,5 +244,48 @@ class GetTasksForNexusRunTests(unittest.TestCase):
             self.assertEqual(nr.get_tasks_for_nexus_run(Path(td) / "nope"), [])
 
 
+class ProjectPlanDependencyGraphTests(unittest.TestCase):
+    """The TPM's `depends_on` graph validator — the explicit cross-plane dependency contract. It keeps the
+    existing array-order execution correct (dependencies precede dependents → no cycle) and enforces the
+    backend-before-frontend plane invariant; a violation re-prompts the TPM (raises here)."""
+
+    @staticmethod
+    def _ticket(tid, component="BACKEND", env="python-3.12-core", depends_on=None):
+        from src.nexus.agents.tpm import TaskTicket
+        return TaskTicket(ticket_id=tid, title=tid, environment_id=env, component=component,
+                          depends_on=depends_on or [], description="body")
+
+    def test_valid_frontend_depends_on_earlier_backend(self) -> None:
+        from src.nexus.agents.tpm import ProjectPlan
+        plan = ProjectPlan(tasks=[
+            self._ticket("TASK-01", "BACKEND"),
+            self._ticket("TASK-02", "FRONTEND", env="node-22-web", depends_on=["TASK-01"]),
+        ])
+        self.assertEqual([t.ticket_id for t in plan.tasks], ["TASK-01", "TASK-02"])
+
+    def test_forward_reference_is_rejected(self) -> None:
+        from src.nexus.agents.tpm import ProjectPlan
+        with self.assertRaises(ValueError):
+            ProjectPlan(tasks=[
+                self._ticket("TASK-01", "BACKEND", depends_on=["TASK-02"]),  # not ordered before it
+                self._ticket("TASK-02", "BACKEND"),
+            ])
+
+    def test_unknown_and_self_reference_are_rejected(self) -> None:
+        from src.nexus.agents.tpm import ProjectPlan
+        with self.assertRaises(ValueError):
+            ProjectPlan(tasks=[self._ticket("TASK-01", "BACKEND", depends_on=["TASK-99"])])
+        with self.assertRaises(ValueError):
+            ProjectPlan(tasks=[self._ticket("TASK-01", "BACKEND", depends_on=["TASK-01"])])
+
+    def test_backend_cannot_depend_on_frontend(self) -> None:
+        from src.nexus.agents.tpm import ProjectPlan
+        with self.assertRaises(ValueError):
+            ProjectPlan(tasks=[
+                self._ticket("TASK-01", "FRONTEND", env="node-22-web"),
+                self._ticket("TASK-02", "BACKEND", depends_on=["TASK-01"]),  # BE blocked by FE — forbidden
+            ])
+
+
 if __name__ == "__main__":
     unittest.main()

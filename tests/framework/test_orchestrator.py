@@ -3099,6 +3099,43 @@ class BuildProductionSnapshotTests(unittest.TestCase):
             self.assertNotIn("src/x_test.go", ctx.production_code_snapshot)
 
 
+class PinWorkingDirectoryTests(unittest.TestCase):
+    """`_pin_working_directory_from_component` — the engine SSOT that forces working_directory from the
+    ticket's `## Component` tag, OVERRIDING the TechLead/skill value (the run-004-regression backstop)."""
+
+    @staticmethod
+    def _ctx(pr_description: str, wd_from_llm=None):
+        paths = WorkspacePaths(logs_dir=Path("/tmp/x/logs"), reports_dir=Path("/tmp/x/reports"), repo_dir=Path("/tmp/x"))  # nosec B108
+        ctx = GlobalPipelineContext(pr_description=pr_description, workspace_paths=paths)
+        ctx.contract = TechLeadContract(
+            files_to_modify=["backend/app/main.py"], instruction="noop", function_signatures="noop",
+            strict_type_validation_rules="noop", techlead_reasoning="noop", topology_contract=[],
+            environment_id="python-3.12-core", working_directory=wd_from_llm,
+        )
+        return ctx
+
+    def test_backend_tag_pins_backend_overriding_llm_null(self) -> None:
+        ctx = self._ctx("# T\n\n## Component: BACKEND\n\nbody", wd_from_llm=None)
+        orchestrator._pin_working_directory_from_component(ctx)
+        self.assertEqual(ctx.contract.working_directory, "backend")
+
+    def test_frontend_tag_pins_frontend_overriding_wrong_llm_value(self) -> None:
+        ctx = self._ctx("# T\n\n## Component: FRONTEND\n\nbody", wd_from_llm="backend")
+        orchestrator._pin_working_directory_from_component(ctx)
+        self.assertEqual(ctx.contract.working_directory, "frontend")
+
+    def test_infra_tag_pins_none(self) -> None:
+        ctx = self._ctx("## Component: INFRA\n\nbody", wd_from_llm="backend")
+        orchestrator._pin_working_directory_from_component(ctx)
+        self.assertIsNone(ctx.contract.working_directory)
+
+    def test_tagless_ticket_leaves_llm_value_untouched(self) -> None:
+        # A legacy direct run with no `## Component:` tag keeps whatever the contract had (non-monorepo flow).
+        ctx = self._ctx("just a ticket body, no component heading", wd_from_llm=None)
+        orchestrator._pin_working_directory_from_component(ctx)
+        self.assertIsNone(ctx.contract.working_directory)
+
+
 if __name__ == "__main__":
     unittest.main()
 

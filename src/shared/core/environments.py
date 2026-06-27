@@ -122,7 +122,7 @@ SUPPORTED_ENVIRONMENTS = {
         "comment_prefixes": ("#", '"""', "'''"),
         "dependency_manifest": "requirements.txt",
         "authoring_contract": (
-            "Dependency manifest: declare EVERY third-party runtime AND test dependency, version-pinned, one per line, in `requirements.txt` at the repository root. The toolchain restores from `requirements.txt` ONLY (`pip install -r requirements.txt`) — a `pyproject.toml` alone is NOT installed, so any dependency present only in `[project].dependencies` will be missing at build/test time and raise a module-not-found error. If the project also keeps a `pyproject.toml`, mirror its dependencies into `requirements.txt`; the two must not drift.",
+            "Dependency manifest: declare EVERY third-party runtime AND test dependency, version-pinned, one per line, in `requirements.txt` at the COMPONENT root (the directory the gate runs in — e.g. `backend/requirements.txt` for a backend component, else a repo-root `requirements.txt` for a single flat package). The toolchain restores from that `requirements.txt` ONLY (`pip install -r requirements.txt`) — a `pyproject.toml` alone is NOT installed, so any dependency present only in `[project].dependencies` will be missing at build/test time and raise a module-not-found error. If the project also keeps a `pyproject.toml`, mirror its dependencies into `requirements.txt`; the two must not drift.",
         ),
         "language_id": "python",
         "description": "Python 3.12 core runtime (pytest; Semgrep SAST).",
@@ -273,6 +273,7 @@ SUPPORTED_DEPLOY_TARGETS = {
         # target carrying this flag (registry-driven — a future private-by-default target simply omits it).
         "requires_public_invoker": True,
         "runtime_constraints": (
+            "Application code resides under /backend/ (the component layout); the service is built from backend/Dockerfile with the ./backend build context.",
             "Listen on the port given by the PORT environment variable (the platform injects it; default 8080) and bind 0.0.0.0 — never localhost.",
             "Boot with ZERO required configuration: every environment-sourced setting MUST have a safe in-code default. Environment variables OVERRIDE behavior; they never ENABLE startup.",
             "Be stateless: persist nothing to local disk between requests (the container filesystem is ephemeral and per-instance).",
@@ -284,6 +285,7 @@ SUPPORTED_DEPLOY_TARGETS = {
         "archetypes": ("cli_tool",),
         "skill": "deploy_github_release",
         "runtime_constraints": (
+            "Application/library code resides under /backend/ (the component layout); the build/release workflow runs its steps in backend/ and packages the artifact from there.",
             "Ship a self-contained, runnable/installable artifact; do not assume a hosted runtime or platform-injected environment.",
         ),
     },
@@ -491,10 +493,13 @@ def resolve_environment(environment_id: str, env_overlays: dict | None = None) -
     """Return the merged environment spec for a gate: base registry entry updated with any
     skill-declared overlays (from ``GlobalPipelineContext.env_overlays``).
 
-    Skill frontmatter ``env_overrides`` lets a domain skill adapt setup/test/lint commands to its
-    layout without touching the shared registry — e.g. ``fastapi_python`` overrides ``setup_cmd``
-    to use an absolute ``/workspace/requirements.txt`` path that survives a ``working_directory``
-    sub-dir, and fixes ``test_cmd``/``test_compile_cmd`` for the ``backend/`` layout. Registry-
+    Skill frontmatter ``env_overrides`` lets a domain skill adapt setup/test/lint commands to a layout
+    that the base registry cannot express — a rarely-needed escape hatch. The monorepo stacks do NOT use
+    it: a component ticket carries ``working_directory`` (``backend``/``frontend``, pinned by the engine
+    from the ``## Component`` tag — ``working_directory_for_component``), which makes the gate execute
+    INSIDE that component dir (``_sandbox_root`` mounts ``repo/<wd>`` as ``/workspace``) and QA write its
+    tests there (``qa.py``). So the base ``setup_cmd``/``test_cmd`` already resolve the component's
+    ``requirements.txt``/``tests/`` relative to its own root — no command override is required. Registry-
     driven: any env that declares no overlays falls through to the base spec unchanged.
     """
     base = dict(SUPPORTED_ENVIRONMENTS[environment_id])
@@ -568,6 +573,27 @@ def dependency_manifest(environment_id: str | None) -> str | None:
     """
     spec = SUPPORTED_ENVIRONMENTS.get(environment_id or "") or {}
     return spec.get("dependency_manifest")
+
+
+# Monorepo component → its repo-root-relative source subdirectory (the gate ``working_directory``). The
+# mature-layout invariant: every application component is self-contained in its OWN top-level dir
+# (`backend/`, `frontend/`), so a single-component app is still subdir-scoped (never flat at the repo root),
+# leaving the root for repo-meta + a future DevOps-owned `infrastructure/`. INFRA/SHARED map to None (no
+# component source root — repo-meta / shared glue). This is a COMPONENT-LAYOUT concept, NOT a programming
+# language (honors engine-language-agnostic), and it is keyed by the component STRING so the nexus-plane
+# ``ComponentType`` enum need not be imported across the plane boundary.
+COMPONENT_WORKING_DIRS = {"BACKEND": "backend", "FRONTEND": "frontend"}
+
+
+def working_directory_for_component(component: str | None) -> str | None:
+    """The gate ``working_directory`` for a ticket's ``## Component`` tag — the engine SSOT that pins where
+    every gate (mount, dependency restore, build/test/lint/SAST) executes and where QA writes its tests.
+
+    ``BACKEND`` -> ``"backend"``, ``FRONTEND`` -> ``"frontend"``; ``None`` for ``INFRA``/``SHARED``/unknown
+    (repo-root scope — repo-meta or future ``infrastructure/``). Deterministic so the layout never depends
+    on LLM/skill prompt adherence (the run-004 regression: a skill overrode it to ``null``).
+    """
+    return COMPONENT_WORKING_DIRS.get((component or "").strip().upper())
 
 
 def all_source_extensions() -> tuple[str, ...]:

@@ -3,23 +3,37 @@ skill_id: fastapi_python
 type: domain
 triggers: [fastapi, backend]
 nodes: [techlead, developer, qa]
-env_overrides: {"python-3.12-core": {"test_cmd": "PYTHONPATH=/workspace:/workspace/.sdlc_deps python -m pytest /workspace/backend/tests/", "test_compile_cmd": "PYTHONPATH=/workspace:/workspace/.sdlc_deps python -m pytest --collect-only -q /workspace/backend/tests/"}}
 ---
-LANGUAGE TARGET: Python / FastAPI — production-code rules for a FastAPI backend in a fullstack monorepo.
+LANGUAGE TARGET: Python / FastAPI — production-code rules for a FastAPI backend component in a monorepo.
 
-## Project layout
-- All backend source code lives under `backend/` (relative to the repo root). Entry point: `backend/main.py` (or `backend/app/main.py` per the blueprint topology).
-- Dependency manifest: `requirements.txt` at the repository root — declare EVERY third-party runtime AND test dependency (e.g. `fastapi`, `uvicorn[standard]`, `pydantic`, `httpx`, `pytest`, `pytest-asyncio`), version-pinned, one per line. A `pyproject.toml` alone is NOT sufficient. `requirements.txt` MUST be in `files_to_modify` in the TechLead contract.
-- Dockerfile lives at `backend/Dockerfile`. Docker build context is always the **repository root** (`docker build -f backend/Dockerfile .`), so root-level files are accessible inside the build. Use `COPY requirements.txt .` — never `COPY backend/requirements.txt .`.
-- TechLead contract: do NOT set `working_directory` — leave it unset (null). All gate execution (dependency restore, tests, lint, security) runs from the repository root; the `env_overrides` in this skill are calibrated for `/workspace = repo root`.
+## Project layout (the backend is a self-contained component)
+- ALL backend code lives under `backend/` — the component's OWN root. The engine pins `working_directory`
+  to `backend` from the ticket's `## Component: BACKEND` tag, so every gate (dependency restore, build,
+  tests, lint, security) executes INSIDE `backend/` and ALL paths/imports below are relative to `backend/`
+  — never prefixed with `backend/`. This mirrors how the React `frontend/` component works. Do NOT set or
+  override `working_directory` in the contract — it is engine-owned.
+- Entry point: `backend/app/main.py` (or `backend/main.py` per the blueprint topology).
+- Dependency manifest: `backend/requirements.txt` — declare EVERY third-party runtime AND test dependency
+  (e.g. `fastapi`, `uvicorn[standard]`, `pydantic`, `httpx`, `pytest`, `pytest-asyncio`), version-pinned,
+  one per line. A `pyproject.toml` alone is NOT sufficient. The toolchain restores it automatically by
+  running `pip install -r requirements.txt` inside `backend/`; it MUST be in `files_to_modify`.
+- Dockerfile: `backend/Dockerfile`, built with the **`backend/` directory as the build context** (exactly
+  like `frontend/Dockerfile`). Use `COPY requirements.txt .` (relative to `backend/`); never
+  `COPY backend/requirements.txt .`.
 
 ## FastAPI conventions
 - Define the application factory in a dedicated `create_app()` function so it can be instantiated independently in tests.
 - Use async route handlers (`async def`) for all I/O-bound endpoints.
 - Use Pydantic v2 models for ALL request bodies and response schemas — no raw dicts or untyped returns.
-- Add CORS middleware (`fastapi.middleware.cors.CORSMiddleware`) configured to allow the frontend origin. The allowed origins MUST be sourced from an environment variable with a safe default (e.g. `*` in development) so the service boots with zero required configuration.
-- Expose a lightweight health endpoint (e.g. `GET /health` → `{"status": "ok"}`) for Cloud Run liveness probes.
-- Server entry point: `uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}`. The port MUST be sourced from the `PORT` environment variable; never hardcode it.
+- CORS is OPTIONAL and contract-driven: add CORS middleware (`fastapi.middleware.cors.CORSMiddleware`) ONLY
+  when the contract requires cross-origin browser access (e.g. a separate frontend origin). When you do,
+  source the allowed origins from an environment variable with a safe default so the service still boots
+  with zero required configuration. Do NOT add CORS to a service whose contract does not call for it.
+- Expose the contracted health endpoint (e.g. `GET /healthz` → `{"status": "ok"}`) for Cloud Run liveness probes.
+- Server entry point: `uvicorn <module>:app --host 0.0.0.0 --port ${PORT:-8080}`, where `<module>` is the
+  dotted path to your entry module RELATIVE to `backend/` (e.g. `app.main` for `backend/app/main.py`, or
+  `main` for `backend/main.py`) — never a `backend.` prefix. The port MUST be sourced from the `PORT`
+  environment variable; never hardcode it.
 
 ## Type safety
 - Enforce strict `isinstance` checks. A `bool` MUST NOT pass where an `int` is expected: guard with `isinstance(n, int) and not isinstance(n, bool)`.
@@ -28,10 +42,18 @@ LANGUAGE TARGET: Python / FastAPI — production-code rules for a FastAPI backen
 
 ## Testing
 - Use `pytest` with `pytest-asyncio` and `httpx.AsyncClient` (with `ASGITransport`) for integration tests against the running application instance — no mocking of internal business logic.
-- Test files MUST live under `backend/tests/` with `test_` prefix. This overrides the generic Python test placement rule — do NOT place tests under the root `tests/` directory.
-- Every endpoint MUST have at least one integration test covering the happy path and one covering a key error path (e.g. 404, 422 validation failure).
-- **Test runner context**: `pytest` runs from the REPOSITORY ROOT (`/workspace`), NOT from `backend/`. All imports MUST use the full repo-root-relative module path — `from backend.app.main import app`, never `from app.main import app`. Ensure `backend/__init__.py` exists so the `backend` package is discoverable from the root.
-- **Separate test execution**: backend tests (`pytest backend/tests/`) run independently of frontend tests; do not mix test frameworks or import cross-boundary between them.
+- Test files live under `backend/tests/` with a `test_` prefix (the engine places them there from `working_directory`).
+- **Test runner context**: `pytest` runs from INSIDE `backend/`, so import the app SUBDIR-RELATIVE —
+  `from app.main import app`, NEVER `from backend.app.main import app` and never a `backend/` prefix (the
+  same no-`frontend/`-prefix rule the React component follows). `backend/app/__init__.py` must exist so
+  `app` is an importable package.
+- **Test ONLY contracted behavior (scope discipline):** cover exactly the endpoints, status codes, and
+  behaviors the contract / acceptance examples specify — never framework features the contract does not add.
+  Do NOT test CORS/preflight unless the contract adds CORS middleware; do NOT test auth unless contracted.
+  FastAPI's default `redirect_slashes=True` makes a trailing-slash path (`/healthz/`) 307-redirect to the
+  canonical route (→ 200), so NEVER assert 404 for a trailing slash.
+- Every contracted endpoint MUST have at least one happy-path test and one key-error-path test (e.g. 404, 422 validation failure).
+- **Separate test execution**: backend tests run independently of frontend tests; do not mix test frameworks or import across the `backend/` ↔ `frontend/` boundary.
 
 ## Repository hygiene
 - Generate `backend/.gitignore` with Python-specific patterns: `__pycache__/`, `*.pyc`, `*.pyo`, `.env`, `venv/`, `.venv/`, `.pytest_cache/`, `*.egg-info/`, `dist/`, `build/`, `.mypy_cache/`.

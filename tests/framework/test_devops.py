@@ -51,13 +51,13 @@ class RunDevopsNodeTests(unittest.IsolatedAsyncioTestCase):
             # All three manifests written verbatim into the clone.
             self.assertEqual((repo / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8"),
                              manifests.workflow_content)
-            self.assertEqual((repo / "Dockerfile").read_text(encoding="utf-8"), manifests.dockerfile_content)
+            self.assertEqual((repo / "backend" / "Dockerfile").read_text(encoding="utf-8"), manifests.dockerfile_content)
             self.assertEqual((repo / ".env.example").read_text(encoding="utf-8"), manifests.env_scaffold_content)
             # Staged together so finalize_transaction's atomic commit includes them.
             git_run.assert_called_once()
             self.assertEqual(
                 git_run.call_args.args[0],
-                ["git", "add", ".github/workflows/deploy.yml", "Dockerfile", ".env.example"],
+                ["git", "add", ".github/workflows/deploy.yml", "backend/Dockerfile", ".env.example"],
             )
             self.assertEqual(git_run.call_args.kwargs["cwd"], str(repo))
             # Against the devops role + DevOpsManifests schema; result stored on ctx.
@@ -84,7 +84,7 @@ class RunDevopsNodeTests(unittest.IsolatedAsyncioTestCase):
                 await devops.run_devops_node(ctx, blueprint_text="a CLI tool", repo_map="main.py")
 
             self.assertTrue((repo / ".github" / "workflows" / "deploy.yml").is_file())
-            self.assertFalse((repo / "Dockerfile").exists())       # hard rule: no Dockerfile for a CLI
+            self.assertFalse((repo / "backend" / "Dockerfile").exists())  # hard rule: no Dockerfile for a CLI
             self.assertFalse((repo / ".env.example").exists())
             self.assertEqual(git_run.call_args.args[0], ["git", "add", ".github/workflows/deploy.yml"])
 
@@ -146,7 +146,10 @@ class RunDevopsGateTests(unittest.TestCase):
             wf.parent.mkdir(parents=True, exist_ok=True)
             wf.write_text(workflow, encoding="utf-8")
         if dockerfile is not None:
-            (repo / "Dockerfile").write_text(dockerfile, encoding="utf-8")
+            # Under the component layout a single web service's Dockerfile lives at backend/Dockerfile.
+            backend_dockerfile = repo / "backend" / "Dockerfile"
+            backend_dockerfile.parent.mkdir(parents=True, exist_ok=True)
+            backend_dockerfile.write_text(dockerfile, encoding="utf-8")
 
     def test_clean_web_service_passes(self) -> None:
         with TemporaryDirectory() as td:

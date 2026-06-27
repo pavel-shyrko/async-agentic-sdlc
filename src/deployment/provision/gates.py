@@ -70,15 +70,16 @@ def run_devops_gate(repo_dir, archetype: str | None = None) -> list[str]:
             except yaml.YAMLError as exc:
                 problems.append(f"deploy.yml is not valid YAML: {exc}")
 
-    # For fullstack_monorepo the Dockerfiles live at backend/Dockerfile and frontend/Dockerfile;
-    # for all other web-service archetypes the single Dockerfile is at the repo root.
+    # Under the universal component layout the (backend) service Dockerfile lives at backend/Dockerfile for
+    # EVERY web-service archetype — a single rest_api/crud_app AND the backend half of a fullstack_monorepo
+    # (which additionally has frontend/Dockerfile). A cli_tool has no Dockerfile (skipped when absent).
     if archetype == "fullstack_monorepo":
         dockerfiles_to_check = [
             ("backend/Dockerfile", repo_dir / "backend" / "Dockerfile"),
             ("frontend/Dockerfile", repo_dir / "frontend" / "Dockerfile"),
         ]
     else:
-        dockerfiles_to_check = [("Dockerfile", repo_dir / "Dockerfile")]
+        dockerfiles_to_check = [("backend/Dockerfile", repo_dir / "backend" / "Dockerfile")]
 
     for dockerfile_label, dockerfile in dockerfiles_to_check:
         if dockerfile.exists():

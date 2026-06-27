@@ -22,6 +22,7 @@ from src.shared.core.environments import (
     deploy_skill_for_target,
     deploy_target_skills,
     dependency_manifest,
+    working_directory_for_component,
 )
 
 
@@ -136,6 +137,24 @@ class AuthoringContractTests(unittest.TestCase):
         # Unknown env / None → None (the missing-manifest gate then treats it as exempt, never a false fail).
         self.assertIsNone(dependency_manifest("no-such-env"))
         self.assertIsNone(dependency_manifest(None))
+
+
+class ComponentWorkingDirTests(unittest.TestCase):
+    """The component→working_directory SSOT — the engine pins this from the ticket's `## Component` tag so
+    the monorepo layout never depends on prompt/skill adherence."""
+
+    def test_component_maps_to_its_subdir(self) -> None:
+        self.assertEqual(working_directory_for_component("BACKEND"), "backend")
+        self.assertEqual(working_directory_for_component("FRONTEND"), "frontend")
+
+    def test_case_insensitive_and_whitespace_tolerant(self) -> None:
+        self.assertEqual(working_directory_for_component(" backend "), "backend")
+        self.assertEqual(working_directory_for_component("Frontend"), "frontend")
+
+    def test_infra_shared_unknown_and_none_have_no_component_root(self) -> None:
+        # INFRA/SHARED are repo-meta / shared glue (no component source root); unknown/None never raise.
+        for value in ("INFRA", "SHARED", "", "WHATEVER", None):
+            self.assertIsNone(working_directory_for_component(value))
 
 
 class DeployTargetRegistryTests(unittest.TestCase):
